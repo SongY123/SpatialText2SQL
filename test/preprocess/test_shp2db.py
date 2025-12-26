@@ -10,14 +10,17 @@ from preprocess.shp2db import shp2db
 class TestShp2Db(unittest.TestCase):
     def setUp(self):
         # Configuration for tests
-        self.shp_dir = "../dataset/osm/beijing-251222"
+        # Use absolute paths to avoid GDAL/Fiona issues with relative paths
+        self.shp_dir = os.path.abspath("../dataset/osm/beijing-251222")
         
         # PostGIS connection (Update with your actual credentials if needed for local testing)
         self.pg_db_url = "postgresql://postgres:123456@localhost:5432/postgres"
         self.pg_schema = "osm"
         
         # SpatiaLite connection
-        self.sl_db_path = "../dataset/osm/test_spatial.sqlite"
+        self.sl_db_path = os.path.abspath("../dataset/osm/test_spatial.sqlite")
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(self.sl_db_path), exist_ok=True)
         self.sl_db_url = f"sqlite:///{self.sl_db_path}"
 
         # Clean up previous sqlite file if exists
