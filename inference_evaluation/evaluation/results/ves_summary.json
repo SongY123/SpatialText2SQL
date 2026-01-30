@@ -1,0 +1,18 @@
+{
+  "simple": {
+    "count": 10,
+    "ves": 8.660254037844386
+  },
+  "moderate": {
+    "count": 0,
+    "ves": 0.0
+  },
+  "challenging": {
+    "count": 0,
+    "ves": 0.0
+  },
+  "all": {
+    "count": 10,
+    "ves": 8.660254037844386
+  }
+}

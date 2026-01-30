@@ -1,0 +1,62 @@
+{
+  "evaluation_time": 12.744879245758057,
+  "total_queries": 10,
+  "simple": {
+    "count": 10,
+    "ves": 8.660254037844386
+  },
+  "moderate": {
+    "count": 0,
+    "ves": 0.0
+  },
+  "challenging": {
+    "count": 0,
+    "ves": 0.0
+  },
+  "all": {
+    "count": 10,
+    "ves": 8.660254037844386
+  },
+  "detailed_results": [
+    {
+      "sql_idx": 0,
+      "reward": 0.75
+    },
+    {
+      "sql_idx": 1,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 2,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 3,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 4,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 5,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 6,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 7,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 8,
+      "reward": 0.0
+    },
+    {
+      "sql_idx": 9,
+      "reward": 0.0
+    }
+  ]
+}

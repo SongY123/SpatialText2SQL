@@ -1,0 +1,73 @@
+[
+  {
+    "question_id": 0,
+    "db_id": "osm",
+    "question": "距离国家大剧院最近的河",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT a.*\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nORDER BY ST_Distance(a.geometry, tgt.geometry) ASC\nLIMIT 1;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 1,
+    "db_id": "osm",
+    "question": "距离国家大剧院最近的3条河",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT a.*\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nORDER BY ST_Distance(a.geometry, tgt.geometry) ASC\nLIMIT 3;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 2,
+    "db_id": "osm",
+    "question": "国家大剧院附近1公里内有多少条河（近似）",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT COUNT(*) AS cnt\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nWHERE ST_DWithin(a.geometry, tgt.geometry, 0.01);",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 3,
+    "db_id": "osm",
+    "question": "国家大剧院附近1公里内的河（按距离从近到远）",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT a.*\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nWHERE ST_DWithin(a.geometry, tgt.geometry, 0.01)\nORDER BY ST_Distance(a.geometry, tgt.geometry) ASC\nLIMIT 50;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 4,
+    "db_id": "osm",
+    "question": "返回国家大剧院最近河的名称与距离",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n), ranked AS (\n  SELECT a.name, ST_Distance(a.geometry, tgt.geometry) AS dist\n  FROM gis_osm_water_a_free_1 a\n  CROSS JOIN tgt\n  ORDER BY dist ASC\n  LIMIT 1\n)\nSELECT name, dist FROM ranked;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 5,
+    "db_id": "osm",
+    "question": "国家大剧院最近的河的中心点WKT",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n), nearest AS (\n  SELECT a.geometry\n  FROM gis_osm_water_a_free_1 a\n  CROSS JOIN tgt\n  ORDER BY ST_Distance(a.geometry, tgt.geometry) ASC\n  LIMIT 1\n)\nSELECT ST_AsText(ST_Centroid(geometry)) AS center_wkt\nFROM nearest;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 6,
+    "db_id": "osm",
+    "question": "国家大剧院周围2公里范围是否与任意河相交（近似）",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT EXISTS(\n  SELECT 1\n  FROM gis_osm_water_a_free_1 a\n  CROSS JOIN tgt\n  WHERE ST_Intersects(a.geometry, ST_Buffer(tgt.geometry, 0.02))\n) AS has_intersection;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 7,
+    "db_id": "osm",
+    "question": "与国家大剧院距离最远的河（取1条）",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT a.*\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nORDER BY ST_Distance(a.geometry, tgt.geometry) DESC\nLIMIT 1;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 8,
+    "db_id": "osm",
+    "question": "国家大剧院附近500米内每条河的最小距离（近似）",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n)\nSELECT a.osm_id, a.name, MIN(ST_Distance(a.geometry, tgt.geometry)) AS min_dist\nFROM gis_osm_water_a_free_1 a\nCROSS JOIN tgt\nWHERE ST_DWithin(a.geometry, tgt.geometry, 0.005)\nGROUP BY a.osm_id, a.name\nORDER BY min_dist ASC\nLIMIT 50;",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 9,
+    "db_id": "osm",
+    "question": "国家大剧院最近的河的面积是多少",
+    "sql": "WITH tgt AS (\n  SELECT geometry\n  FROM gis_osm_buildings_a_free_1\n  WHERE name = '国家大剧院'\n  LIMIT 1\n), nearest AS (\n  SELECT a.geometry\n  FROM gis_osm_water_a_free_1 a\n  CROSS JOIN tgt\n  ORDER BY ST_Distance(a.geometry, tgt.geometry) ASC\n  LIMIT 1\n)\nSELECT ST_Area(geometry) AS area\nFROM nearest;",
+    "difficulty": "simple"
+  }
+]
+
