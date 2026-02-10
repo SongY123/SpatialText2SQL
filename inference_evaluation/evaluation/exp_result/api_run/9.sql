@@ -1,3 +1,0 @@
--- 假设国家大剧院的坐标为 (116.3975, 39.9087)
--- 表名：gis_rivers
--- 字段：id, name, geom (geometry), area (float);
