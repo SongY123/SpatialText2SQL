@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 数据文件（大文件，需自行准备）
+data/preprocessed/
+data/schemas/
+Spatial QA/
+sdbdatasets/
+
+# RAG 数据库（运行时生成）
+rag_db/
+
+# 结果文件（运行时生成）
+results/
+
+# PostGIS 文档（大文件）
+postgis_extracted.json
+
+# 项目开发说明文档（不需要）
+SPATIALSQL_*.md
+GPU内存管理优化说明.md
+SpatialSQL完成总结.md
+QUICKSTART.md
+INSTALL_MIRRORS.md
+
+# 临时文件
+*.log
+*.tmp
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# SpatialSQL 数据集相关
+SpatialSQL-main/
+*.zip
+
+# 测试和验证脚本
+verify_project.py
+test_environment.sh
+install.sh
+install_mirror.sh

@@ -1,0 +1,36 @@
+# 模型配置文件
+models:
+  qwen2.5-coder-7b:
+    loader_class: "QwenModelLoader"
+    model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B/snapshots/0396a76181e127dfc13e5c5ec48a8cee09938b02"
+    model_type: "causal_lm"
+    device_map: "auto"  # 自动分配GPU
+    generation_config:
+      max_new_tokens: 512
+      temperature: 0.1
+      top_p: 0.9
+      do_sample: false
+      repetition_penalty: 1.1
+  
+  qwen3-8b:
+    loader_class: "QwenModelLoader"
+    model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
+    model_type: "causal_lm"
+    device_map: "auto"
+    generation_config:
+      max_new_tokens: 512
+      temperature: 0.1
+      top_p: 0.9
+      do_sample: false
+      repetition_penalty: 1.1
+
+# 默认使用的模型列表
+default_models:
+  - "qwen2.5-coder-7b"
+  - "qwen3-8b"
+
+# 模型推理配置
+inference:
+  batch_size: 1  # 批处理大小
+  show_progress: true  # 显示进度条
+  save_interval: 10  # 每10条保存一次结果

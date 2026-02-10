@@ -1,0 +1,66 @@
+# 评估配置文件
+
+# 评估指标
+metrics:
+  - "execution_accuracy"  # EX指标：执行准确率
+
+# 消融实验配置
+ablation_configs:
+  base:
+    name: "Base"
+    description: "Question + Schema"
+    use_rag: false
+    use_keyword: false
+  
+  rag:
+    name: "+RAG"
+    description: "Question + Schema + RAG"
+    use_rag: true
+    use_keyword: false
+  
+  keyword:
+    name: "+Keyword"
+    description: "Question + Schema + Keyword"
+    use_rag: false
+    use_keyword: true
+  
+  full:
+    name: "+Both"
+    description: "Question + Schema + RAG + Keyword"
+    use_rag: true
+    use_keyword: true
+
+# 默认使用的配置列表
+default_configs:
+  - "base"
+  - "rag"
+  - "keyword"
+  - "full"
+
+# RAG配置
+rag:
+  top_k: 5  # 返回top 5个最相关的文档
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  vector_db_path: "rag_db"
+  doc_source: "postgis_extracted.json"
+  chunk_strategy: "function_id"  # 按function_id切分
+
+# Keyword Search配置
+keyword_search:
+  top_k: 3  # 返回top 3个最相关的结果
+  method: "tfidf"  # 使用TF-IDF方法
+  doc_source: "postgis_extracted.json"
+
+# 评估运行配置
+evaluation:
+  timeout: 60  # SQL执行超时时间（秒）
+  parallel_workers: 4  # 并行评估的worker数量
+  save_details: true  # 是否保存详细结果
+
+# 结果输出配置
+results:
+  output_dir: "results"
+  predictions_dir: "results/predictions"
+  evaluations_dir: "results/evaluations"
+  logs_dir: "results/logs"
+  summary_file: "results/evaluations/summary.json"
