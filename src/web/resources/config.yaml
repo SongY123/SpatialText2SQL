@@ -1,0 +1,37 @@
+server:
+  host: 127.0.0.1
+  port: 8888
+  session_secret: "change-me-in-production"
+
+database:
+  init_sql_path: "src/web/resources/db/init_db.sql"
+  db_path: "spatial_agent.db"
+
+# 日志配置
+logging:
+  level: INFO
+  file_path: "../logs/app.log"
+  max_file_size_mb: 10
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(pathname)s:%(lineno)d - %(levelname)s - %(message)s"
+  console: true
+
+model:
+  # 选择模型提供商: ollama | dashscope
+  provider: "dashscope"  # 或 "ollama"
+  
+  # Ollama 配置（本地/远程模型）
+  ollama:
+    model_name: "qwen3-coder:30b-a3b-fp16"
+    host: "10.132.80.119:11434"
+    stream: true
+    keep_alive: "5m"
+    enable_thinking: false  # 启用 Qwen3 的 thinking 功能
+  
+  # DashScope/ModelScope 配置（阿里云百炼）
+  dashscope:
+    model_name: "qwen-max"  # 可选: qwen-plus, qwen-turbo, qwen-max, qwen3-coder-32b, qwq-32b-preview
+    api_key: sk-2caf0b86c95a4b51bc29a550f50e6771  # 从阿里云百炼获取
+    stream: true
+    enable_thinking: false  # ⚠️ qwen-max 不支持 thinking，改为 false
+    base_url: null  # 可选，自定义 API 地址
