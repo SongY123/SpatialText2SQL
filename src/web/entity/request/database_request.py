@@ -65,3 +65,23 @@ class DatabaseUpdateRequest(BaseModel):
         ):
             raise ValueError("At least one field must be provided for update.")
         return values
+
+
+class DatabaseSchemaProbeRequest(BaseModel):
+    type: str = Field(..., min_length=1, max_length=16)
+    jdbc_url: str = Field(..., min_length=1, max_length=2048, alias="jdbcurl")
+    username: Optional[str] = Field(default=None, max_length=256)
+    password: Optional[str] = Field(default=None, max_length=256)
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(populate_by_name=True)
+    else:
+        class Config:
+            allow_population_by_field_name = True
+
+    @validator("type")
+    def _validate_type(cls, value: str) -> str:
+        low = value.strip().lower()
+        if low not in {"postgis", "spatial"}:
+            raise ValueError("type must be Spatial or Postgis")
+        return "Postgis" if low == "postgis" else "Spatial"

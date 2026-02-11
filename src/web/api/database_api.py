@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..entity.request import DatabaseCreateRequest, DatabaseUpdateRequest
+from ..entity.request import DatabaseCreateRequest, DatabaseSchemaProbeRequest, DatabaseUpdateRequest
 from ..service import DatabaseService, UserService
+from tools.db_connector import JdbcDatabaseTool
 
 
 router = APIRouter(prefix="/databases", tags=["databases"])
@@ -34,6 +36,34 @@ def _assert_login(request: Request) -> int:
     if user_id is None:
         raise HTTPException(status_code=401, detail="Invalid session.")
     return int(user_id)
+
+
+def _patch_jdbc_auth(jdbc_url: str, db_type: str, username: Optional[str], password: Optional[str]) -> str:
+    url = str(jdbc_url or "").strip()
+    if not url.startswith("jdbc:"):
+        raise ValueError("jdbc_url must start with jdbc:")
+
+    if str(db_type).strip().lower() != "postgis":
+        return url
+
+    user = str(username).strip() if username is not None else ""
+    pwd = str(password) if password is not None else ""
+    if not user:
+        return url
+
+    body = url[5:]
+    if not body.startswith("postgresql://"):
+        return url
+
+    parsed = urlparse(body)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "user" not in query and "password" not in query:
+        query["user"] = user
+        if pwd:
+            query["password"] = pwd
+        rebuilt = parsed._replace(query=urlencode(query))
+        return "jdbc:" + urlunparse(rebuilt)
+    return url
 
 
 @router.post("")
@@ -89,3 +119,26 @@ def list_databases(request: Request, user_id: Optional[int] = None):
         raise HTTPException(status_code=403, detail="Can only list current user's database links.")
     data = _database_service.list_databases(user_id=target_user_id)
     return _ok(data=data, message="database links listed")
+
+
+@router.post("/schemas")
+def probe_schemas(body: DatabaseSchemaProbeRequest, request: Request):
+    _assert_login(request)
+    patched_jdbc_url = _patch_jdbc_auth(
+        jdbc_url=body.jdbc_url,
+        db_type=body.type,
+        username=body.username,
+        password=body.password,
+    )
+    tool = None
+    try:
+        tool = JdbcDatabaseTool(jdbc_url=patched_jdbc_url)
+        metadata = tool.get_metadata(schema=None, include_views=False)
+        schemas = metadata.get("schemas") or []
+        schema_list = [str(s) for s in schemas if s is not None and str(s).strip() != ""]
+        return schema_list
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        if tool is not None:
+            tool.close()

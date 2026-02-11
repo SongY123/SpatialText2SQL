@@ -1,5 +1,5 @@
 from .auth_request import LoginRequest
-from .database_request import DatabaseCreateRequest, DatabaseUpdateRequest
+from .database_request import DatabaseCreateRequest, DatabaseSchemaProbeRequest, DatabaseUpdateRequest
 from .user_request import UserCreateRequest, UserUpdateRequest
 
 __all__ = [
@@ -8,4 +8,5 @@ __all__ = [
     "UserUpdateRequest",
     "DatabaseCreateRequest",
     "DatabaseUpdateRequest",
+    "DatabaseSchemaProbeRequest",
 ]
