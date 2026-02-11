@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 import sys
 from urllib.parse import quote_plus
@@ -19,7 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from utils.logger import logger
 from utils.config_loader import ConfigLoader, get_config
-from tools import ChromaVectorStore
+from tools import ChromaVectorStore, JsonKeywordSearcher
 
 
 def _resolve_path(path_str: str | None, *, default: Path | None = None) -> Path:
@@ -210,11 +209,6 @@ def _load_docs(doc_source: Path) -> List[Dict]:
     return data
 
 
-def _tokenize(text: str, min_len: int) -> List[str]:
-    tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text.lower())
-    return [t for t in tokens if len(t) >= min_len]
-
-
 def run_vectorization(config: Dict) -> None:
     doc_source = _resolve_path(config.get("doc_source"), default=PROJECT_ROOT / "data" / "postgis_extracted.json")
     chroma_path = _resolve_path(
@@ -275,7 +269,10 @@ def run_vectorization(config: Dict) -> None:
 
 def run_keyword_index(config: Dict) -> None:
     doc_source = _resolve_path(config.get("doc_source"), default=PROJECT_ROOT / "data" / "postgis_extracted.json")
-    output_path = _resolve_path(config.get("output_path"), default=PROJECT_ROOT / "data" / "indexes" / "keyword" / "keyword_index.json")
+    output_path = _resolve_path(
+        config.get("output_path"),
+        default=PROJECT_ROOT / "data" / "indexes" / "keyword" / "keyword_index.json",
+    )
     if _path_has_content(output_path):
         logger.info("Step 3/3 skipped: keyword index path is not empty (%s).", output_path)
         return
@@ -283,34 +280,39 @@ def run_keyword_index(config: Dict) -> None:
     min_token_len = int(config.get("min_token_length", 2))
 
     docs = _load_docs(doc_source)
-    token_to_docs: Dict[str, List[int]] = {}
-    doc_meta: List[Dict] = []
+    documents: List[str] = []
+    ids: List[str] = []
+    metadatas: List[Dict] = []
 
     logger.info("Step 3/3: building keyword index from %s", doc_source)
     for i, d in enumerate(docs):
-        text = _build_doc_text(d)
-        tokens = sorted(set(_tokenize(text, min_token_len)))
-        for tok in tokens:
-            token_to_docs.setdefault(tok, []).append(i)
-        doc_meta.append(
+        function_id = str(d.get("function_id", f"doc_{i}"))
+        documents.append(_build_doc_text(d))
+        ids.append(function_id)
+        metadatas.append(
             {
-                "doc_id": i,
-                "function_id": d.get("function_id", f"doc_{i}"),
-                "chapter_info": d.get("chapter_info", ""),
+                "function_id": function_id,
+                "chapter_info": str(d.get("chapter_info", "")),
             }
         )
 
-    payload = {
-        "doc_source": str(doc_source),
-        "doc_count": len(docs),
-        "token_count": len(token_to_docs),
-        "token_to_docs": token_to_docs,
-        "docs": doc_meta,
-    }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+    keyword_searcher = JsonKeywordSearcher(
+        min_token_length=min_token_len,
+        index_path=str(output_path),
+    )
+    keyword_searcher.insert_documents(
+        documents=documents,
+        ids=ids,
+        metadatas=metadatas,
+    )
+    keyword_searcher.save(doc_source=str(doc_source))
 
-    logger.info("Step 3/3 completed. keyword_index=%s tokens=%d", output_path, len(token_to_docs))
+    logger.info(
+        "Step 3/3 completed. keyword_index=%s tokens=%d docs=%d",
+        output_path,
+        keyword_searcher.token_count,
+        keyword_searcher.doc_count,
+    )
 
 
 def run_all() -> None:
