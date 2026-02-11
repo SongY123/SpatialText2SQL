@@ -9,3 +9,4 @@ torch
 sentence-transformers>=2.7.0
 chromadb
 pyyaml>=6.0
+agentscope==1.0.13
