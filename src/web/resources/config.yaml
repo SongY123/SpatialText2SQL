@@ -10,7 +10,7 @@ database:
 # 日志配置
 logging:
   level: INFO
-  file_path: "../logs/app.log"
+  file_path: "../../logs/app.log"
   max_file_size_mb: 10
   backup_count: 5
   format: "%(asctime)s - %(name)s - %(pathname)s:%(lineno)d - %(levelname)s - %(message)s"

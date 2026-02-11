@@ -70,4 +70,17 @@ class UserService:
         return self.session_service.delete_session(session_id=session_id)
 
     def get_session(self, session_id: str) -> Optional[Dict]:
-        return self.session_service.get_session(session_id=session_id)
+        raw = self.session_service.get_session(session_id=session_id)
+        if raw is None:
+            return None
+
+        user = raw.get("user") or {}
+        return {
+            "session_id": raw.get("session_id"),
+            "login_time": raw.get("login_time"),
+            "last_update_time": raw.get("last_update_time"),
+            "user": {
+                "id": user.get("id"),
+                "username": user.get("username"),
+            },
+        }
