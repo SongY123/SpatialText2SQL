@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+import time
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
@@ -75,6 +77,49 @@ def jdbc_to_sqlalchemy_url(jdbc_url: str) -> str:
     if query_str:
         url += f"?{query_str}"
     return url
+
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_READ_ONLY_PREFIX_RE = re.compile(r"^\s*(WITH|SELECT|SHOW|EXPLAIN|DESCRIBE|PRAGMA)\b", re.IGNORECASE)
+_DANGEROUS_SQL_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|GRANT|REVOKE|MERGE|CALL)\b",
+    re.IGNORECASE,
+)
+
+
+def _assert_identifier(name: str, field_name: str) -> str:
+    n = str(name or "").strip()
+    if not n or not _IDENT_RE.match(n):
+        raise ValueError(f"Invalid {field_name}: {name!r}")
+    return n
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _qualified_table_name(table_name: str, schema: Optional[str] = None) -> str:
+    t = _assert_identifier(table_name, "table_name")
+    if schema:
+        s = _assert_identifier(schema, "schema")
+        return f"{_quote_ident(s)}.{_quote_ident(t)}"
+    return _quote_ident(t)
+
+
+def _qualified_column_name(column_name: str) -> str:
+    c = _assert_identifier(column_name, "column_name")
+    return _quote_ident(c)
+
+
+def _assert_read_only_sql(sql: str) -> str:
+    text_sql = str(sql or "").strip()
+    if not text_sql:
+        raise ValueError("sql must not be empty.")
+    if not _READ_ONLY_PREFIX_RE.search(text_sql):
+        raise ValueError("Only read-only SQL is allowed (WITH/SELECT/SHOW/EXPLAIN/DESCRIBE/PRAGMA).")
+    if _DANGEROUS_SQL_RE.search(text_sql):
+        raise ValueError("Dangerous SQL keyword detected in read-only execution.")
+    return text_sql
 
 
 @dataclass
@@ -168,3 +213,152 @@ class JdbcDatabaseTool:
                 "returns_rows": False,
                 "row_count": result.rowcount if result.rowcount is not None else 0,
             }
+
+    def introspect_catalog(self, schema: Optional[str] = None, include_views: bool = False) -> Dict:
+        """Lightweight catalog introspection including columns/indexes/constraints."""
+        inspector = inspect(self.engine)
+        base = self.get_metadata(schema=schema, include_views=include_views)
+        tables = base.get("tables", [])
+        for t in tables:
+            table_name = t.get("table")
+            sc = t.get("schema")
+            t["foreign_keys"] = inspector.get_foreign_keys(table_name, schema=sc)
+            t["indexes"] = inspector.get_indexes(table_name, schema=sc)
+            t["pk"] = inspector.get_pk_constraint(table_name, schema=sc)
+        return base
+
+    def estimate_rowcount(self, table_name: str, schema: Optional[str] = None) -> Dict:
+        """Estimate row count, preferring planner stats on PostgreSQL."""
+        t = _assert_identifier(table_name, "table_name")
+        if self.engine.dialect.name == "postgresql":
+            sql = """
+            SELECT c.reltuples::bigint AS estimate
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'r'
+              AND c.relname = :table_name
+              AND n.nspname = COALESCE(:schema_name, current_schema())
+            LIMIT 1
+            """
+            with self.engine.connect() as conn:
+                estimate = conn.execute(
+                    text(sql),
+                    {"table_name": t, "schema_name": schema},
+                ).scalar()
+            return {
+                "table": t,
+                "schema": schema,
+                "method": "pg_reltuples",
+                "row_count_estimate": int(estimate) if estimate is not None else None,
+            }
+
+        qualified = _qualified_table_name(t, schema=schema)
+        sql = f"SELECT COUNT(*) AS cnt FROM {qualified}"
+        with self.engine.connect() as conn:
+            cnt = conn.execute(text(sql)).scalar()
+        return {
+            "table": t,
+            "schema": schema,
+            "method": "count(*)",
+            "row_count_estimate": int(cnt) if cnt is not None else None,
+        }
+
+    def topk_distinct(
+        self,
+        table_name: str,
+        column_name: str,
+        k: int = 10,
+        schema: Optional[str] = None,
+    ) -> Dict:
+        """Get top-k distinct values for one column with strict limit."""
+        t = _assert_identifier(table_name, "table_name")
+        c = _assert_identifier(column_name, "column_name")
+        top_k = max(1, min(int(k), 100))
+        qualified_table = _qualified_table_name(t, schema=schema)
+        quoted_col = _qualified_column_name(c)
+        sql = f"""
+        SELECT {quoted_col} AS value, COUNT(*) AS freq
+        FROM {qualified_table}
+        WHERE {quoted_col} IS NOT NULL
+        GROUP BY {quoted_col}
+        ORDER BY freq DESC
+        LIMIT :k
+        """
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), {"k": top_k}).mappings().all()
+        return {
+            "table": t,
+            "schema": schema,
+            "column": c,
+            "k": top_k,
+            "values": [dict(r) for r in rows],
+        }
+
+    def execute_readonly(
+        self,
+        sql: str,
+        params: Optional[Dict] = None,
+        timeout_ms: int = 8000,
+        max_rows: int = 100,
+    ) -> Dict:
+        """Execute read-only SQL with timeout and max rows guardrails."""
+        text_sql = _assert_read_only_sql(sql)
+        bind_params = params or {}
+        row_limit = max(1, int(max_rows))
+        timeout = max(1, int(timeout_ms))
+        begin_t = time.perf_counter()
+
+        try:
+            with self.engine.begin() as conn:
+                if self.engine.dialect.name == "postgresql":
+                    conn.execute(text(f"SET LOCAL statement_timeout = {timeout}"))
+
+                result = conn.execute(text(text_sql), bind_params)
+                if result.returns_rows:
+                    rows = result.mappings().fetchmany(row_limit + 1)
+                    truncated = len(rows) > row_limit
+                    if truncated:
+                        rows = rows[:row_limit]
+                    elapsed_ms = int((time.perf_counter() - begin_t) * 1000)
+                    return {
+                        "status": "OK",
+                        "returns_rows": True,
+                        "columns": list(result.keys()),
+                        "rows": [dict(r) for r in rows],
+                        "row_count": len(rows),
+                        "truncated": truncated,
+                        "latency_ms": elapsed_ms,
+                        "error": None,
+                    }
+
+                elapsed_ms = int((time.perf_counter() - begin_t) * 1000)
+                return {
+                    "status": "OK",
+                    "returns_rows": False,
+                    "row_count": result.rowcount if result.rowcount is not None else 0,
+                    "latency_ms": elapsed_ms,
+                    "error": None,
+                }
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - begin_t) * 1000)
+            return {
+                "status": "ERROR",
+                "returns_rows": False,
+                "row_count": 0,
+                "latency_ms": elapsed_ms,
+                "error": str(exc),
+            }
+
+    def explain(self, sql: str, params: Optional[Dict] = None) -> Dict:
+        """Run EXPLAIN for read-only SQL."""
+        text_sql = _assert_read_only_sql(sql)
+        bind_params = params or {}
+        explain_sql = f"EXPLAIN {text_sql}"
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(explain_sql), bind_params)
+                rows = result.fetchall()
+            lines = [str(r[0]) if len(r) > 0 else str(r) for r in rows]
+            return {"status": "OK", "plan_lines": lines}
+        except Exception as exc:
+            return {"status": "ERROR", "error": str(exc)}
