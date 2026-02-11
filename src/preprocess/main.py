@@ -3,21 +3,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import re
 import sqlite3
 import sys
 from urllib.parse import quote_plus
 from pathlib import Path
 from typing import Dict, List
-from utils.logger import logger
-from utils.config_loader import ConfigLoader, get_config
-
-import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from utils.logger import logger
+from utils.config_loader import ConfigLoader, get_config
+from tools import ChromaVectorStore
 
 
 def _resolve_path(path_str: str | None, *, default: Path | None = None) -> Path:
@@ -41,6 +43,16 @@ def _path_has_content(path: Path) -> bool:
         except StopIteration:
             return False
     return False
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 def _quote_ident(name: str) -> str:
@@ -203,107 +215,62 @@ def _tokenize(text: str, min_len: int) -> List[str]:
     return [t for t in tokens if len(t) >= min_len]
 
 
-def _mean_pool(last_hidden_state, attention_mask):
-    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
-    masked = last_hidden_state * mask
-    summed = masked.sum(dim=1)
-    counts = mask.sum(dim=1).clamp(min=1e-9)
-    return summed / counts
-
-
-def _encode_with_embedding_model(
-    texts: List[str],
-    model_name: str,
-    batch_size: int,
-    max_length: int,
-    trust_remote_code: bool,
-) -> List[List[float]]:
-    try:
-        import torch
-        from transformers import AutoModel, AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError(
-            "Vectorize step needs `transformers` and `torch`. Install from requirements.txt."
-        ) from exc
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("Loading embedding model: %s (device=%s)", model_name, device)
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-    model = AutoModel.from_pretrained(model_name, trust_remote_code=trust_remote_code).to(device)
-    model.eval()
-
-    vectors: List[List[float]] = []
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            inputs = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=max_length,
-                return_tensors="pt",
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            outputs = model(**inputs)
-            if hasattr(outputs, "last_hidden_state"):
-                hidden = outputs.last_hidden_state
-            elif isinstance(outputs, tuple) and len(outputs) > 0:
-                hidden = outputs[0]
-            else:
-                raise RuntimeError("Unexpected model output format, cannot extract embeddings.")
-
-            emb = _mean_pool(hidden, inputs["attention_mask"])
-            emb = torch.nn.functional.normalize(emb, p=2, dim=1)
-            vectors.extend(emb.cpu().tolist())
-
-    return vectors
-
-
 def run_vectorization(config: Dict) -> None:
     doc_source = _resolve_path(config.get("doc_source"), default=PROJECT_ROOT / "data" / "postgis_extracted.json")
-    output_path = _resolve_path(
-        config.get("output_path"),
-        default=PROJECT_ROOT / "data" / "indexes" / "vector" / "qwen3_embedding_0_6b.json",
+    chroma_path = _resolve_path(
+        config.get("chroma_path"),
+        default=PROJECT_ROOT / "data" / "indexes" / "vector" / "chroma",
     )
-    if _path_has_content(output_path):
-        logger.info("Step 2/3 skipped: vector storage path is not empty (%s).", output_path)
+    if _path_has_content(chroma_path):
+        logger.info("Step 2/3 skipped: vector storage path is not empty (%s).", chroma_path)
         return
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    chroma_path.mkdir(parents=True, exist_ok=True)
 
     docs = _load_docs(doc_source)
     model_name = str(config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"))
+    collection_name = str(config.get("collection_name", "postgis_extracted"))
     batch_size = int(config.get("batch_size", 8))
-    max_length = int(config.get("max_length", 1024))
-    trust_remote_code = bool(config.get("trust_remote_code", True))
+    normalize_embeddings = _as_bool(config.get("normalize_embeddings"), default=True)
+    model_kwargs = config.get("model_kwargs") or {}
+    tokenizer_kwargs = config.get("tokenizer_kwargs") or {}
 
-    texts = [_build_doc_text(d) for d in docs]
-    doc_ids = [d.get("function_id", f"doc_{i}") for i, d in enumerate(docs)]
-    logger.info("Step 2/3: vectorizing postgis docs from %s with model=%s", doc_source, model_name)
-    raw_vectors = _encode_with_embedding_model(
-        texts=texts,
+    texts: List[str] = []
+    ids: List[str] = []
+    metadatas: List[Dict] = []
+    for i, d in enumerate(docs):
+        texts.append(_build_doc_text(d))
+        function_id = str(d.get("function_id", f"doc_{i}"))
+        ids.append(f"{function_id}_{i}")
+        metadatas.append(
+            {
+                "function_id": function_id,
+                "chapter_info": str(d.get("chapter_info", "")),
+                "source_file": str(doc_source),
+            }
+        )
+
+    logger.info(
+        "Step 2/3: vectorizing and importing docs to Chroma. source=%s model=%s collection=%s",
+        doc_source,
+        model_name,
+        collection_name,
+    )
+    vector_store = ChromaVectorStore(
+        chroma_path=str(chroma_path),
+        collection_name=collection_name,
         model_name=model_name,
         batch_size=batch_size,
-        max_length=max_length,
-        trust_remote_code=trust_remote_code,
+        normalize_embeddings=normalize_embeddings,
+        model_kwargs=model_kwargs,
+        tokenizer_kwargs=tokenizer_kwargs,
     )
-
-    vectors: List[Dict] = []
-    for i, emb in enumerate(raw_vectors):
-        vectors.append({"doc_id": i, "function_id": doc_ids[i], "embedding": emb})
-
-    payload = {
-        "doc_source": str(doc_source),
-        "model_name": model_name,
-        "batch_size": batch_size,
-        "max_length": max_length,
-        "doc_count": len(doc_ids),
-        "vectors": vectors,
-    }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-
-    logger.info("Step 2/3 completed. vector_file=%s docs=%d", output_path, len(doc_ids))
+    inserted_count = vector_store.insert_documents(documents=texts, ids=ids, metadatas=metadatas)
+    logger.info(
+        "Step 2/3 completed. chroma_path=%s collection=%s inserted=%d",
+        chroma_path,
+        collection_name,
+        inserted_count,
+    )
 
 
 def run_keyword_index(config: Dict) -> None:
@@ -347,7 +314,7 @@ def run_keyword_index(config: Dict) -> None:
 
 
 def run_all() -> None:
-    run_db_import(get_config("db_import", {}))
+    # run_db_import(get_config("db_import", {}))
     run_vectorization(get_config("vectorize", {}))
     run_keyword_index(get_config("keyword_search", {}))
     logger.info("All preprocess tasks completed.")

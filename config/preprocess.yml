@@ -19,10 +19,12 @@ db_import:
 
 vectorize:
   doc_source: data/postgis_extracted.json
-  output_path: data/indexes/vector/qwen3_embedding_0_6b.json
+  chroma_path: data/indexes/vector/chroma
+  collection_name: postgis_extracted
   model_name: Qwen/Qwen3-Embedding-0.6B
+  normalize_embeddings: true
   batch_size: 8
-  max_length: 1024
+
 
 keyword_search:
   doc_source: data/postgis_extracted.json

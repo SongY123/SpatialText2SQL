@@ -4,6 +4,8 @@ fiona
 pyogrio
 sqlalchemy
 psycopg2-binary
-transformers
+transformers>=4.51.0
 torch
+sentence-transformers>=2.7.0
+chromadb
 pyyaml>=6.0
