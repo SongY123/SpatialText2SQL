@@ -1,3 +1,9 @@
 geoalchemy2
 geopandas
+fiona
 pyogrio
+sqlalchemy
+psycopg2-binary
+transformers
+torch
+pyyaml>=6.0

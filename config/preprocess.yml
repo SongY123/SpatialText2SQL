@@ -1,0 +1,38 @@
+db_import:
+  input_path: data/osm/new-york-260210
+  # true: 表存在则先删除后导入; false: 表存在则跳过该表
+  if_exists: false
+  # Default: PostGIS
+  target: postgis
+  postgis:
+    host: localhost
+    port: 5432
+    database: postgres
+    user: postgres
+    password: 123456
+    schema: public
+
+  # Alternative: Spatial (Spatialite) (uncomment to use)
+  # target: spatial
+  # spatial:
+  #   path: data/osm/test_spatial.sqlite
+
+vectorize:
+  doc_source: data/postgis_extracted.json
+  output_path: data/indexes/vector/qwen3_embedding_0_6b.json
+  model_name: Qwen/Qwen3-Embedding-0.6B
+  batch_size: 8
+  max_length: 1024
+
+keyword_search:
+  doc_source: data/postgis_extracted.json
+  output_path: data/indexes/keyword/keyword_index.json
+  min_token_length: 2
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: ../logs/preprocess/preprocess.log
+  max_file_size_mb: 20
+  backup_count: 5
+  console: true
