@@ -362,3 +362,76 @@ class JdbcDatabaseTool:
             return {"status": "OK", "plan_lines": lines}
         except Exception as exc:
             return {"status": "ERROR", "error": str(exc)}
+
+    def list_tables_and_views(self, schema: Optional[str] = None) -> Dict:
+        """List table names and view names for one schema."""
+        inspector = inspect(self.engine)
+        schema_name = schema
+        if self.engine.dialect.name == "sqlite" and schema_name in {None, "", "main"}:
+            schema_name = None
+
+        table_names = inspector.get_table_names(schema=schema_name)
+        view_names = inspector.get_view_names(schema=schema_name)
+
+        # Filter sqlite internal objects.
+        def _clean(names: List[str]) -> List[str]:
+            out: List[str] = []
+            for n in names:
+                name = str(n or "").strip()
+                if not name:
+                    continue
+                if name.startswith("sqlite_"):
+                    continue
+                out.append(name)
+            return sorted(set(out))
+
+        return {
+            "schema": schema if schema is not None else (schema_name or ""),
+            "tables": _clean(table_names),
+            "views": _clean(view_names),
+        }
+
+    def get_object_columns(
+        self,
+        schema: Optional[str],
+        object_name: str,
+        object_type: str,
+    ) -> Dict:
+        """Get columns for one table or view."""
+        obj_name = str(object_name or "").strip()
+        if not obj_name:
+            raise ValueError("object_name must not be empty.")
+
+        obj_type = str(object_type or "").strip().lower()
+        if obj_type not in {"table", "view"}:
+            raise ValueError("object_type must be 'table' or 'view'.")
+
+        inspector = inspect(self.engine)
+        schema_name = schema
+        if self.engine.dialect.name == "sqlite" and schema_name in {None, "", "main"}:
+            schema_name = None
+
+        if obj_type == "table":
+            names = inspector.get_table_names(schema=schema_name)
+        else:
+            names = inspector.get_view_names(schema=schema_name)
+
+        if obj_name not in names:
+            raise ValueError(
+                f"{obj_type} not found: schema={schema!r}, name={obj_name!r}",
+            )
+
+        columns = inspector.get_columns(obj_name, schema=schema_name)
+        fields = [
+            {
+                "field_name": c.get("name"),
+                "field_type": str(c.get("type")),
+            }
+            for c in columns
+        ]
+        return {
+            "schema": schema if schema is not None else (schema_name or ""),
+            "name": obj_name,
+            "type": obj_type,
+            "fields": fields,
+        }

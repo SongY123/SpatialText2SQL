@@ -11,7 +11,6 @@ except ImportError:  # pydantic v1
 
 
 class DatabaseCreateRequest(BaseModel):
-    user_id: int = Field(..., ge=1)
     name: str = Field(..., min_length=1, max_length=256)
     type: str = Field(..., min_length=1, max_length=16)
     url: str = Field(..., min_length=1, max_length=1024)

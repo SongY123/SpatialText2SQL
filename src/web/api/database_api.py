@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from fastapi import APIRouter, HTTPException, Request
 
 from ..entity.request import DatabaseCreateRequest, DatabaseSchemaProbeRequest, DatabaseUpdateRequest
+from ..entity.response import DatabasePublicResponse
 from ..service import DatabaseService, UserService
 from tools.db_connector import JdbcDatabaseTool
 
@@ -22,6 +23,10 @@ def _ok(data=None, message: str = "ok"):
         "message": message,
         "data": data,
     }
+
+
+def _to_public_database(payload):
+    return DatabasePublicResponse.from_dict(payload).to_dict()
 
 
 def _assert_login(request: Request) -> int:
@@ -69,11 +74,9 @@ def _patch_jdbc_auth(jdbc_url: str, db_type: str, username: Optional[str], passw
 @router.post("")
 def insert_database(body: DatabaseCreateRequest, request: Request):
     current_user_id = _assert_login(request)
-    if current_user_id != body.user_id:
-        raise HTTPException(status_code=403, detail="Can only insert database links for current user.")
     try:
         data = _database_service.insert_database(
-            user_id=body.user_id,
+            user_id=current_user_id,
             name=body.name,
             db_type=body.type,
             url=body.url,
@@ -81,7 +84,7 @@ def insert_database(body: DatabaseCreateRequest, request: Request):
             db_username=body.db_username,
             db_password=body.db_password,
         )
-        return _ok(data=data, message="database link inserted")
+        return _ok(data=_to_public_database(data), message="database link inserted")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -99,7 +102,7 @@ def update_database(link_id: int, body: DatabaseUpdateRequest, request: Request)
             db_username=body.db_username,
             db_password=body.db_password,
         )
-        return _ok(data=data, message="database link updated")
+        return _ok(data=_to_public_database(data), message="database link updated")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -114,13 +117,61 @@ def delete_database(link_id: int, request: Request):
 
 
 @router.get("")
-def list_databases(request: Request, user_id: Optional[int] = None):
+def list_databases(request: Request):
     current_user_id = _assert_login(request)
-    target_user_id = user_id if user_id is not None else current_user_id
-    if int(target_user_id) != int(current_user_id):
-        raise HTTPException(status_code=403, detail="Can only list current user's database links.")
-    data = _database_service.list_databases(user_id=target_user_id)
+    rows = _database_service.list_databases(user_id=current_user_id)
+    data = [_to_public_database(x) for x in rows]
     return _ok(data=data, message="database links listed")
+
+
+@router.get("/{database_id}/objects")
+def list_tables_and_views(
+    database_id: int,
+    schema: str,
+    request: Request,
+):
+    current_user_id = _assert_login(request)
+    db = _database_service.get_database(link_id=database_id)
+    if db is None:
+        raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
+    if int(db.get("user_id")) != int(current_user_id):
+        raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+
+    try:
+        data = _database_service.list_tables_and_views(
+            link_id=database_id,
+            schema=schema,
+        )
+        return _ok(data=data, message="tables/views fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{database_id}/fields")
+def get_fields(
+    database_id: int,
+    schema: str,
+    object_name: str,
+    object_type: str,
+    request: Request,
+):
+    current_user_id = _assert_login(request)
+    db = _database_service.get_database(link_id=database_id)
+    if db is None:
+        raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
+    if int(db.get("user_id")) != int(current_user_id):
+        raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+
+    try:
+        fields = _database_service.get_object_fields(
+            link_id=database_id,
+            schema=schema,
+            object_name=object_name,
+            object_type=object_type,
+        )
+        return _ok(data=fields, message="fields fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/schemas")
