@@ -122,6 +122,19 @@ def _assert_read_only_sql(sql: str) -> str:
     return text_sql
 
 
+def _is_geometry_column(column_meta: Dict) -> bool:
+    type_text = str(column_meta.get("type", "")).strip().lower()
+    if "geometry" in type_text or "geography" in type_text:
+        return True
+
+    # Some backends may reflect spatial columns as generic USER-DEFINED.
+    if type_text in {"user-defined", "nulltype"}:
+        name = str(column_meta.get("name", "")).strip().lower()
+        if name in {"geom", "geometry", "geog", "the_geom"}:
+            return True
+    return False
+
+
 @dataclass
 class JdbcDatabaseTool:
     jdbc_url: str
@@ -188,6 +201,143 @@ class JdbcDatabaseTool:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         return [dict(r) for r in rows]
+
+    def get_sample_page(
+        self,
+        schema: Optional[str],
+        object_name: str,
+        page: int = 1,
+        page_size: int = 20,
+        object_type: Optional[str] = None,
+    ) -> Dict:
+        """Get paginated sample rows from one table/view."""
+        name = str(object_name or "").strip()
+        if not name:
+            raise ValueError("object_name must not be empty.")
+
+        p = max(1, int(page))
+        size = max(1, min(int(page_size), 500))
+        offset = (p - 1) * size
+
+        schema_name = schema
+        if self.engine.dialect.name == "sqlite" and schema_name in {None, "", "main"}:
+            schema_name = None
+
+        inspector = inspect(self.engine)
+        tables = set(inspector.get_table_names(schema=schema_name))
+        views = set(inspector.get_view_names(schema=schema_name))
+
+        resolved_type: str
+        if object_type is not None:
+            t = str(object_type).strip().lower()
+            if t not in {"table", "view"}:
+                raise ValueError("object_type must be 'table' or 'view'.")
+            if t == "table" and name not in tables:
+                raise ValueError(f"table not found: schema={schema!r}, name={name!r}")
+            if t == "view" and name not in views:
+                raise ValueError(f"view not found: schema={schema!r}, name={name!r}")
+            resolved_type = t
+        else:
+            if name in tables:
+                resolved_type = "table"
+            elif name in views:
+                resolved_type = "view"
+            else:
+                raise ValueError(f"table/view not found: schema={schema!r}, name={name!r}")
+
+        qualified = _qualified_table_name(name, schema=schema_name)
+        count_sql = f"SELECT COUNT(*) AS cnt FROM {qualified}"
+        data_sql_default = f"SELECT * FROM {qualified} LIMIT :limit OFFSET :offset"
+
+        columns_meta = inspector.get_columns(name, schema=schema_name)
+        geometry_columns = {
+            str(c.get("name"))
+            for c in columns_meta
+            if _is_geometry_column(c)
+        }
+
+        def _build_data_sql(geom_to_text_func: Optional[str]) -> str:
+            select_parts: List[str] = []
+            for c in columns_meta:
+                col_name = str(c.get("name"))
+                quoted = _qualified_column_name(col_name)
+                if geom_to_text_func and col_name in geometry_columns:
+                    select_parts.append(
+                        f"{geom_to_text_func}({quoted}) AS {_quote_ident(col_name)}",
+                    )
+                else:
+                    select_parts.append(quoted)
+            select_clause = ", ".join(select_parts) if select_parts else "*"
+            return f"SELECT {select_clause} FROM {qualified} LIMIT :limit OFFSET :offset"
+
+        geometry_text_funcs: List[str] = []
+
+        with self.engine.connect() as conn:
+            if self.engine.dialect.name == "postgresql":
+                schema_for_pg = schema_name or "public"
+                try:
+                    pg_geom_rows = conn.execute(
+                        text(
+                            """
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_schema = :schema_name
+                              AND table_name = :table_name
+                              AND udt_name IN ('geometry', 'geography')
+                            """
+                        ),
+                        {
+                            "schema_name": schema_for_pg,
+                            "table_name": name,
+                        },
+                    ).fetchall()
+                    for r in pg_geom_rows:
+                        geometry_columns.add(str(r[0]))
+                except Exception:
+                    # Keep reflection-based geometry detection if catalog lookup is unavailable.
+                    pass
+
+            if geometry_columns:
+                if self.engine.dialect.name == "postgresql":
+                    geometry_text_funcs = ["ST_AsText"]
+                elif self.engine.dialect.name == "sqlite":
+                    geometry_text_funcs = ["AsText", "ST_AsText"]
+                else:
+                    geometry_text_funcs = ["ST_AsText"]
+
+            total = conn.execute(text(count_sql)).scalar()
+            rows = None
+            if geometry_text_funcs:
+                for fn_name in geometry_text_funcs:
+                    try:
+                        sql_text = _build_data_sql(fn_name)
+                        rows = conn.execute(
+                            text(sql_text),
+                            {"limit": size, "offset": offset},
+                        ).mappings().all()
+                        break
+                    except Exception:
+                        rows = None
+
+            if rows is None:
+                rows = conn.execute(
+                    text(data_sql_default),
+                    {"limit": size, "offset": offset},
+                ).mappings().all()
+
+        total_count = int(total) if total is not None else 0
+        total_pages = (total_count + size - 1) // size if total_count > 0 else 0
+
+        return {
+            "schema": schema if schema is not None else (schema_name or ""),
+            "name": name,
+            "type": resolved_type,
+            "page": p,
+            "page_size": size,
+            "total": total_count,
+            "total_pages": total_pages,
+            "rows": [dict(r) for r in rows],
+        }
 
     def execute_sql(self, sql: str, limit: int = 200) -> Dict:
         text_sql = str(sql or "").strip()

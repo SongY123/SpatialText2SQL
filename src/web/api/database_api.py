@@ -174,6 +174,37 @@ def get_fields(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/{database_id}/samples")
+def get_sample_data(
+    database_id: int,
+    schema: str,
+    object_name: str,
+    request: Request,
+    object_type: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+):
+    current_user_id = _assert_login(request)
+    db = _database_service.get_database(link_id=database_id)
+    if db is None:
+        raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
+    if int(db.get("user_id")) != int(current_user_id):
+        raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+
+    try:
+        data = _database_service.get_sample_data_page(
+            link_id=database_id,
+            schema=schema,
+            object_name=object_name,
+            object_type=object_type,
+            page=page,
+            page_size=page_size,
+        )
+        return _ok(data=data, message="sample data fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/schemas")
 def probe_schemas(body: DatabaseSchemaProbeRequest, request: Request):
     _assert_login(request)
