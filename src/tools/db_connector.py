@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.schema import CreateTable
 
 
 def _jdbc_sqlite_to_sqlalchemy(jdbc_body: str) -> str:
@@ -334,8 +335,10 @@ class JdbcDatabaseTool:
             "type": resolved_type,
             "page": p,
             "page_size": size,
+            "column_names": [str(c.get("name")) for c in columns_meta],
             "total": total_count,
             "total_pages": total_pages,
+            "page_row_count": len(rows),
             "rows": [dict(r) for r in rows],
         }
 
@@ -584,4 +587,60 @@ class JdbcDatabaseTool:
             "name": obj_name,
             "type": obj_type,
             "fields": fields,
+        }
+
+    def get_object_ddl(
+        self,
+        schema: Optional[str],
+        object_name: str,
+        object_type: str,
+    ) -> Dict:
+        """Get DDL for one table or view."""
+        obj_name = str(object_name or "").strip()
+        if not obj_name:
+            raise ValueError("object_name must not be empty.")
+
+        obj_type = str(object_type or "").strip().lower()
+        if obj_type not in {"table", "view"}:
+            raise ValueError("object_type must be 'table' or 'view'.")
+
+        inspector = inspect(self.engine)
+        schema_name = schema
+        if self.engine.dialect.name == "sqlite" and schema_name in {None, "", "main"}:
+            schema_name = None
+
+        if obj_type == "table":
+            table_names = inspector.get_table_names(schema=schema_name)
+            if obj_name not in table_names:
+                raise ValueError(f"table not found: schema={schema!r}, name={obj_name!r}")
+            metadata = MetaData()
+            table = Table(obj_name, metadata, autoload_with=self.engine, schema=schema_name)
+            ddl_text = str(CreateTable(table).compile(self.engine)).strip()
+            if not ddl_text.rstrip().endswith(";"):
+                ddl_text = ddl_text.rstrip() + ";"
+            return {
+                "schema": schema if schema is not None else (schema_name or ""),
+                "name": obj_name,
+                "type": "table",
+                "ddl": ddl_text,
+            }
+
+        view_names = inspector.get_view_names(schema=schema_name)
+        if obj_name not in view_names:
+            raise ValueError(f"view not found: schema={schema!r}, name={obj_name!r}")
+
+        definition = inspector.get_view_definition(obj_name, schema=schema_name)
+        if not definition:
+            raise ValueError(f"view definition is unavailable: schema={schema!r}, name={obj_name!r}")
+
+        qualified = _qualified_table_name(obj_name, schema=schema_name)
+        ddl_text = f"CREATE VIEW {qualified} AS\n{definition}"
+        ddl_text = ddl_text.strip()
+        if not ddl_text.rstrip().endswith(";"):
+            ddl_text = ddl_text.rstrip() + ";"
+        return {
+            "schema": schema if schema is not None else (schema_name or ""),
+            "name": obj_name,
+            "type": "view",
+            "ddl": ddl_text,
         }

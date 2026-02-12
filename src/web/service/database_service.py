@@ -131,6 +131,34 @@ class DatabaseService:
         finally:
             tool.close()
 
+    def get_object_ddl(
+        self,
+        link_id: int,
+        schema: str,
+        object_name: str,
+        object_type: str,
+    ) -> Dict:
+        row = self.database_link_dao.get_database_link_by_id(link_id=link_id)
+        if row is None:
+            raise ValueError(f"database link not found: link_id={link_id}")
+
+        jdbc_url = self._patch_jdbc_auth(
+            jdbc_url=row.url,
+            db_type=row.type,
+            username=row.db_username,
+            password=row.db_password,
+        )
+        tool = JdbcDatabaseTool(jdbc_url=jdbc_url)
+        try:
+            payload = tool.get_object_ddl(
+                schema=schema,
+                object_name=object_name,
+                object_type=object_type,
+            )
+            return payload
+        finally:
+            tool.close()
+
     def get_sample_data_page(
         self,
         link_id: int,

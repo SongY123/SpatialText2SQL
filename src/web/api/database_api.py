@@ -174,6 +174,51 @@ def get_fields(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/{database_id}/columns")
+def get_columns(
+    database_id: int,
+    schema: str,
+    object_name: str,
+    object_type: str,
+    request: Request,
+):
+    # Alias of /fields for clearer API semantics.
+    return get_fields(
+        database_id=database_id,
+        schema=schema,
+        object_name=object_name,
+        object_type=object_type,
+        request=request,
+    )
+
+
+@router.get("/{database_id}/ddl")
+def get_ddl(
+    database_id: int,
+    schema: str,
+    object_name: str,
+    object_type: str,
+    request: Request,
+):
+    current_user_id = _assert_login(request)
+    db = _database_service.get_database(link_id=database_id)
+    if db is None:
+        raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
+    if int(db.get("user_id")) != int(current_user_id):
+        raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+
+    try:
+        data = _database_service.get_object_ddl(
+            link_id=database_id,
+            schema=schema,
+            object_name=object_name,
+            object_type=object_type,
+        )
+        return _ok(data=data, message="ddl fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/{database_id}/samples")
 def get_sample_data(
     database_id: int,
