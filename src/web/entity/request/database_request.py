@@ -12,6 +12,7 @@ except ImportError:  # pydantic v1
 
 class DatabaseCreateRequest(BaseModel):
     user_id: int = Field(..., ge=1)
+    name: str = Field(..., min_length=1, max_length=256)
     type: str = Field(..., min_length=1, max_length=16)
     url: str = Field(..., min_length=1, max_length=1024)
     schema_list: List[str] = Field(default_factory=list, alias="schema")
@@ -33,6 +34,7 @@ class DatabaseCreateRequest(BaseModel):
 
 
 class DatabaseUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=256)
     type: Optional[str] = Field(default=None, min_length=1, max_length=16)
     url: Optional[str] = Field(default=None, min_length=1, max_length=1024)
     schema_list: Optional[List[str]] = Field(default=None, alias="schema")
@@ -57,6 +59,8 @@ class DatabaseUpdateRequest(BaseModel):
     @root_validator(skip_on_failure=True)
     def _validate_any_field(cls, values):
         if (
+            values.get("name") is None
+            and
             values.get("type") is None
             and values.get("url") is None
             and values.get("schema_list") is None

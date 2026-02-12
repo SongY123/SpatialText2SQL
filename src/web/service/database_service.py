@@ -20,6 +20,7 @@ class DatabaseService:
     def insert_database(
         self,
         user_id: int,
+        name: str,
         db_type: str,
         url: str,
         schema: Optional[List[str]] = None,
@@ -28,6 +29,7 @@ class DatabaseService:
     ) -> Dict:
         db_link = self.database_link_dao.insert_database_link(
             user_id=user_id,
+            name=name,
             db_type=db_type,
             url=url,
             schema=schema or [],
@@ -40,6 +42,7 @@ class DatabaseService:
     def update_database(
         self,
         link_id: int,
+        name: Optional[str] = None,
         db_type: Optional[str] = None,
         url: Optional[str] = None,
         schema: Optional[List[str]] = None,
@@ -48,6 +51,7 @@ class DatabaseService:
     ) -> Dict:
         db_link = self.database_link_dao.update_database_link(
             link_id=link_id,
+            name=name,
             db_type=db_type,
             url=url,
             schema=schema,

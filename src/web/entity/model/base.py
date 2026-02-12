@@ -102,6 +102,8 @@ def _run_lightweight_migrations(engine: Engine) -> None:
         rows = conn.execute(text("PRAGMA table_info(database_links)")).fetchall()
         columns = {str(r[1]) for r in rows}  # cid, name, type, notnull, dflt_value, pk
 
+        if "name" not in columns:
+            conn.execute(text("ALTER TABLE database_links ADD COLUMN name TEXT NOT NULL DEFAULT ''"))
         if "db_username" not in columns:
             conn.execute(text("ALTER TABLE database_links ADD COLUMN db_username TEXT NULL"))
         if "db_password" not in columns:

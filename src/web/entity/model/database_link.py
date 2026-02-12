@@ -31,6 +31,7 @@ class DatabaseLink(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
     type = Column(String(16), nullable=False)
     url = Column(String(1024), nullable=False)
     db_username = Column(String(256), nullable=True)
@@ -55,6 +56,13 @@ class DatabaseLink(Base):
     @validates("type")
     def _validate_type(self, key, value: str) -> str:
         return _normalize_db_type(value)
+
+    @validates("name")
+    def _validate_name(self, key, value: str) -> str:
+        name = str(value or "").strip()
+        if not name:
+            raise ValueError("name must not be empty.")
+        return name
 
     @validates("url")
     def _validate_url(self, key, value: str) -> str:
@@ -111,6 +119,7 @@ class DatabaseLink(Base):
         return {
             "id": self.id,
             "user_id": self.user_id,
+            "name": self.name,
             "type": self.type,
             "url": self.url,
             "db_username": self.db_username,

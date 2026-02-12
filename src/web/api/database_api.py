@@ -74,6 +74,7 @@ def insert_database(body: DatabaseCreateRequest, request: Request):
     try:
         data = _database_service.insert_database(
             user_id=body.user_id,
+            name=body.name,
             db_type=body.type,
             url=body.url,
             schema=body.schema_list,
@@ -91,6 +92,7 @@ def update_database(link_id: int, body: DatabaseUpdateRequest, request: Request)
     try:
         data = _database_service.update_database(
             link_id=link_id,
+            name=body.name,
             db_type=body.type,
             url=body.url,
             schema=body.schema_list,

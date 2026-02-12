@@ -13,6 +13,7 @@ class DatabaseLinkDAO(BaseDAO):
     def insert_database_link(
         self,
         user_id: int,
+        name: str,
         db_type: str,
         url: str,
         schema: List[str],
@@ -26,6 +27,7 @@ class DatabaseLinkDAO(BaseDAO):
 
             db_link = DatabaseLink(
                 user_id=int(user_id),
+                name=name,
                 type=db_type,
                 url=url,
                 db_username=db_username,
@@ -52,6 +54,7 @@ class DatabaseLinkDAO(BaseDAO):
     def update_database_link(
         self,
         link_id: int,
+        name: Optional[str] = None,
         db_type: Optional[str] = None,
         url: Optional[str] = None,
         schema: Optional[List[str]] = None,
@@ -63,6 +66,8 @@ class DatabaseLinkDAO(BaseDAO):
             if db_link is None:
                 return None
 
+            if name is not None:
+                db_link.name = name
             if db_type is not None:
                 db_link.type = db_type
             if url is not None:

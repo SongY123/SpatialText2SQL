@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS database_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
     type TEXT NOT NULL CHECK (type IN ('Spatial', 'Postgis')),
     url TEXT NOT NULL,
     db_username TEXT NULL,
