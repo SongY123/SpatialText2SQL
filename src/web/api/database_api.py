@@ -5,7 +5,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..entity.request import DatabaseCreateRequest, DatabaseSchemaProbeRequest, DatabaseUpdateRequest
+from ..entity.request import (
+    DatabaseCreateRequest,
+    DatabaseSchemaProbeRequest,
+    DatabaseSqlExecuteRequest,
+    DatabaseUpdateRequest,
+)
 from ..entity.response import DatabasePublicResponse
 from ..service import DatabaseService, UserService
 from tools.db_connector import JdbcDatabaseTool
@@ -246,6 +251,32 @@ def get_sample_data(
             page_size=page_size,
         )
         return _ok(data=data, message="sample data fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{database_id}/execute")
+def execute_sql(
+    database_id: int,
+    body: DatabaseSqlExecuteRequest,
+    request: Request,
+):
+    current_user_id = _assert_login(request)
+    db = _database_service.get_database(link_id=database_id)
+    if db is None:
+        raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
+    if int(db.get("user_id")) != int(current_user_id):
+        raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+
+    try:
+        data = _database_service.execute_sql_page(
+            link_id=database_id,
+            schema=body.schema,
+            sql=body.sql,
+            page=body.page,
+            page_size=body.page_size,
+        )
+        return _ok(data=data, message="sql executed")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse
 
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
@@ -134,6 +134,47 @@ def _is_geometry_column(column_meta: Dict) -> bool:
         if name in {"geom", "geometry", "geog", "the_geom"}:
             return True
     return False
+
+
+def _normalize_binary_cell(value: Any) -> Any:
+    raw: Optional[bytes] = None
+    if isinstance(value, memoryview):
+        raw = value.tobytes()
+    elif isinstance(value, bytearray):
+        raw = bytes(value)
+    elif isinstance(value, bytes):
+        raw = value
+
+    if raw is None:
+        return value
+    if raw == b"":
+        return ""
+
+    # Keep plain text bytes readable.
+    if all((32 <= b <= 126) or b in {9, 10, 13} for b in raw):
+        return raw.decode("utf-8", errors="replace")
+
+    # Some drivers return hex-encoded bytes in bytes form.
+    candidate = raw
+    try:
+        ascii_text = raw.decode("ascii")
+        if re.fullmatch(r"[0-9A-Fa-f]+", ascii_text) and len(ascii_text) % 2 == 0:
+            candidate = bytes.fromhex(ascii_text)
+    except Exception:
+        pass
+
+    # Best effort: decode WKB/EWKB to WKT.
+    try:
+        from shapely import wkb
+
+        geom = wkb.loads(candidate)
+        return geom.wkt
+    except Exception:
+        return raw.hex()
+
+
+def _normalize_row_cells(row: Dict) -> Dict:
+    return {k: _normalize_binary_cell(v) for k, v in row.items()}
 
 
 @dataclass
@@ -340,6 +381,107 @@ class JdbcDatabaseTool:
             "total_pages": total_pages,
             "page_row_count": len(rows),
             "rows": [dict(r) for r in rows],
+        }
+
+    def execute_sql_page(
+        self,
+        schema: Optional[str],
+        sql: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict:
+        """Execute read-only SQL and return paginated rows in sample-page format."""
+        text_sql = _assert_read_only_sql(sql).rstrip().rstrip(";").strip()
+        if not text_sql:
+            raise ValueError("sql must not be empty.")
+
+        p = max(1, int(page))
+        size = max(1, min(int(page_size), 500))
+        offset = (p - 1) * size
+
+        schema_name = str(schema or "").strip() or None
+        if self.engine.dialect.name == "sqlite" and schema_name in {"main"}:
+            schema_name = None
+        if schema_name is not None:
+            schema_name = _assert_identifier(schema_name, "schema")
+
+        query_sql = f"SELECT * FROM ({text_sql}) AS _q"
+        count_sql = f"SELECT COUNT(*) AS cnt FROM ({text_sql}) AS _q"
+        data_sql_default = f"{query_sql} LIMIT :limit OFFSET :offset"
+
+        def _set_schema_if_needed(conn) -> None:
+            if self.engine.dialect.name == "postgresql" and schema_name:
+                conn.execute(text(f"SET LOCAL search_path TO {_quote_ident(schema_name)}, public"))
+
+        with self.engine.begin() as conn:
+            _set_schema_if_needed(conn)
+            probe_result = conn.execute(text(f"{query_sql} LIMIT 0"))
+            column_names = [str(c) for c in probe_result.keys()]
+
+            data_sql = data_sql_default
+            if self.engine.dialect.name == "postgresql" and column_names:
+                desc = None
+                cursor = getattr(probe_result, "cursor", None)
+                if cursor is not None:
+                    desc = getattr(cursor, "description", None)
+
+                geometry_col_indexes = set()
+                if desc:
+                    oid_values = []
+                    for item in desc:
+                        try:
+                            oid_values.append(int(item[1]))
+                        except Exception:
+                            continue
+
+                    if oid_values:
+                        oid_list = ", ".join(str(x) for x in sorted(set(oid_values)))
+                        type_rows = conn.execute(
+                            text(f"SELECT oid, typname FROM pg_type WHERE oid IN ({oid_list})"),
+                        ).fetchall()
+                        type_map = {int(r[0]): str(r[1]).lower() for r in type_rows}
+                        for idx, item in enumerate(desc):
+                            try:
+                                oid = int(item[1])
+                            except Exception:
+                                continue
+                            if type_map.get(oid) in {"geometry", "geography"}:
+                                geometry_col_indexes.add(idx)
+
+                if geometry_col_indexes:
+                    select_parts = []
+                    for idx, col_name in enumerate(column_names):
+                        alias = _quote_ident(col_name)
+                        col_expr = f"_q.{alias}"
+                        if idx in geometry_col_indexes:
+                            select_parts.append(f"ST_AsText({col_expr}) AS {alias}")
+                        else:
+                            select_parts.append(f"{col_expr} AS {alias}")
+                    select_clause = ", ".join(select_parts)
+                    data_sql = f"SELECT {select_clause} FROM ({text_sql}) AS _q LIMIT :limit OFFSET :offset"
+
+            _set_schema_if_needed(conn)
+            total = conn.execute(text(count_sql)).scalar()
+            _set_schema_if_needed(conn)
+            rows = conn.execute(
+                text(data_sql),
+                {"limit": size, "offset": offset},
+            ).mappings().all()
+
+        total_count = int(total) if total is not None else 0
+        total_pages = (total_count + size - 1) // size if total_count > 0 else 0
+
+        return {
+            "schema": schema if schema is not None else (schema_name or ""),
+            "name": "sql_result",
+            "type": "query",
+            "page": p,
+            "page_size": size,
+            "column_names": column_names,
+            "total": total_count,
+            "total_pages": total_pages,
+            "page_row_count": len(rows),
+            "rows": [_normalize_row_cells(dict(r)) for r in rows],
         }
 
     def execute_sql(self, sql: str, limit: int = 200) -> Dict:

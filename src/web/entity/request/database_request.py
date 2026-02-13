@@ -88,3 +88,10 @@ class DatabaseSchemaProbeRequest(BaseModel):
         if low not in {"postgis", "spatial"}:
             raise ValueError("type must be Spatial or Postgis")
         return "Postgis" if low == "postgis" else "Spatial"
+
+
+class DatabaseSqlExecuteRequest(BaseModel):
+    schema: str = Field(..., min_length=1, max_length=128)
+    sql: str = Field(..., min_length=1, max_length=200000)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=500)

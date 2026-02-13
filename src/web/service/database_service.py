@@ -191,6 +191,36 @@ class DatabaseService:
         finally:
             tool.close()
 
+    def execute_sql_page(
+        self,
+        link_id: int,
+        schema: str,
+        sql: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict:
+        row = self.database_link_dao.get_database_link_by_id(link_id=link_id)
+        if row is None:
+            raise ValueError(f"database link not found: link_id={link_id}")
+
+        jdbc_url = self._patch_jdbc_auth(
+            jdbc_url=row.url,
+            db_type=row.type,
+            username=row.db_username,
+            password=row.db_password,
+        )
+        tool = JdbcDatabaseTool(jdbc_url=jdbc_url)
+        try:
+            payload = tool.execute_sql_page(
+                schema=schema,
+                sql=sql,
+                page=page,
+                page_size=page_size,
+            )
+            return payload
+        finally:
+            tool.close()
+
     def _refresh_user_sessions(self, user_id: int) -> None:
         user = self.user_dao.get_user_by_id(user_id=user_id)
         if user is None:
