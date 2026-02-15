@@ -10,6 +10,7 @@ Requirements:
 1) SQL generation:
    - Use candidate tables/columns/join options from DBContextBundle.
    - Use PostGIS function guidance from KnowledgeBundle.
+   - If runtime_context is provided, prefer schema_name and table_list/view_list as hard scope unless evidence shows they are invalid.
 2) Safety guardrails (mandatory):
    - Read-only only, no DDL/DML.
    - Enforce LIMIT (default 100 unless smaller requested).

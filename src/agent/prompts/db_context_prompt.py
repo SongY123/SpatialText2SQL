@@ -18,6 +18,7 @@ Constraints:
 - Read-only only.
 - Prefer catalog and tiny samples.
 - Keep output concise and actionable.
+- If runtime_context contains schema_name/table_list/view_list, prioritize those objects first and keep candidate tables in that scope.
 
 Output format:
 - Return ONE JSON object in DBContextBundle schema, no extra text.

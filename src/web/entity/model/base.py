@@ -93,6 +93,16 @@ def _run_lightweight_migrations(engine: Engine) -> None:
         return
 
     with engine.begin() as conn:
+        users_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='users' LIMIT 1")
+        ).scalar()
+        if users_exists:
+            user_rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+            user_columns = {str(r[1]) for r in user_rows}
+            if "role" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"))
+            conn.execute(text("UPDATE users SET role = 'user' WHERE role IS NULL OR TRIM(role) = ''"))
+
         table_exists = conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='database_links' LIMIT 1")
         ).scalar()

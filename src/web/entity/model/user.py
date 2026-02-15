@@ -13,12 +13,21 @@ def _utc_now() -> datetime:
     return datetime.utcnow()
 
 
+SUPPORTED_USER_ROLES = {"user", "admin"}
+
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(128), nullable=False, unique=True, index=True)
     password = Column(String(256), nullable=False)  # plain text by requirement
+    role = Column(
+        String(16),
+        nullable=False,
+        default="user",
+        server_default=text("'user'"),
+    )
     insert_time = Column(
         DateTime,
         nullable=False,
@@ -53,15 +62,22 @@ class User(Base):
             raise ValueError("password must not be empty.")
         return raw
 
+    @validates("role")
+    def _validate_role(self, key, value: str) -> str:
+        role = str(value or "").strip().lower()
+        if role not in SUPPORTED_USER_ROLES:
+            raise ValueError("role must be one of: user, admin")
+        return role
+
     def to_dict(self, include_db_links: bool = False) -> Dict:
         payload = {
             "id": self.id,
             "username": self.username,
             "password": self.password,
+            "role": self.role,
             "insert_time": self.insert_time.isoformat() if self.insert_time else None,
             "update_time": self.update_time.isoformat() if self.update_time else None,
         }
         if include_db_links:
             payload["db_links"] = [link.to_dict() for link in self.db_links]
         return payload
-

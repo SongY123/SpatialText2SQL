@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
     insert_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -46,5 +47,8 @@ BEGIN
     WHERE id = OLD.id;
 END;
 
-INSERT OR IGNORE INTO users (username, password)
-VALUES ('admin', 'admin');
+INSERT OR IGNORE INTO users (username, password, role)
+VALUES ('user', 'user', 'user');
+
+INSERT OR IGNORE INTO users (username, password, role)
+VALUES ('admin', 'admin', 'admin');

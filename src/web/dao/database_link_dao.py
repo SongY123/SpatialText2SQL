@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .base_dao import BaseDAO
 from ..entity.model import DatabaseLink, User
@@ -50,6 +50,12 @@ class DatabaseLinkDAO(BaseDAO):
                 stmt = stmt.where(DatabaseLink.user_id == int(user_id))
             stmt = stmt.order_by(DatabaseLink.id.asc())
             return list(session.execute(stmt).scalars().all())
+
+    def count_database_links(self) -> int:
+        with self.session_scope() as session:
+            stmt = select(func.count(DatabaseLink.id))
+            cnt = session.execute(stmt).scalar()
+            return int(cnt or 0)
 
     def update_database_link(
         self,

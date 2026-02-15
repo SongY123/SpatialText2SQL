@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from web.api import auth_router, database_router, user_router
+from web.api import admin_router, auth_router, chat_router, database_router, user_router
 from web.entity.model import create_all_tables, get_engine, init_engine
 from utils.config_loader import ConfigLoader, get_config
 
@@ -86,6 +86,8 @@ app.add_middleware(
 app.include_router(user_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(database_router, prefix="/api")
+app.include_router(chat_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 
 @app.get("/health")

@@ -21,6 +21,7 @@ Hard constraints:
 - Read-only SQL only.
 - Never output DDL/DML (DROP/DELETE/UPDATE/INSERT/TRUNCATE).
 - Keep safety defaults (LIMIT and timeout).
+- If runtime_context is provided (database_id/schema_name/table_list/view_list), prioritize it in planning and avoid out-of-scope objects.
 
 Operational response contract:
 - During planning rounds, output a JSON object:

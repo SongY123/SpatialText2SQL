@@ -12,14 +12,13 @@ from ..entity.request import (
     DatabaseUpdateRequest,
 )
 from ..entity.response import DatabasePublicResponse
-from ..service import DatabaseService, UserService
+from ..service import DatabaseService
 from tools.db_connector import JdbcDatabaseTool
+from utils.auth_guard import assert_login as _assert_login
 
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 _database_service = DatabaseService()
-_user_service = UserService()
-SESSION_COOKIE_KEY = "spatial_session_id"
 
 
 def _ok(data=None, message: str = "ok"):
@@ -32,20 +31,6 @@ def _ok(data=None, message: str = "ok"):
 
 def _to_public_database(payload):
     return DatabasePublicResponse.from_dict(payload).to_dict()
-
-
-def _assert_login(request: Request) -> int:
-    session_id = request.cookies.get(SESSION_COOKIE_KEY)
-    if not session_id:
-        raise HTTPException(status_code=401, detail="Not logged in.")
-    payload = _user_service.get_session(session_id=session_id)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Not logged in.")
-    user = payload.get("user") or {}
-    user_id = user.get("id")
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Invalid session.")
-    return int(user_id)
 
 
 def _patch_jdbc_auth(jdbc_url: str, db_type: str, username: Optional[str], password: Optional[str]) -> str:

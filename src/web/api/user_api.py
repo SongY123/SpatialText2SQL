@@ -24,7 +24,11 @@ def _ok(data=None, message: str = "ok"):
 @router.post("")
 def insert_user(body: UserCreateRequest):
     try:
-        data = _user_service.insert_user(username=body.username, password=body.password)
+        data = _user_service.insert_user(
+            username=body.username,
+            password=body.password,
+            role=body.role,
+        )
         return _ok(data=data, message="user inserted")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -37,6 +41,7 @@ def update_user(user_id: int, body: UserUpdateRequest):
             user_id=user_id,
             username=body.username,
             password=body.password,
+            role=body.role,
         )
         return _ok(data=data, message="user updated")
     except Exception as exc:

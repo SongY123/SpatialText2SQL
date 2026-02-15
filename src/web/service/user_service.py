@@ -17,8 +17,8 @@ class UserService:
         self.database_link_dao = database_link_dao or DatabaseLinkDAO()
         self.session_service = session_service or get_global_session_service()
 
-    def insert_user(self, username: str, password: str) -> Dict:
-        user = self.user_dao.insert_user(username=username, password=password)
+    def insert_user(self, username: str, password: str, role: str = "user") -> Dict:
+        user = self.user_dao.insert_user(username=username, password=password, role=role)
         return user.to_dict()
 
     def update_user(
@@ -26,8 +26,14 @@ class UserService:
         user_id: int,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        role: Optional[str] = None,
     ) -> Dict:
-        user = self.user_dao.update_user(user_id=user_id, username=username, password=password)
+        user = self.user_dao.update_user(
+            user_id=user_id,
+            username=username,
+            password=password,
+            role=role,
+        )
         if user is None:
             raise ValueError(f"user not found: user_id={user_id}")
 
@@ -53,6 +59,7 @@ class UserService:
 
         db_links = self.database_link_dao.list_database_links(user_id=user.id)
         user_payload = user.to_dict()
+        role = str(user_payload.get("role") or "user")
         links_payload = [x.to_dict() for x in db_links]
         session_id = self.session_service.create_session(
             {
@@ -62,7 +69,12 @@ class UserService:
         )
         return {
             "session_id": session_id,
-            "user": user_payload,
+            "role": role,
+            "user": {
+                "id": user_payload.get("id"),
+                "username": user_payload.get("username"),
+                "role": role,
+            },
             "database_links": links_payload,
         }
 

@@ -12,6 +12,7 @@ Validation checklist:
 2) Semantic correctness:
    - check required filters, aggregation, ordering, top-N, time window.
    - for spatial logic: SRID alignment, geometry vs geography units, predicate direction.
+   - if runtime_context exists, ensure SQL stays within requested schema/object scope.
 3) Result-aware correctness:
    - if 0 rows or too many rows, evaluate plausibility.
    - identify likely causes: missing filters, join explosion, SRID/unit mismatch.

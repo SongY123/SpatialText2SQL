@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -12,9 +12,9 @@ from ..entity.model import User
 
 
 class UserDAO(BaseDAO):
-    def insert_user(self, username: str, password: str) -> User:
+    def insert_user(self, username: str, password: str, role: str = "user") -> User:
         with self.session_scope() as session:
-            user = User(username=username, password=password)
+            user = User(username=username, password=password, role=role)
             session.add(user)
             try:
                 session.flush()
@@ -37,6 +37,12 @@ class UserDAO(BaseDAO):
             stmt = select(User).order_by(User.id.asc())
             return list(session.execute(stmt).scalars().all())
 
+    def count_users(self) -> int:
+        with self.session_scope() as session:
+            stmt = select(func.count(User.id))
+            cnt = session.execute(stmt).scalar()
+            return int(cnt or 0)
+
     def get_user_with_database_links(self, user_id: int) -> Optional[User]:
         with self.session_scope() as session:
             stmt = (
@@ -51,6 +57,7 @@ class UserDAO(BaseDAO):
         user_id: int,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        role: Optional[str] = None,
     ) -> Optional[User]:
         with self.session_scope() as session:
             user = session.get(User, int(user_id))
@@ -61,6 +68,8 @@ class UserDAO(BaseDAO):
                 user.username = username
             if password is not None:
                 user.password = password
+            if role is not None:
+                user.role = role
 
             user.update_time = datetime.utcnow()
             session.add(user)

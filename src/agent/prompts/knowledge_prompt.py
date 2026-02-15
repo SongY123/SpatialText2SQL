@@ -18,6 +18,7 @@ Constraints:
 - Output ONE JSON object in KnowledgeBundle schema.
 - No extra commentary outside JSON.
 - Avoid long quotations; summarize cleanly.
+- If runtime_context is provided, prioritize knowledge snippets relevant to its schema/table/view scope.
 
 KnowledgeBundle JSON Example:
 {

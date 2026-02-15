@@ -85,6 +85,10 @@ class SessionService:
                 updated += 1
         return updated
 
+    def count_sessions(self) -> int:
+        with self._lock:
+            return len(self._sessions)
+
 
 _GLOBAL_SESSION_SERVICE: Optional[SessionService] = None
 
