@@ -142,7 +142,7 @@ def run_db_import(config: Dict) -> None:
         from db_Importer import shp2db  # script mode
     except ImportError:
         try:
-            from src.preprocess.db_Importer import shp2db  # package mode
+            from preprocess.db_Importer import shp2db  # package mode
         except ImportError as exc:
             raise RuntimeError(
                 "Failed to import db_Importer. Please install geopandas/fiona/sqlalchemy first."

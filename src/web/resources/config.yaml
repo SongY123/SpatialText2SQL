@@ -7,6 +7,24 @@ database:
   init_sql_path: "src/web/resources/db/init_db.sql"
   db_path: "spatial_agent.db"
 
+# Agent runtime config (used by web + agent)
+agent:
+  max_rounds: 3
+
+# Retrieval config (copied from preprocess settings; used by web + agent)
+vectorize:
+  chroma_path: "../../data/indexes/vector/chroma"
+  collection_name: "postgis_extracted"
+  model_name: "Qwen/Qwen3-Embedding-0.6B"
+  normalize_embeddings: true
+  batch_size: 8
+  model_kwargs: {}
+  tokenizer_kwargs: {}
+
+keyword_search:
+  output_path: "../../data/indexes/keyword/keyword_index.json"
+  min_token_length: 2
+
 # 日志配置
 logging:
   level: INFO

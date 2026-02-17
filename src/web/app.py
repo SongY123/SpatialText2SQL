@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SpatialText2SQL Web API",
+    title="SpatialSQL Web API",
     version="1.0.0",
     lifespan=lifespan,
 )

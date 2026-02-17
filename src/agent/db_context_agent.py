@@ -7,7 +7,7 @@ from agentscope.formatter import FormatterBase
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
-from src.agent.prompts import DB_CONTEXT_PROMPT
+from agent.prompts import DB_CONTEXT_PROMPT
 
 
 class DBContextAgent(ReActAgent):

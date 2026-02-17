@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 try:
-    from src.utils.logger import get_logger
+    from utils.logger import get_logger
     logger = get_logger("preprocess.db_importer")
 except Exception:
     logging.basicConfig(

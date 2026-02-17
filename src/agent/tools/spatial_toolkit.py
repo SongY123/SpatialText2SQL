@@ -7,7 +7,7 @@ import yaml
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse, Toolkit
 
-from src.tools import ChromaVectorStore, GoogleWebSearcher, JdbcDatabaseTool, JsonKeywordSearcher
+from tools import ChromaVectorStore, GoogleWebSearcher, JdbcDatabaseTool, JsonKeywordSearcher
 
 
 def _to_tool_response(payload: Dict) -> ToolResponse:
@@ -37,8 +37,6 @@ class SpatialText2SQLToolRegistry:
     vector_normalize_embeddings: bool = True
     vector_model_kwargs: Optional[Dict] = None
     vector_tokenizer_kwargs: Optional[Dict] = None
-    google_api_key: Optional[str] = None
-    google_cse_id: Optional[str] = None
 
     _db_tool: Optional[JdbcDatabaseTool] = None
     _keyword_searcher: Optional[JsonKeywordSearcher] = None
@@ -46,15 +44,13 @@ class SpatialText2SQLToolRegistry:
     _web_searcher: Optional[GoogleWebSearcher] = None
 
     @classmethod
-    def from_preprocess_config(
+    def from_agent_config(
         cls,
-        preprocess_config_path: str = "config/preprocess.yml",
+        config_path: str = "src/web/resources/config.yaml",
         jdbc_url: Optional[str] = None,
-        google_api_key: Optional[str] = None,
-        google_cse_id: Optional[str] = None,
     ) -> "SpatialText2SQLToolRegistry":
         root = Path(__file__).resolve().parents[3]
-        cfg_path = Path(preprocess_config_path)
+        cfg_path = Path(config_path)
         if not cfg_path.is_absolute():
             cfg_path = root / cfg_path
         cfg = {}
@@ -82,8 +78,6 @@ class SpatialText2SQLToolRegistry:
             vector_normalize_embeddings=bool(vec_cfg.get("normalize_embeddings", True)),
             vector_model_kwargs=vec_cfg.get("model_kwargs") or {},
             vector_tokenizer_kwargs=vec_cfg.get("tokenizer_kwargs") or {},
-            google_api_key=google_api_key,
-            google_cse_id=google_cse_id,
         )
 
     def _get_db_tool(self) -> JdbcDatabaseTool:
@@ -120,10 +114,7 @@ class SpatialText2SQLToolRegistry:
 
     def _get_web_searcher(self) -> GoogleWebSearcher:
         if self._web_searcher is None:
-            self._web_searcher = GoogleWebSearcher(
-                api_key=self.google_api_key,
-                cse_id=self.google_cse_id,
-            )
+            self._web_searcher = GoogleWebSearcher()
         return self._web_searcher
 
     async def jdbc_introspect_catalog(

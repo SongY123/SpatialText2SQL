@@ -30,7 +30,7 @@ def _build_system_for_jdbc(jdbc_url: str):
     build_ollama_system = None
     build_openai_system = None
 
-    for module_name in ("src.agent.system_factory", "agent.system_factory"):
+    for module_name in ("agent.system_factory", "src.agent.system_factory"):
         try:
             m = importlib.import_module(module_name)
             build_dashscope_system = getattr(m, "build_dashscope_system")
@@ -43,10 +43,8 @@ def _build_system_for_jdbc(jdbc_url: str):
         raise RuntimeError("failed to import agent system factory; check agentscope environment.")
 
     provider = str(get_config("model.provider", "dashscope")).strip().lower()
-    preprocess_config_path = str(get_config("preprocess.config_path", "config/preprocess.yml"))
     max_rounds = int(get_config("agent.max_rounds", 3))
-    google_api_key = get_config("search.google_api_key")
-    google_cse_id = get_config("search.google_cse_id")
+    web_config_path = str(get_config("web.config_path", "src/web/resources/config.yaml"))
 
     if provider == "ollama":
         model_name = str(get_config("model.ollama.model_name", "qwen3-coder:30b-a3b-fp16"))
@@ -56,10 +54,8 @@ def _build_system_for_jdbc(jdbc_url: str):
         return build_ollama_system(
             model_name=model_name,
             jdbc_url=jdbc_url,
-            preprocess_config_path=preprocess_config_path,
+            config_path=web_config_path,
             base_url=base_url or None,
-            google_api_key=google_api_key,
-            google_cse_id=google_cse_id,
             max_rounds=max_rounds,
         )
 
@@ -69,10 +65,8 @@ def _build_system_for_jdbc(jdbc_url: str):
         return build_openai_system(
             model_name=model_name,
             jdbc_url=jdbc_url,
-            preprocess_config_path=preprocess_config_path,
+            config_path=web_config_path,
             api_key=api_key,
-            google_api_key=google_api_key,
-            google_cse_id=google_cse_id,
             max_rounds=max_rounds,
         )
 
@@ -82,9 +76,7 @@ def _build_system_for_jdbc(jdbc_url: str):
         model_name=model_name,
         api_key=api_key,
         jdbc_url=jdbc_url,
-        preprocess_config_path=preprocess_config_path,
-        google_api_key=google_api_key,
-        google_cse_id=google_cse_id,
+        config_path=web_config_path,
         max_rounds=max_rounds,
     )
 

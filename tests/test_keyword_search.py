@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from src.tools.keyword_search import JsonKeywordSearcher
+from tools.keyword_search import JsonKeywordSearcher
 
 
 class TestJsonKeywordSearcher(unittest.TestCase):

@@ -7,7 +7,7 @@ from agentscope.formatter import FormatterBase
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
-from src.agent.prompts import KNOWLEDGE_PROMPT
+from agent.prompts import KNOWLEDGE_PROMPT
 
 
 class KnowledgeAgent(ReActAgent):

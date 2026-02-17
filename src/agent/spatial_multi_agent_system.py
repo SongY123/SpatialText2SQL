@@ -11,12 +11,12 @@ from agentscope.message import Msg
 from agentscope.model import ChatModelBase
 from agentscope.pipeline import MsgHub
 
-from src.agent.db_context_agent import DBContextAgent
-from src.agent.knowledge_agent import KnowledgeAgent
-from src.agent.orchestrator_agent import OrchestratorAgent
-from src.agent.sql_builder_agent import SQLBuilderAgent
-from src.agent.sql_reviewer_agent import SQLReviewerAgent
-from src.agent.tools import SpatialText2SQLToolRegistry, build_role_toolkits
+from agent.db_context_agent import DBContextAgent
+from agent.knowledge_agent import KnowledgeAgent
+from agent.orchestrator_agent import OrchestratorAgent
+from agent.sql_builder_agent import SQLBuilderAgent
+from agent.sql_reviewer_agent import SQLReviewerAgent
+from agent.tools import SpatialText2SQLToolRegistry, build_role_toolkits
 
 
 def _msg_to_text(msg: Msg) -> str:
