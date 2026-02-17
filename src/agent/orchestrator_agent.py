@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from agentscope.agent import ReActAgent
 from agentscope.formatter import FormatterBase
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
 from agent.prompts import ORCHESTRATOR_PROMPT
+from agent.streaming_react_agent import StreamingReActAgent
 
 
-class OrchestratorAgent(ReActAgent):
+class OrchestratorAgent(StreamingReActAgent):
     def __init__(
         self,
         model: ChatModelBase,

@@ -1,13 +1,21 @@
 import json
+import asyncio
+import contextvars
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import yaml
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse, Toolkit
 
 from tools import ChromaVectorStore, GoogleWebSearcher, JdbcDatabaseTool, JsonKeywordSearcher
+
+
+_CTX_AGENT_NAME: contextvars.ContextVar[str] = contextvars.ContextVar("tool_ctx_agent_name", default="")
+_CTX_ROUND: contextvars.ContextVar[int] = contextvars.ContextVar("tool_ctx_round", default=0)
+_CTX_STAGE: contextvars.ContextVar[str] = contextvars.ContextVar("tool_ctx_stage", default="")
 
 
 def _to_tool_response(payload: Dict) -> ToolResponse:
@@ -42,6 +50,7 @@ class SpatialText2SQLToolRegistry:
     _keyword_searcher: Optional[JsonKeywordSearcher] = None
     _vector_store: Optional[ChromaVectorStore] = None
     _web_searcher: Optional[GoogleWebSearcher] = None
+    _tool_event_callback: Optional[Callable[[Dict[str, Any]], Any]] = None
 
     @classmethod
     def from_agent_config(
@@ -117,6 +126,45 @@ class SpatialText2SQLToolRegistry:
             self._web_searcher = GoogleWebSearcher()
         return self._web_searcher
 
+    def set_tool_event_callback(self, callback: Optional[Callable[[Dict[str, Any]], Any]]) -> None:
+        self._tool_event_callback = callback
+
+    def push_tool_stream_context(self, agent_name: str, round_id: int, stage: str) -> Tuple[contextvars.Token, ...]:
+        return (
+            _CTX_AGENT_NAME.set(str(agent_name or "")),
+            _CTX_ROUND.set(int(round_id or 0)),
+            _CTX_STAGE.set(str(stage or "")),
+        )
+
+    def pop_tool_stream_context(self, tokens: Tuple[contextvars.Token, ...]) -> None:
+        if not tokens:
+            return
+        if len(tokens) >= 1:
+            _CTX_AGENT_NAME.reset(tokens[0])
+        if len(tokens) >= 2:
+            _CTX_ROUND.reset(tokens[1])
+        if len(tokens) >= 3:
+            _CTX_STAGE.reset(tokens[2])
+
+    async def _emit_tool_event(self, tool_name: str, status: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        callback = self._tool_event_callback
+        if callback is None:
+            return
+        payload: Dict[str, Any] = {
+            "agent": _CTX_AGENT_NAME.get() or "",
+            "round": _CTX_ROUND.get() or 0,
+            "stage": _CTX_STAGE.get() or "",
+            "tool_name": str(tool_name),
+            "tool_status": str(status),
+            "detail": detail or {},
+        }
+        try:
+            maybe = callback(payload)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        except Exception:
+            return
+
     async def jdbc_introspect_catalog(
         self,
         schema_name: Optional[str] = None,
@@ -130,13 +178,33 @@ class SpatialText2SQLToolRegistry:
             include_views (bool):
                 Whether to include views.
         """
+        await self._emit_tool_event(
+            "jdbc_introspect_catalog",
+            "start",
+            {"schema_name": schema_name, "include_views": bool(include_views)},
+        )
+        t0 = time.perf_counter()
         try:
-            payload = self._get_db_tool().introspect_catalog(
+            payload = await asyncio.to_thread(
+                self._get_db_tool().introspect_catalog,
                 schema=schema_name,
                 include_views=include_views,
             )
+            await self._emit_tool_event(
+                "jdbc_introspect_catalog",
+                "end",
+                {
+                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                    "tables": len((payload or {}).get("tables", []) if isinstance(payload, dict) else []),
+                },
+            )
             return _ok({"result": payload})
         except Exception as exc:
+            await self._emit_tool_event(
+                "jdbc_introspect_catalog",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def jdbc_estimate_rowcount(
@@ -152,13 +220,30 @@ class SpatialText2SQLToolRegistry:
             schema_name (str | None):
                 Optional schema name.
         """
+        await self._emit_tool_event(
+            "jdbc_estimate_rowcount",
+            "start",
+            {"table": table, "schema_name": schema_name},
+        )
+        t0 = time.perf_counter()
         try:
-            payload = self._get_db_tool().estimate_rowcount(
+            payload = await asyncio.to_thread(
+                self._get_db_tool().estimate_rowcount,
                 table_name=table,
                 schema=schema_name,
             )
+            await self._emit_tool_event(
+                "jdbc_estimate_rowcount",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            )
             return _ok({"result": payload})
         except Exception as exc:
+            await self._emit_tool_event(
+                "jdbc_estimate_rowcount",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def jdbc_topk_distinct(
@@ -180,15 +265,32 @@ class SpatialText2SQLToolRegistry:
             schema_name (str | None):
                 Optional schema name.
         """
+        await self._emit_tool_event(
+            "jdbc_topk_distinct",
+            "start",
+            {"table": table, "column": column, "k": int(k), "schema_name": schema_name},
+        )
+        t0 = time.perf_counter()
         try:
-            payload = self._get_db_tool().topk_distinct(
+            payload = await asyncio.to_thread(
+                self._get_db_tool().topk_distinct,
                 table_name=table,
                 column_name=column,
                 k=k,
                 schema=schema_name,
             )
+            await self._emit_tool_event(
+                "jdbc_topk_distinct",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            )
             return _ok({"result": payload})
         except Exception as exc:
+            await self._emit_tool_event(
+                "jdbc_topk_distinct",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def jdbc_execute_readonly(
@@ -210,15 +312,41 @@ class SpatialText2SQLToolRegistry:
             max_rows (int):
                 Maximum number of rows to return.
         """
+        await self._emit_tool_event(
+            "jdbc_execute_readonly",
+            "start",
+            {
+                "timeout_ms": int(timeout_ms),
+                "max_rows": int(max_rows),
+                "sql_preview": str(sql or "")[:240],
+            },
+        )
+        t0 = time.perf_counter()
         try:
-            payload = self._get_db_tool().execute_readonly(
+            payload = await asyncio.to_thread(
+                self._get_db_tool().execute_readonly,
                 sql=sql,
                 params=params,
                 timeout_ms=timeout_ms,
                 max_rows=max_rows,
             )
+            result = (payload or {}) if isinstance(payload, dict) else {}
+            await self._emit_tool_event(
+                "jdbc_execute_readonly",
+                "end",
+                {
+                    "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                    "status": result.get("status"),
+                    "row_count": result.get("row_count"),
+                },
+            )
             return _ok({"result": payload})
         except Exception as exc:
+            await self._emit_tool_event(
+                "jdbc_execute_readonly",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def jdbc_explain(
@@ -234,10 +362,26 @@ class SpatialText2SQLToolRegistry:
             params (dict | None):
                 Optional bind parameters.
         """
+        await self._emit_tool_event(
+            "jdbc_explain",
+            "start",
+            {"sql_preview": str(sql or "")[:240]},
+        )
+        t0 = time.perf_counter()
         try:
-            payload = self._get_db_tool().explain(sql=sql, params=params)
+            payload = await asyncio.to_thread(self._get_db_tool().explain, sql=sql, params=params)
+            await self._emit_tool_event(
+                "jdbc_explain",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000)},
+            )
             return _ok({"result": payload})
         except Exception as exc:
+            await self._emit_tool_event(
+                "jdbc_explain",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def keyword_search(self, query: str, k: int = 10) -> ToolResponse:
@@ -249,10 +393,22 @@ class SpatialText2SQLToolRegistry:
             k (int):
                 Top-k results.
         """
+        await self._emit_tool_event("keyword_search", "start", {"query": str(query or "")[:180], "k": int(k)})
+        t0 = time.perf_counter()
         try:
-            items = self._get_keyword_searcher().search(query=query, top_k=k)
+            items = await asyncio.to_thread(self._get_keyword_searcher().search, query=query, top_k=k)
+            await self._emit_tool_event(
+                "keyword_search",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "count": len(items)},
+            )
             return _ok({"items": items, "count": len(items)})
         except Exception as exc:
+            await self._emit_tool_event(
+                "keyword_search",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def vector_similarity_search(self, query: str, k: int = 10) -> ToolResponse:
@@ -264,10 +420,26 @@ class SpatialText2SQLToolRegistry:
             k (int):
                 Top-k results.
         """
+        await self._emit_tool_event(
+            "vector_similarity_search",
+            "start",
+            {"query": str(query or "")[:180], "k": int(k)},
+        )
+        t0 = time.perf_counter()
         try:
-            items = self._get_vector_store().search(query=query, top_k=k)
+            items = await asyncio.to_thread(self._get_vector_store().search, query=query, top_k=k)
+            await self._emit_tool_event(
+                "vector_similarity_search",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "count": len(items)},
+            )
             return _ok({"items": items, "count": len(items)})
         except Exception as exc:
+            await self._emit_tool_event(
+                "vector_similarity_search",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def postgis_docs_search(self, query: str, k: int = 8) -> ToolResponse:
@@ -279,9 +451,11 @@ class SpatialText2SQLToolRegistry:
             k (int):
                 Top-k for each retriever before merge.
         """
+        await self._emit_tool_event("postgis_docs_search", "start", {"query": str(query or "")[:180], "k": int(k)})
+        t0 = time.perf_counter()
         try:
-            v_items = self._get_vector_store().search(query=query, top_k=k)
-            k_items = self._get_keyword_searcher().search(query=query, top_k=k)
+            v_items = await asyncio.to_thread(self._get_vector_store().search, query=query, top_k=k)
+            k_items = await asyncio.to_thread(self._get_keyword_searcher().search, query=query, top_k=k)
 
             merged: Dict[str, Dict] = {}
             for item in v_items:
@@ -320,8 +494,19 @@ class SpatialText2SQLToolRegistry:
                     float(x["vector_distance"]) if x.get("vector_distance") is not None else float("inf"),
                 ),
             )
-            return _ok({"items": items[: max(1, int(k))], "count": len(items)})
+            out_items = items[: max(1, int(k))]
+            await self._emit_tool_event(
+                "postgis_docs_search",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "count": len(out_items)},
+            )
+            return _ok({"items": out_items, "count": len(items)})
         except Exception as exc:
+            await self._emit_tool_event(
+                "postgis_docs_search",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     async def web_search(self, query: str, k: int = 5) -> ToolResponse:
@@ -333,10 +518,22 @@ class SpatialText2SQLToolRegistry:
             k (int):
                 Top-k results.
         """
+        await self._emit_tool_event("web_search", "start", {"query": str(query or "")[:180], "k": int(k)})
+        t0 = time.perf_counter()
         try:
-            items = self._get_web_searcher().search(query=query, top_k=k)
+            items = await asyncio.to_thread(self._get_web_searcher().search, query=query, top_k=k)
+            await self._emit_tool_event(
+                "web_search",
+                "end",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "count": len(items)},
+            )
             return _ok({"items": items, "count": len(items)})
         except Exception as exc:
+            await self._emit_tool_event(
+                "web_search",
+                "error",
+                {"elapsed_ms": int((time.perf_counter() - t0) * 1000), "error": str(exc)},
+            )
             return _error(exc)
 
     def register_db_context_tools(self, toolkit: Optional[Toolkit] = None) -> Toolkit:

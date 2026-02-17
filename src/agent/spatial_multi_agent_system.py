@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import suppress
 from datetime import date, datetime, time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from agentscope.formatter import FormatterBase
 from agentscope.message import Msg
@@ -350,6 +352,20 @@ def _default_knowledge_request(
 
 
 @dataclass
+class _AgentTextStreamState:
+    stream_id: str
+    chunk_index: int = 0
+    emitted_chunks: int = 0
+    emitted_chars: int = 0
+    pending: str = ""
+    cursor: str = ""
+    has_emitted_content: bool = False
+    input_closed: bool = False
+    final_emitted: bool = False
+    cumulative_mode: Optional[bool] = None
+
+
+@dataclass
 class SpatialText2SQLMultiAgentSystem:
     model: ChatModelBase
     formatter: FormatterBase
@@ -384,6 +400,82 @@ class SpatialText2SQLMultiAgentSystem:
             formatter=self.formatter,
             toolkit=toolkits["sql_reviewer"],
         )
+
+    async def _emit_tool_progress(
+        self,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]],
+        payload: Dict[str, Any],
+    ) -> None:
+        agent_name = str(payload.get("agent") or AgentName.SYSTEM)
+        detail = payload.get("detail") or {}
+        tool_name = str(payload.get("tool_name") or "")
+        tool_status = str(payload.get("tool_status") or "")
+        stage = str(payload.get("stage") or "")
+        round_id = int(payload.get("round") or 0)
+        await self._emit_agent(
+            event_callback=event_callback,
+            agent_name=agent_name,
+            agent_event_type=AgentEventType.PROGRESS,
+            payload={
+                "round": round_id,
+                "stage": stage,
+                "tool_event": {
+                    "name": tool_name,
+                    "status": tool_status,
+                    "detail": detail,
+                },
+            },
+        )
+
+    async def _run_agent_with_tool_context(
+        self,
+        agent,
+        message: Msg,
+        agent_name: str,
+        round_id: int,
+        stage: str,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    ):
+        tokens = self.tool_registry.push_tool_stream_context(
+            agent_name=agent_name,
+            round_id=round_id,
+            stage=stage,
+        )
+        stream_stage = f"{stage}_stream"
+        stream_state = _AgentTextStreamState(
+            stream_id=f"{agent_name}:{stream_stage}:{round_id}:{uuid4().hex[:12]}",
+        )
+        has_stream_callback = False
+
+        async def _on_agent_text(text: str) -> None:
+            await self._append_agent_text_stream(
+                event_callback=event_callback,
+                agent_name=agent_name,
+                round_id=round_id,
+                stage=stream_stage,
+                state=stream_state,
+                text=text,
+            )
+
+        try:
+            if hasattr(agent, "set_stream_text_callback"):
+                with suppress(Exception):
+                    agent.set_stream_text_callback(_on_agent_text)
+                    has_stream_callback = True
+            result = await agent(message)
+            streamed = await self._finalize_agent_text_stream(
+                event_callback=event_callback,
+                agent_name=agent_name,
+                round_id=round_id,
+                stage=stream_stage,
+                state=stream_state,
+            )
+            return result, streamed
+        finally:
+            if has_stream_callback:
+                with suppress(Exception):
+                    agent.set_stream_text_callback(None)
+            self.tool_registry.pop_tool_stream_context(tokens)
 
     async def _emit(
         self,
@@ -421,6 +513,231 @@ class SpatialText2SQLMultiAgentSystem:
             payload=data,
         )
 
+    async def _emit_agent_text_stream(
+        self,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]],
+        agent_name: str,
+        round_id: int,
+        stage: str,
+        text: str,
+        max_chars: int = 12000,
+        chunk_size: int = 200,
+        max_chunks: int = 200,
+    ) -> None:
+        content = str(text or "")
+        if not content.strip():
+            return
+
+        state = _AgentTextStreamState(
+            stream_id=f"{agent_name}:{stage}:{round_id}:{uuid4().hex[:12]}",
+        )
+        await self._append_agent_text_stream(
+            event_callback=event_callback,
+            agent_name=agent_name,
+            round_id=round_id,
+            stage=stage,
+            state=state,
+            text=content,
+            max_chars=max_chars,
+            chunk_size=chunk_size,
+            max_chunks=max_chunks,
+            assume_delta=True,
+        )
+        await self._finalize_agent_text_stream(
+            event_callback=event_callback,
+            agent_name=agent_name,
+            round_id=round_id,
+            stage=stage,
+            state=state,
+            chunk_size=chunk_size,
+            max_chunks=max_chunks,
+        )
+
+    @staticmethod
+    def _normalize_stream_delta(state: _AgentTextStreamState, text: str) -> str:
+        incoming = str(text or "")
+        if not incoming:
+            return ""
+        previous = state.cursor
+
+        if state.cumulative_mode is True:
+            if previous and incoming.startswith(previous):
+                state.cursor = incoming
+                return incoming[len(previous) :]
+            if previous and len(incoming) <= len(previous):
+                return ""
+            state.cursor = incoming
+            return incoming
+
+        if state.cumulative_mode is False:
+            state.cursor = incoming
+            return incoming
+
+        # Unknown mode: detect whether callback emits cumulative text or deltas.
+        if not previous:
+            state.cursor = incoming
+            return incoming
+        if incoming == previous:
+            return ""
+        if len(incoming) > len(previous) and incoming.startswith(previous):
+            state.cumulative_mode = True
+            state.cursor = incoming
+            return incoming[len(previous) :]
+        if len(incoming) < len(previous) and previous.startswith(incoming):
+            state.cumulative_mode = True
+            return ""
+
+        state.cumulative_mode = False
+        state.cursor = incoming
+        return incoming
+
+    async def _emit_agent_stream_chunk(
+        self,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]],
+        agent_name: str,
+        round_id: int,
+        stage: str,
+        state: _AgentTextStreamState,
+        delta: str,
+        is_final_chunk: bool,
+        max_chunks: int = 200,
+    ) -> bool:
+        if not is_final_chunk and max_chunks > 0 and state.emitted_chunks >= max_chunks:
+            return False
+
+        await self._emit_agent(
+            event_callback=event_callback,
+            agent_name=agent_name,
+            agent_event_type=AgentEventType.PROGRESS,
+            payload={
+                "round": round_id,
+                "stage": stage,
+                "stream_id": state.stream_id,
+                "chunk_index": state.chunk_index,
+                "is_final_chunk": is_final_chunk,
+                "delta": delta,
+            },
+        )
+        state.chunk_index += 1
+        if delta:
+            state.has_emitted_content = True
+            state.emitted_chunks += 1
+            state.emitted_chars += len(delta)
+
+        # Yield control so frontend can progressively receive chunks.
+        await asyncio.sleep(0)
+        return True
+
+    async def _append_agent_text_stream(
+        self,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]],
+        agent_name: str,
+        round_id: int,
+        stage: str,
+        state: _AgentTextStreamState,
+        text: str,
+        max_chars: int = 12000,
+        chunk_size: int = 200,
+        max_chunks: int = 200,
+        assume_delta: bool = False,
+    ) -> bool:
+        if state.input_closed:
+            return state.has_emitted_content
+
+        incoming = str(text or "")
+        if not incoming:
+            return state.has_emitted_content
+
+        delta = incoming if assume_delta else self._normalize_stream_delta(state, incoming)
+        if not delta:
+            return state.has_emitted_content
+
+        chunk_size = max(1, int(chunk_size or 1))
+        max_chars = int(max_chars or 0)
+        max_chunks = int(max_chunks or 0)
+
+        if max_chars > 0:
+            current_chars = state.emitted_chars + len(state.pending)
+            remaining = max_chars - current_chars
+            if remaining <= 0:
+                state.input_closed = True
+                return state.has_emitted_content
+            if len(delta) > remaining:
+                delta = delta[:remaining] + "\n...[stream truncated]"
+                state.input_closed = True
+
+        state.pending += delta
+        while len(state.pending) >= chunk_size:
+            piece = state.pending[:chunk_size]
+            state.pending = state.pending[chunk_size:]
+            emitted = await self._emit_agent_stream_chunk(
+                event_callback=event_callback,
+                agent_name=agent_name,
+                round_id=round_id,
+                stage=stage,
+                state=state,
+                delta=piece,
+                is_final_chunk=False,
+                max_chunks=max_chunks,
+            )
+            if not emitted:
+                state.pending = ""
+                state.input_closed = True
+                break
+
+        return state.has_emitted_content
+
+    async def _finalize_agent_text_stream(
+        self,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], Any]],
+        agent_name: str,
+        round_id: int,
+        stage: str,
+        state: _AgentTextStreamState,
+        chunk_size: int = 200,
+        max_chunks: int = 200,
+    ) -> bool:
+        if state.final_emitted:
+            return state.has_emitted_content
+
+        chunk_size = max(1, int(chunk_size or 1))
+        max_chunks = int(max_chunks or 0)
+
+        while state.pending:
+            piece = state.pending[:chunk_size]
+            state.pending = state.pending[chunk_size:]
+            emitted = await self._emit_agent_stream_chunk(
+                event_callback=event_callback,
+                agent_name=agent_name,
+                round_id=round_id,
+                stage=stage,
+                state=state,
+                delta=piece,
+                is_final_chunk=False,
+                max_chunks=max_chunks,
+            )
+            if not emitted:
+                state.pending = ""
+                break
+
+        if not state.has_emitted_content:
+            state.final_emitted = True
+            return False
+
+        await self._emit_agent_stream_chunk(
+            event_callback=event_callback,
+            agent_name=agent_name,
+            round_id=round_id,
+            stage=stage,
+            state=state,
+            delta="",
+            is_final_chunk=True,
+            max_chunks=max_chunks,
+        )
+        state.input_closed = True
+        state.final_emitted = True
+        return True
+
     async def run(
         self,
         question: str,
@@ -455,6 +772,14 @@ class SpatialText2SQLMultiAgentSystem:
             self.sql_builder_agent,
             self.sql_reviewer_agent,
         ]
+
+        async def _tool_event_handler(payload: Dict[str, Any]) -> None:
+            await self._emit_tool_progress(
+                event_callback=event_callback,
+                payload=payload,
+            )
+
+        self.tool_registry.set_tool_event_callback(_tool_event_handler)
 
         async def _run_pipeline() -> str:
             last_review: Dict[str, Any] = {}
@@ -506,14 +831,27 @@ class SpatialText2SQLMultiAgentSystem:
                         "question": q,
                     },
                 )
-                orchestrator_plan_msg = await self.orchestrator(
-                    Msg(
+                orchestrator_plan_msg, orchestrator_plan_streamed = await self._run_agent_with_tool_context(
+                    agent=self.orchestrator,
+                    message=Msg(
                         name="user",
                         role="user",
                         content=json.dumps(orchestration_input, ensure_ascii=False),
                     ),
+                    agent_name=AgentName.ORCHESTRATOR,
+                    round_id=round_id,
+                    stage="planning",
+                    event_callback=event_callback,
                 )
                 orchestrator_plan_text = _msg_to_text(orchestrator_plan_msg)
+                if not orchestrator_plan_streamed:
+                    await self._emit_agent_text_stream(
+                        event_callback=event_callback,
+                        agent_name=AgentName.ORCHESTRATOR,
+                        round_id=round_id,
+                        stage="planning_stream",
+                        text=orchestrator_plan_text,
+                    )
                 plan = _extract_first_json(orchestrator_plan_text) or {}
                 plan_summary = _extract_summary_text(orchestrator_plan_text)
                 await self._emit_agent(
@@ -577,18 +915,44 @@ class SpatialText2SQLMultiAgentSystem:
 
                 # Fanout: DB context + knowledge in parallel
                 db_task = asyncio.create_task(
-                    self.db_context_agent(
-                        Msg(name="orchestrator", role="user", content=json.dumps(db_req, ensure_ascii=False)),
+                    self._run_agent_with_tool_context(
+                        agent=self.db_context_agent,
+                        message=Msg(name="orchestrator", role="user", content=json.dumps(db_req, ensure_ascii=False)),
+                        agent_name=AgentName.DB_CONTEXT,
+                        round_id=round_id,
+                        stage="fanout",
+                        event_callback=event_callback,
                     ),
                 )
                 kb_task = asyncio.create_task(
-                    self.knowledge_agent(
-                        Msg(name="orchestrator", role="user", content=json.dumps(kb_req, ensure_ascii=False)),
+                    self._run_agent_with_tool_context(
+                        agent=self.knowledge_agent,
+                        message=Msg(name="orchestrator", role="user", content=json.dumps(kb_req, ensure_ascii=False)),
+                        agent_name=AgentName.KNOWLEDGE,
+                        round_id=round_id,
+                        stage="fanout",
+                        event_callback=event_callback,
                     ),
                 )
-                db_msg, kb_msg = await asyncio.gather(db_task, kb_task)
+                (db_msg, db_streamed), (kb_msg, kb_streamed) = await asyncio.gather(db_task, kb_task)
                 db_text = _msg_to_text(db_msg)
                 kb_text = _msg_to_text(kb_msg)
+                if not db_streamed:
+                    await self._emit_agent_text_stream(
+                        event_callback=event_callback,
+                        agent_name=AgentName.DB_CONTEXT,
+                        round_id=round_id,
+                        stage="fanout_stream",
+                        text=db_text,
+                    )
+                if not kb_streamed:
+                    await self._emit_agent_text_stream(
+                        event_callback=event_callback,
+                        agent_name=AgentName.KNOWLEDGE,
+                        round_id=round_id,
+                        stage="fanout_stream",
+                        text=kb_text,
+                    )
                 db_bundle = _extract_first_json(db_text) or {}
                 kb_bundle = _extract_first_json(kb_text) or {}
                 db_summary = _extract_summary_text(db_text)
@@ -643,14 +1007,27 @@ class SpatialText2SQLMultiAgentSystem:
                         "stage": "build_input_ready",
                     },
                 )
-                builder_msg = await self.sql_builder_agent(
-                    Msg(
+                builder_msg, builder_streamed = await self._run_agent_with_tool_context(
+                    agent=self.sql_builder_agent,
+                    message=Msg(
                         name="orchestrator",
                         role="user",
                         content=json.dumps(builder_input, ensure_ascii=False),
                     ),
+                    agent_name=AgentName.SQL_BUILDER,
+                    round_id=round_id,
+                    stage="build_and_execute",
+                    event_callback=event_callback,
                 )
                 builder_text = _msg_to_text(builder_msg)
+                if not builder_streamed:
+                    await self._emit_agent_text_stream(
+                        event_callback=event_callback,
+                        agent_name=AgentName.SQL_BUILDER,
+                        round_id=round_id,
+                        stage="build_and_execute_stream",
+                        text=builder_text,
+                    )
                 builder_out = _extract_first_json(builder_text) or {}
                 builder_summary = _extract_summary_text(builder_text)
                 execution_result = builder_out.get("execution_result", {}) or {}
@@ -694,14 +1071,27 @@ class SpatialText2SQLMultiAgentSystem:
                         "stage": "review_input_ready",
                     },
                 )
-                reviewer_msg = await self.sql_reviewer_agent(
-                    Msg(
+                reviewer_msg, reviewer_streamed = await self._run_agent_with_tool_context(
+                    agent=self.sql_reviewer_agent,
+                    message=Msg(
                         name="orchestrator",
                         role="user",
                         content=json.dumps(reviewer_input, ensure_ascii=False),
                     ),
+                    agent_name=AgentName.SQL_REVIEWER,
+                    round_id=round_id,
+                    stage="review",
+                    event_callback=event_callback,
                 )
                 reviewer_text = _msg_to_text(reviewer_msg)
+                if not reviewer_streamed:
+                    await self._emit_agent_text_stream(
+                        event_callback=event_callback,
+                        agent_name=AgentName.SQL_REVIEWER,
+                        round_id=round_id,
+                        stage="review_stream",
+                        text=reviewer_text,
+                    )
                 review_out = _extract_first_json(reviewer_text) or {}
                 reviewer_summary = _extract_summary_text(reviewer_text)
                 await self._emit_agent(
@@ -754,8 +1144,9 @@ class SpatialText2SQLMultiAgentSystem:
                             "stage": "final_decision",
                         },
                     )
-                    final_decision_msg = await self.orchestrator(
-                        Msg(
+                    final_decision_msg, final_decision_streamed = await self._run_agent_with_tool_context(
+                        agent=self.orchestrator,
+                        message=Msg(
                             name="system",
                             role="user",
                             content=json.dumps(
@@ -773,8 +1164,20 @@ class SpatialText2SQLMultiAgentSystem:
                                 ensure_ascii=False,
                             ),
                         ),
+                        agent_name=AgentName.ORCHESTRATOR,
+                        round_id=round_id,
+                        stage="final_decision",
+                        event_callback=event_callback,
                     )
                     final_candidate = _extract_sql_text(_msg_to_text(final_decision_msg).strip())
+                    if not final_decision_streamed:
+                        await self._emit_agent_text_stream(
+                            event_callback=event_callback,
+                            agent_name=AgentName.ORCHESTRATOR,
+                            round_id=round_id,
+                            stage="final_decision_stream",
+                            text=final_candidate,
+                        )
                     if not _looks_like_sql(final_candidate):
                         final_candidate = builder_sql
                     final_text = _render_sql_with_params(final_candidate, builder_params)
@@ -823,8 +1226,9 @@ class SpatialText2SQLMultiAgentSystem:
                 agent_event_type=AgentEventType.START,
                 payload={"stage": "clarification"},
             )
-            clarify_msg = await self.orchestrator(
-                Msg(
+            clarify_msg, clarifying_streamed = await self._run_agent_with_tool_context(
+                agent=self.orchestrator,
+                message=Msg(
                     name="system",
                     role="user",
                     content=json.dumps(
@@ -838,8 +1242,20 @@ class SpatialText2SQLMultiAgentSystem:
                         ensure_ascii=False,
                     ),
                 ),
+                agent_name=AgentName.ORCHESTRATOR,
+                round_id=self.max_rounds,
+                stage="clarification",
+                event_callback=event_callback,
             )
             clarifying_text = _msg_to_text(clarify_msg).strip()
+            if not clarifying_streamed:
+                await self._emit_agent_text_stream(
+                    event_callback=event_callback,
+                    agent_name=AgentName.ORCHESTRATOR,
+                    round_id=self.max_rounds,
+                    stage="clarification_stream",
+                    text=clarifying_text,
+                )
             await self._emit_agent(
                 event_callback=event_callback,
                 agent_name=AgentName.ORCHESTRATOR,
@@ -866,13 +1282,16 @@ class SpatialText2SQLMultiAgentSystem:
             enable_auto_broadcast=False,
             name="spatial_text2sql_hub",
         )
-        if hasattr(hub, "__aenter__") and hasattr(hub, "__aexit__"):
-            async with hub:
-                return await _run_pipeline()
-        if hasattr(hub, "__enter__") and hasattr(hub, "__exit__"):
-            with hub:
-                return await _run_pipeline()
-        return await _run_pipeline()
+        try:
+            if hasattr(hub, "__aenter__") and hasattr(hub, "__aexit__"):
+                async with hub:
+                    return await _run_pipeline()
+            if hasattr(hub, "__enter__") and hasattr(hub, "__exit__"):
+                with hub:
+                    return await _run_pipeline()
+            return await _run_pipeline()
+        finally:
+            self.tool_registry.set_tool_event_callback(None)
 
     def get_round_traces(self) -> List[Dict[str, Any]]:
         return list(self.round_traces)
