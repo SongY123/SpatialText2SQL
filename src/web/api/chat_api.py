@@ -13,6 +13,7 @@ from ..entity.request import ChatSSERequest
 from ..service import ChatService, DatabaseService, get_global_chat_service
 from utils.config_loader import get_config
 from utils.auth_guard import assert_login as _assert_login
+from utils.event_types import SSEEventType, event_timestamp
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -86,7 +87,13 @@ async def chat_sse(body: ChatSSERequest, request: Request):
     current_user_id = _assert_login(request)
     chat_id = str(body.chat_id).strip()
 
-    context_patch = body.context.dict() if body.context is not None else None
+    if body.context is not None:
+        if hasattr(body.context, "model_dump"):
+            context_patch = body.context.model_dump()
+        else:
+            context_patch = body.context.dict()
+    else:
+        context_patch = None
     chat_state = _chat_service.upsert_context(
         user_id=current_user_id,
         chat_id=chat_id,
@@ -128,12 +135,15 @@ async def chat_sse(body: ChatSSERequest, request: Request):
         queue: asyncio.Queue = asyncio.Queue()
         system = None
 
-        async def emit(event: str, payload: Dict[str, Any]) -> None:
-            data = {"chat_id": chat_id, **(payload or {})}
-            await queue.put((event, data))
+        def emit(event: str, payload: Dict[str, Any]) -> None:
+            event_payload = dict(payload or {})
+            event_payload.setdefault("timestamp", event_timestamp())
+            data = {"chat_id": chat_id, **event_payload}
+            queue.put_nowait((event, data))
 
         async def runner() -> None:
             nonlocal system
+            has_end_event = False
             try:
                 _chat_service.append_message(
                     user_id=current_user_id,
@@ -142,9 +152,10 @@ async def chat_sse(body: ChatSSERequest, request: Request):
                     content=query_text,
                 )
                 system = _build_system_for_jdbc(jdbc_url=jdbc_url)
-                await emit(
-                    "context",
+                emit(
+                    SSEEventType.START,
                     {
+                        "status": "started",
                         "context": runtime_context,
                         "history_size": len(history),
                     },
@@ -161,21 +172,45 @@ async def chat_sse(body: ChatSSERequest, request: Request):
                     role="assistant",
                     content=answer_text,
                 )
-                await emit("final", {"result": answer_text})
+                emit(
+                    SSEEventType.END,
+                    {
+                        "ok": True,
+                        "status": "completed",
+                        "result": answer_text,
+                    },
+                )
+                has_end_event = True
             except Exception as exc:
-                await emit("error", {"message": str(exc)})
+                emit(SSEEventType.ERROR, {"message": str(exc)})
+                emit(
+                    SSEEventType.END,
+                    {
+                        "ok": False,
+                        "status": "failed",
+                        "error": str(exc),
+                    },
+                )
+                has_end_event = True
             finally:
                 if system is not None:
                     with suppress(Exception):
                         system.close()
-                await emit("done", {"ok": True})
+                if not has_end_event:
+                    emit(
+                        SSEEventType.END,
+                        {
+                            "ok": False,
+                            "status": "aborted",
+                        },
+                    )
 
         task = asyncio.create_task(runner())
         try:
             while True:
                 event, data = await queue.get()
                 yield _format_sse(event=event, data=data)
-                if event == "done":
+                if event == SSEEventType.END:
                     break
         finally:
             if not task.done():

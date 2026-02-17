@@ -13,7 +13,7 @@ agent:
 
 # Retrieval config (copied from preprocess settings; used by web + agent)
 vectorize:
-  chroma_path: "../../data/indexes/vector/chroma"
+  chroma_path: "data/indexes/vector/chroma"
   collection_name: "postgis_extracted"
   model_name: "Qwen/Qwen3-Embedding-0.6B"
   normalize_embeddings: true
@@ -22,7 +22,7 @@ vectorize:
   tokenizer_kwargs: {}
 
 keyword_search:
-  output_path: "../../data/indexes/keyword/keyword_index.json"
+  output_path: "data/indexes/keyword/keyword_index.json"
   min_token_length: 2
 
 # 日志配置
