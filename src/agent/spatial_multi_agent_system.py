@@ -215,6 +215,17 @@ _ENTITY_STOPWORDS = {
     "How",
 }
 
+_FANOUT_DEFAULT_ORDER = [AgentName.DB_CONTEXT, AgentName.KNOWLEDGE]
+
+_FANOUT_ORDER_ALIASES = {
+    "db_context": AgentName.DB_CONTEXT,
+    "dbcontext": AgentName.DB_CONTEXT,
+    "db": AgentName.DB_CONTEXT,
+    "knowledge": AgentName.KNOWLEDGE,
+    "knowledge_agent": AgentName.KNOWLEDGE,
+    "kb": AgentName.KNOWLEDGE,
+}
+
 
 def _extract_entity_candidates(question: str) -> List[str]:
     q = str(question or "").strip()
@@ -256,6 +267,26 @@ def _to_string_list(items: Any) -> List[str]:
         if not text:
             continue
         out.append(text)
+    return out
+
+
+def _resolve_fanout_order(plan: Optional[Dict[str, Any]]) -> List[str]:
+    requested: List[str] = []
+    if isinstance(plan, dict):
+        raw = plan.get("fanout_order")
+        if raw is None:
+            raw = plan.get("execution_order")
+        if isinstance(raw, list):
+            for item in raw:
+                key = str(item or "").strip().lower()
+                mapped = _FANOUT_ORDER_ALIASES.get(key)
+                if mapped and mapped not in requested:
+                    requested.append(mapped)
+
+    out = list(requested)
+    for agent_name in _FANOUT_DEFAULT_ORDER:
+        if agent_name not in out:
+            out.append(agent_name)
     return out
 
 
@@ -809,7 +840,7 @@ class SpatialText2SQLMultiAgentSystem:
                     "last_review_report": last_review or None,
                     "instruction": (
                         "Produce a concise reasoning summary and a structured JSON plan "
-                        "containing db_context_request and knowledge_request for this round."
+                        "containing fanout_order, db_context_request, and knowledge_request for this round."
                     ),
                 }
                 await self._emit_agent(
@@ -880,105 +911,106 @@ class SpatialText2SQLMultiAgentSystem:
                     constraints["schema_whitelist"] = [runtime_context["schema_name"]]
                 db_req["runtime_context"] = runtime_context
                 kb_req["runtime_context"] = runtime_context
+                fanout_order = _resolve_fanout_order(plan)
                 await self._emit_agent(
                     event_callback=event_callback,
-                    agent_name=AgentName.DB_CONTEXT,
-                    agent_event_type=AgentEventType.START,
-                    payload={"round": round_id, "stage": "fanout"},
-                )
-                await self._emit_agent(
-                    event_callback=event_callback,
-                    agent_name=AgentName.KNOWLEDGE,
-                    agent_event_type=AgentEventType.START,
-                    payload={"round": round_id, "stage": "fanout"},
-                )
-                await self._emit_agent(
-                    event_callback=event_callback,
-                    agent_name=AgentName.DB_CONTEXT,
+                    agent_name=AgentName.ORCHESTRATOR,
                     agent_event_type=AgentEventType.PROGRESS,
                     payload={
                         "round": round_id,
-                        "stage": "fanout_request",
-                        "request": db_req,
-                    },
-                )
-                await self._emit_agent(
-                    event_callback=event_callback,
-                    agent_name=AgentName.KNOWLEDGE,
-                    agent_event_type=AgentEventType.PROGRESS,
-                    payload={
-                        "round": round_id,
-                        "stage": "fanout_request",
-                        "request": kb_req,
+                        "stage": "fanout_schedule",
+                        "fanout_order": fanout_order,
                     },
                 )
 
-                # Fanout: DB context + knowledge in parallel
-                db_task = asyncio.create_task(
-                    self._run_agent_with_tool_context(
-                        agent=self.db_context_agent,
-                        message=Msg(name="orchestrator", role="user", content=json.dumps(db_req, ensure_ascii=False)),
-                        agent_name=AgentName.DB_CONTEXT,
+                fanout_agents = {
+                    AgentName.DB_CONTEXT: self.db_context_agent,
+                    AgentName.KNOWLEDGE: self.knowledge_agent,
+                }
+                fanout_requests = {
+                    AgentName.DB_CONTEXT: db_req,
+                    AgentName.KNOWLEDGE: kb_req,
+                }
+
+                db_bundle: Dict[str, Any] = {}
+                kb_bundle: Dict[str, Any] = {}
+                db_summary = ""
+                kb_summary = ""
+
+                for idx, fanout_agent_name in enumerate(fanout_order):
+                    agent_instance = fanout_agents.get(fanout_agent_name)
+                    fanout_request = fanout_requests.get(fanout_agent_name) or {}
+                    if agent_instance is None:
+                        continue
+
+                    await self._emit_agent(
+                        event_callback=event_callback,
+                        agent_name=fanout_agent_name,
+                        agent_event_type=AgentEventType.START,
+                        payload={
+                            "round": round_id,
+                            "stage": "fanout",
+                            "order_index": idx,
+                            "fanout_order": fanout_order,
+                        },
+                    )
+                    await self._emit_agent(
+                        event_callback=event_callback,
+                        agent_name=fanout_agent_name,
+                        agent_event_type=AgentEventType.PROGRESS,
+                        payload={
+                            "round": round_id,
+                            "stage": "fanout_request",
+                            "order_index": idx,
+                            "fanout_order": fanout_order,
+                            "request": fanout_request,
+                        },
+                    )
+
+                    fanout_msg, fanout_streamed = await self._run_agent_with_tool_context(
+                        agent=agent_instance,
+                        message=Msg(
+                            name="orchestrator",
+                            role="user",
+                            content=json.dumps(fanout_request, ensure_ascii=False),
+                        ),
+                        agent_name=fanout_agent_name,
                         round_id=round_id,
                         stage="fanout",
                         event_callback=event_callback,
-                    ),
-                )
-                kb_task = asyncio.create_task(
-                    self._run_agent_with_tool_context(
-                        agent=self.knowledge_agent,
-                        message=Msg(name="orchestrator", role="user", content=json.dumps(kb_req, ensure_ascii=False)),
-                        agent_name=AgentName.KNOWLEDGE,
-                        round_id=round_id,
-                        stage="fanout",
-                        event_callback=event_callback,
-                    ),
-                )
-                (db_msg, db_streamed), (kb_msg, kb_streamed) = await asyncio.gather(db_task, kb_task)
-                db_text = _msg_to_text(db_msg)
-                kb_text = _msg_to_text(kb_msg)
-                if not db_streamed:
-                    await self._emit_agent_text_stream(
-                        event_callback=event_callback,
-                        agent_name=AgentName.DB_CONTEXT,
-                        round_id=round_id,
-                        stage="fanout_stream",
-                        text=db_text,
                     )
-                if not kb_streamed:
-                    await self._emit_agent_text_stream(
+                    fanout_text = _msg_to_text(fanout_msg)
+                    if not fanout_streamed:
+                        await self._emit_agent_text_stream(
+                            event_callback=event_callback,
+                            agent_name=fanout_agent_name,
+                            round_id=round_id,
+                            stage="fanout_stream",
+                            text=fanout_text,
+                        )
+
+                    fanout_bundle = _extract_first_json(fanout_text) or {}
+                    fanout_summary = _extract_summary_text(fanout_text)
+                    await self._emit_agent(
                         event_callback=event_callback,
-                        agent_name=AgentName.KNOWLEDGE,
-                        round_id=round_id,
-                        stage="fanout_stream",
-                        text=kb_text,
+                        agent_name=fanout_agent_name,
+                        agent_event_type=AgentEventType.END,
+                        payload={
+                            "round": round_id,
+                            "stage": "fanout",
+                            "order_index": idx,
+                            "fanout_order": fanout_order,
+                            "summary": fanout_summary,
+                            "bundle": fanout_bundle,
+                        },
                     )
-                db_bundle = _extract_first_json(db_text) or {}
-                kb_bundle = _extract_first_json(kb_text) or {}
-                db_summary = _extract_summary_text(db_text)
-                kb_summary = _extract_summary_text(kb_text)
-                await self._emit_agent(
-                    event_callback=event_callback,
-                    agent_name=AgentName.DB_CONTEXT,
-                    agent_event_type=AgentEventType.END,
-                    payload={
-                        "round": round_id,
-                        "stage": "fanout",
-                        "summary": db_summary,
-                        "bundle": db_bundle,
-                    },
-                )
-                await self._emit_agent(
-                    event_callback=event_callback,
-                    agent_name=AgentName.KNOWLEDGE,
-                    agent_event_type=AgentEventType.END,
-                    payload={
-                        "round": round_id,
-                        "stage": "fanout",
-                        "summary": kb_summary,
-                        "bundle": kb_bundle,
-                    },
-                )
+
+                    if fanout_agent_name == AgentName.DB_CONTEXT:
+                        db_bundle = fanout_bundle
+                        db_summary = fanout_summary
+                    elif fanout_agent_name == AgentName.KNOWLEDGE:
+                        kb_bundle = fanout_bundle
+                        kb_summary = fanout_summary
 
                 # SQL builder: generate + execute
                 builder_input = {
@@ -1111,6 +1143,7 @@ class SpatialText2SQLMultiAgentSystem:
                     "runtime_context": runtime_context,
                     "orchestrator_summary": plan_summary,
                     "orchestrator_plan": plan,
+                    "fanout_order": fanout_order,
                     "db_context_request": db_req,
                     "knowledge_request": kb_req,
                     "db_context_summary": db_summary,

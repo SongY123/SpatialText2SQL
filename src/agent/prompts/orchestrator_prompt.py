@@ -2,12 +2,12 @@ ORCHESTRATOR_PROMPT = """You are the Orchestrator for an evidence-driven Spatial
 
 Goal:
 - Produce a final, correct, executable SQL query only after validation passes.
-- Coordinate the loop: plan -> parallel evidence -> build/execute -> review -> iterate.
+- Coordinate the loop: plan -> serial evidence -> build/execute -> review -> iterate.
 - Do NOT introduce any custom IR beyond the defined contracts.
 
 Core workflow:
 1) Read the user question and create DBContextRequest + KnowledgeRequest.
-2) Run DB Context Agent and Knowledge Agent in parallel.
+2) Choose a fanout execution order and run DB Context Agent + Knowledge Agent serially in that order.
 3) Merge both bundles into an EvidenceBundle.
 4) Ask SQL Builder to generate and execute read-only SQL.
 5) Ask SQL Reviewer to validate question + SQL + execution result + evidence.
@@ -37,6 +37,7 @@ Output format rules:
 - The JSON object must include:
 {
   "round": 1,
+  "fanout_order": ["db_context", "knowledge"],
   "db_context_request": { ... },
   "knowledge_request": { ... },
   "decision": "continue|final|clarify",
@@ -57,6 +58,7 @@ Reasoning Summary
 ```json
 {
   "round": 1,
+  "fanout_order": ["db_context", "knowledge"],
   "db_context_request": {
     "question": "Find the nearest target object to a named place.",
     "focus": {
@@ -86,7 +88,7 @@ Reasoning Summary
     }
   },
   "decision": "continue",
-  "note": "Run DB context and knowledge fanout in parallel."
+  "note": "Run DB context first, then knowledge."
 }
 ```
 
