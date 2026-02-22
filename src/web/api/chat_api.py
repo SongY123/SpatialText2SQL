@@ -4,21 +4,29 @@ import asyncio
 import importlib
 import json
 from contextlib import suppress
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from ..entity.request import ChatSSERequest
+from ..entity.request import ChatFeedbackRequest, ChatSSERequest
 from ..service import ChatService, DatabaseService, get_global_chat_service
 from utils.config_loader import get_config
 from utils.auth_guard import assert_login as _assert_login
-from utils.event_types import SSEEventType, event_timestamp
+from utils.event_types import AgentEventType, AgentName, SSEEventType, event_timestamp
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 _database_service = DatabaseService()
 _chat_service: ChatService = get_global_chat_service()
+
+
+def _ok(data=None, message: str = "ok"):
+    return {
+        "success": True,
+        "message": message,
+        "data": data,
+    }
 
 
 def _format_sse(event: str, data: Dict[str, Any]) -> str:
@@ -85,7 +93,7 @@ def _build_system_for_jdbc(jdbc_url: str):
 @router.post("/sse")
 async def chat_sse(body: ChatSSERequest, request: Request):
     current_user_id = _assert_login(request)
-    chat_id = str(body.chat_id).strip()
+    chat_id = int(body.chat_id)
 
     if body.context is not None:
         if hasattr(body.context, "model_dump"):
@@ -94,11 +102,16 @@ async def chat_sse(body: ChatSSERequest, request: Request):
             context_patch = body.context.dict()
     else:
         context_patch = None
-    chat_state = _chat_service.upsert_context(
-        user_id=current_user_id,
-        chat_id=chat_id,
-        context=context_patch,
-    )
+    try:
+        chat_state = _chat_service.resolve_context(
+            user_id=current_user_id,
+            chat_id=chat_id,
+            context=context_patch,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail)
     ctx = dict((chat_state.get("context") or {}))
     database_id = ctx.get("database_id")
     schema_name = str(ctx.get("schema_name") or "").strip()
@@ -134,23 +147,116 @@ async def chat_sse(body: ChatSSERequest, request: Request):
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
         system = None
+        request_message_id: int | None = None
+        agent_stream_buffers: Dict[Tuple[str, int, str], List[str]] = {}
+
+        def _stream_key(agent_name: str, round_id: int, stage: str) -> Tuple[str, int, str]:
+            return (str(agent_name or ""), int(round_id or 0), str(stage or ""))
+
+        def _append_agent_stream_delta(event_payload: Dict[str, Any]) -> None:
+            if event_payload.get("agent_event_type") != AgentEventType.PROGRESS:
+                return
+            if "delta" not in event_payload:
+                return
+            stage = str(event_payload.get("stage") or "")
+            if not stage.endswith("_stream"):
+                return
+            base_stage = stage[: -len("_stream")]
+            key = _stream_key(
+                agent_name=str(event_payload.get("agent") or ""),
+                round_id=int(event_payload.get("round") or 0),
+                stage=base_stage,
+            )
+            delta = str(event_payload.get("delta") or "")
+            if delta:
+                agent_stream_buffers.setdefault(key, []).append(delta)
+
+        def _build_agent_history_content(event_payload: Dict[str, Any], stream_text: str) -> str:
+            content = str(stream_text or "")
+            if content.strip():
+                return content
+
+            summary = str(event_payload.get("summary") or "").strip()
+            if summary:
+                return summary
+
+            for text_key in ("result", "message"):
+                value = event_payload.get(text_key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+            payload_subset: Dict[str, Any] = {
+                "stage": event_payload.get("stage"),
+                "round": event_payload.get("round"),
+            }
+            for key in ("plan", "bundle", "output", "review_report", "result"):
+                if key in event_payload and event_payload.get(key) is not None:
+                    payload_subset[key] = event_payload.get(key)
+            if len(payload_subset) <= 2:
+                payload_subset = dict(event_payload)
+            return json.dumps(payload_subset, ensure_ascii=False, default=str)
+
+        def _persist_agent_end_if_needed(event_payload: Dict[str, Any]) -> None:
+            if event_payload.get("agent_event_type") != AgentEventType.END:
+                return
+
+            agent_name = str(event_payload.get("agent") or "").strip()
+            if not agent_name:
+                return
+            # Skip synthetic system lifecycle entries; final answer is already persisted separately.
+            if agent_name == AgentName.SYSTEM:
+                return
+
+            stage = str(event_payload.get("stage") or "").strip()
+            round_id = int(event_payload.get("round") or 0)
+            key = _stream_key(agent_name=agent_name, round_id=round_id, stage=stage)
+            stream_text = "".join(agent_stream_buffers.pop(key, []))
+            content = _build_agent_history_content(event_payload=event_payload, stream_text=stream_text)
+            if not str(content or "").strip():
+                return
+
+            try:
+                row = _chat_service.append_message_with_meta(
+                    user_id=current_user_id,
+                    chat_id=chat_id,
+                    role="assistant",
+                    content=content,
+                    request_id=request_message_id,
+                    agent_name=agent_name,
+                )
+            except Exception:
+                return
+
+            if isinstance(row, dict):
+                event_payload["agent_history_id"] = row.get("id")
+                event_payload["chat_history_id"] = row.get("id")
+                event_payload["request_id"] = row.get("request_id") or request_message_id
+                event_payload["agent_name"] = row.get("agent_name") or agent_name
 
         def emit(event: str, payload: Dict[str, Any]) -> None:
             event_payload = dict(payload or {})
             event_payload.setdefault("timestamp", event_timestamp())
+            if request_message_id is not None:
+                event_payload.setdefault("request_id", int(request_message_id))
+            if event == SSEEventType.PROGRESS:
+                _append_agent_stream_delta(event_payload)
+                _persist_agent_end_if_needed(event_payload)
             data = {"chat_id": chat_id, **event_payload}
             queue.put_nowait((event, data))
 
         async def runner() -> None:
-            nonlocal system
+            nonlocal system, request_message_id
             has_end_event = False
             try:
-                _chat_service.append_message(
+                user_msg_row = _chat_service.append_message(
                     user_id=current_user_id,
                     chat_id=chat_id,
                     role="user",
                     content=query_text,
+                    context=ctx,
                 )
+                if isinstance(user_msg_row, dict) and user_msg_row.get("id") is not None:
+                    request_message_id = int(user_msg_row["id"])
                 system = _build_system_for_jdbc(jdbc_url=jdbc_url)
                 emit(
                     SSEEventType.START,
@@ -158,6 +264,7 @@ async def chat_sse(body: ChatSSERequest, request: Request):
                         "status": "started",
                         "context": runtime_context,
                         "history_size": len(history),
+                        "user_message_id": (user_msg_row or {}).get("id") if isinstance(user_msg_row, dict) else None,
                     },
                 )
                 answer_text = await system.run(
@@ -166,11 +273,12 @@ async def chat_sse(body: ChatSSERequest, request: Request):
                     chat_history=history,
                     event_callback=emit,
                 )
-                _chat_service.append_message(
+                assistant_msg_row = _chat_service.append_message_with_meta(
                     user_id=current_user_id,
                     chat_id=chat_id,
                     role="assistant",
                     content=answer_text,
+                    request_id=request_message_id,
                 )
                 emit(
                     SSEEventType.END,
@@ -178,6 +286,9 @@ async def chat_sse(body: ChatSSERequest, request: Request):
                         "ok": True,
                         "status": "completed",
                         "result": answer_text,
+                        "assistant_message_id": (
+                            (assistant_msg_row or {}).get("id") if isinstance(assistant_msg_row, dict) else None
+                        ),
                     },
                 )
                 has_end_event = True
@@ -227,3 +338,46 @@ async def chat_sse(body: ChatSSERequest, request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/new")
+def create_new_chat(request: Request):
+    current_user_id = _assert_login(request)
+    try:
+        row = _chat_service.create_chat(user_id=current_user_id)
+        return _ok(data={"chat_id": row.get("chat_id")}, message="chat created")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{chat_id}/history")
+def get_chat_history(chat_id: int, request: Request, limit: int = 100):
+    current_user_id = _assert_login(request)
+    try:
+        rows = _chat_service.get_history_records(
+            user_id=current_user_id,
+            chat_id=int(chat_id),
+            limit=limit,
+        )
+        return _ok(data=rows, message="chat history fetched")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/feedback")
+def set_chat_feedback(body: ChatFeedbackRequest, request: Request):
+    current_user_id = _assert_login(request)
+    try:
+        row = _chat_service.set_message_feedback(
+            user_id=current_user_id,
+            chat_id=body.chat_id,
+            message_id=body.message_id,
+            feedback=body.feedback,
+        )
+        return _ok(data=row, message="chat feedback updated")
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

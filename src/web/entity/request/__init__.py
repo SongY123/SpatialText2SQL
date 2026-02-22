@@ -1,5 +1,5 @@
 from .auth_request import LoginRequest
-from .chat_request import ChatContextRequest, ChatSSERequest
+from .chat_request import ChatContextRequest, ChatFeedbackRequest, ChatSSERequest
 from .database_request import (
     DatabaseCreateRequest,
     DatabaseSchemaProbeRequest,
@@ -14,6 +14,7 @@ __all__ = [
     "UserUpdateRequest",
     "ChatContextRequest",
     "ChatSSERequest",
+    "ChatFeedbackRequest",
     "DatabaseCreateRequest",
     "DatabaseUpdateRequest",
     "DatabaseSchemaProbeRequest",

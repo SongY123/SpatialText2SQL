@@ -112,8 +112,102 @@ def _qualified_column_name(column_name: str) -> str:
     return _quote_ident(c)
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """Remove SQL comments while preserving quoted strings.
+
+    Supported comment styles:
+    - line comments: `-- ...`
+    - block comments: `/* ... */` (with nested block comments)
+    """
+    text_sql = str(sql or "")
+    n = len(text_sql)
+    if n == 0:
+        return ""
+
+    out: List[str] = []
+    i = 0
+    in_single = False
+    in_double = False
+    block_comment_depth = 0
+    in_line_comment = False
+
+    while i < n:
+        ch = text_sql[i]
+        nxt = text_sql[i + 1] if i + 1 < n else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                out.append(ch)
+            i += 1
+            continue
+
+        if block_comment_depth > 0:
+            if ch == "/" and nxt == "*":
+                block_comment_depth += 1
+                i += 2
+                continue
+            if ch == "*" and nxt == "/":
+                block_comment_depth -= 1
+                i += 2
+                continue
+            if ch == "\n":
+                # Preserve line breaks so error locations/format remain reasonable.
+                out.append(ch)
+            i += 1
+            continue
+
+        if in_single:
+            out.append(ch)
+            if ch == "'" and nxt == "'":
+                # Escaped single quote in SQL string literal.
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+
+        if in_double:
+            out.append(ch)
+            if ch == '"' and nxt == '"':
+                # Escaped double quote in quoted identifier.
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            i += 1
+            continue
+
+        if ch == "-" and nxt == "-":
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment_depth = 1
+            i += 2
+            continue
+        if ch == "'":
+            in_single = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            out.append(ch)
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
 def _assert_read_only_sql(sql: str) -> str:
-    text_sql = str(sql or "").strip()
+    text_sql = _strip_sql_comments(sql).strip()
     if not text_sql:
         raise ValueError("sql must not be empty.")
     if not _READ_ONLY_PREFIX_RE.search(text_sql):

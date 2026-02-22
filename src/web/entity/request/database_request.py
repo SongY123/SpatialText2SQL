@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 try:
     from pydantic import ConfigDict
@@ -24,7 +24,8 @@ class DatabaseCreateRequest(BaseModel):
         class Config:
             allow_population_by_field_name = True
 
-    @validator("type")
+    @field_validator("type")
+    @classmethod
     def _validate_type(cls, value: str) -> str:
         low = value.strip().lower()
         if low not in {"postgis", "spatial"}:
@@ -46,7 +47,8 @@ class DatabaseUpdateRequest(BaseModel):
         class Config:
             allow_population_by_field_name = True
 
-    @validator("type")
+    @field_validator("type")
+    @classmethod
     def _validate_type(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
@@ -55,19 +57,18 @@ class DatabaseUpdateRequest(BaseModel):
             raise ValueError("type must be Spatial or Postgis")
         return "Postgis" if low == "postgis" else "Spatial"
 
-    @root_validator(skip_on_failure=True)
-    def _validate_any_field(cls, values):
+    @model_validator(mode="after")
+    def _validate_any_field(self):
         if (
-            values.get("name") is None
-            and
-            values.get("type") is None
-            and values.get("url") is None
-            and values.get("schema_list") is None
-            and values.get("db_username") is None
-            and values.get("db_password") is None
+            self.name is None
+            and self.type is None
+            and self.url is None
+            and self.schema_list is None
+            and self.db_username is None
+            and self.db_password is None
         ):
             raise ValueError("At least one field must be provided for update.")
-        return values
+        return self
 
 
 class DatabaseSchemaProbeRequest(BaseModel):
@@ -82,7 +83,8 @@ class DatabaseSchemaProbeRequest(BaseModel):
         class Config:
             allow_population_by_field_name = True
 
-    @validator("type")
+    @field_validator("type")
+    @classmethod
     def _validate_type(cls, value: str) -> str:
         low = value.strip().lower()
         if low not in {"postgis", "spatial"}:
@@ -91,7 +93,14 @@ class DatabaseSchemaProbeRequest(BaseModel):
 
 
 class DatabaseSqlExecuteRequest(BaseModel):
-    schema: str = Field(..., min_length=1, max_length=128)
+    chat_id: Optional[int] = Field(default=None, ge=1)
+    schema_name: str = Field(..., min_length=1, max_length=128, alias="schema")
     sql: str = Field(..., min_length=1, max_length=200000)
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=500)
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(populate_by_name=True)
+    else:
+        class Config:
+            allow_population_by_field_name = True

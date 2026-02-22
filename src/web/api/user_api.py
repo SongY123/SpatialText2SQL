@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from ..entity.request import LoginRequest, UserCreateRequest, UserUpdateRequest
 from ..service import UserService
+from utils.auth_guard import assert_admin_user
 
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -28,8 +31,21 @@ def insert_user(body: UserCreateRequest):
             username=body.username,
             password=body.password,
             role=body.role,
+            status=body.status,
         )
         return _ok(data=data, message="user inserted")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("")
+def list_users(request: Request, status: Optional[str] = None):
+    assert_admin_user(request)
+    try:
+        data = _user_service.list_users(status=status)
+        return _ok(data=data, message="users fetched")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -42,6 +58,7 @@ def update_user(user_id: int, body: UserUpdateRequest):
             username=body.username,
             password=body.password,
             role=body.role,
+            status=body.status,
         )
         return _ok(data=data, message="user updated")
     except Exception as exc:
@@ -73,7 +90,9 @@ def login(body: LoginRequest, response: Response):
         )
         return _ok(data=data, message="login success")
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        detail = str(exc)
+        status = 403 if "disabled" in detail.lower() else 401
+        raise HTTPException(status_code=status, detail=detail)
 
 
 @auth_router.post("/logout")

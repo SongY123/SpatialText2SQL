@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -12,13 +13,14 @@ from ..entity.request import (
     DatabaseUpdateRequest,
 )
 from ..entity.response import DatabasePublicResponse
-from ..service import DatabaseService
+from ..service import DatabaseService, get_global_chat_service
 from tools.db_connector import JdbcDatabaseTool
 from utils.auth_guard import assert_login as _assert_login
 
 
 router = APIRouter(prefix="/databases", tags=["databases"])
 _database_service = DatabaseService()
+_chat_service = get_global_chat_service()
 
 
 def _ok(data=None, message: str = "ok"):
@@ -252,17 +254,49 @@ def execute_sql(
         raise HTTPException(status_code=404, detail=f"database link not found: link_id={database_id}")
     if int(db.get("user_id")) != int(current_user_id):
         raise HTTPException(status_code=403, detail="Can only access current user's database link.")
+    if body.chat_id is not None and not _chat_service.chat_exists(user_id=current_user_id, chat_id=int(body.chat_id)):
+        raise HTTPException(status_code=400, detail=f"chat session not found: chat_id={body.chat_id}")
 
+    started = perf_counter()
     try:
         data = _database_service.execute_sql_page(
             link_id=database_id,
-            schema=body.schema,
+            schema=body.schema_name,
             sql=body.sql,
             page=body.page,
             page_size=body.page_size,
         )
+        elapsed_ms = max(0, int((perf_counter() - started) * 1000))
+        row_count = 0
+        if isinstance(data, dict):
+            if data.get("total") is not None:
+                row_count = int(data.get("total") or 0)
+            elif data.get("page_row_count") is not None:
+                row_count = int(data.get("page_row_count") or 0)
+        _database_service.record_sql_execution(
+            user_id=current_user_id,
+            chat_id=body.chat_id,
+            database_id=database_id,
+            execute_status="success",
+            execution_time_ms=elapsed_ms,
+            row_count=row_count,
+            sql_text=body.sql,
+        )
         return _ok(data=data, message="sql executed")
     except Exception as exc:
+        elapsed_ms = max(0, int((perf_counter() - started) * 1000))
+        try:
+            _database_service.record_sql_execution(
+                user_id=current_user_id,
+                chat_id=body.chat_id,
+                database_id=database_id,
+                execute_status="failure",
+                execution_time_ms=elapsed_ms,
+                row_count=0,
+                sql_text=body.sql,
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail=str(exc))
 
 

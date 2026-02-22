@@ -28,11 +28,17 @@ def get_login_user(request: Request) -> Dict[str, Any]:
     role = str(user.get("role") or "user").strip().lower()
     if role not in {"user", "admin"}:
         role = "user"
+    status = str(user.get("status") or "active").strip().lower()
+    if status not in {"active", "disabled"}:
+        status = "active"
+    if status != "active":
+        raise HTTPException(status_code=403, detail="User is disabled.")
 
     return {
         "id": int(user_id),
         "username": str(user.get("username") or ""),
         "role": role,
+        "status": status,
         "session_id": str(payload.get("session_id") or session_id),
     }
 
@@ -46,4 +52,3 @@ def assert_admin_user(request: Request) -> Dict[str, Any]:
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin role required.")
     return user
-

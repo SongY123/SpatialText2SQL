@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from ..dao import DatabaseLinkDAO, UserDAO
+from ..dao import DatabaseLinkDAO, SqlExecutionLogDAO, UserDAO
 from .session_service import SessionService, get_global_session_service
 from tools.db_connector import JdbcDatabaseTool
 
@@ -12,10 +12,12 @@ class DatabaseService:
     def __init__(
         self,
         database_link_dao: Optional[DatabaseLinkDAO] = None,
+        sql_execution_log_dao: Optional[SqlExecutionLogDAO] = None,
         user_dao: Optional[UserDAO] = None,
         session_service: Optional[SessionService] = None,
     ) -> None:
         self.database_link_dao = database_link_dao or DatabaseLinkDAO()
+        self.sql_execution_log_dao = sql_execution_log_dao or SqlExecutionLogDAO()
         self.user_dao = user_dao or UserDAO()
         self.session_service = session_service or get_global_session_service()
 
@@ -220,6 +222,27 @@ class DatabaseService:
             return payload
         finally:
             tool.close()
+
+    def record_sql_execution(
+        self,
+        user_id: int,
+        database_id: int,
+        execute_status: str,
+        execution_time_ms: int,
+        row_count: int = 0,
+        sql_text: Optional[str] = None,
+        chat_id: Optional[int] = None,
+    ) -> Dict:
+        row = self.sql_execution_log_dao.insert_log(
+            user_id=int(user_id),
+            database_id=int(database_id),
+            execute_status=execute_status,
+            execution_time_ms=int(execution_time_ms),
+            row_count=int(row_count),
+            sql_text=sql_text,
+            chat_id=(int(chat_id) if chat_id is not None else None),
+        )
+        return row.to_dict()
 
     def _refresh_user_sessions(self, user_id: int) -> None:
         user = self.user_dao.get_user_by_id(user_id=user_id)

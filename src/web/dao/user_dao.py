@@ -12,9 +12,9 @@ from ..entity.model import User
 
 
 class UserDAO(BaseDAO):
-    def insert_user(self, username: str, password: str, role: str = "user") -> User:
+    def insert_user(self, username: str, password: str, role: str = "user", status: str = "active") -> User:
         with self.session_scope() as session:
-            user = User(username=username, password=password, role=role)
+            user = User(username=username, password=password, role=role, status=status)
             session.add(user)
             try:
                 session.flush()
@@ -32,9 +32,12 @@ class UserDAO(BaseDAO):
             stmt = select(User).where(User.username == str(username).strip())
             return session.execute(stmt).scalars().first()
 
-    def list_users(self) -> List[User]:
+    def list_users(self, status: Optional[str] = None) -> List[User]:
         with self.session_scope() as session:
             stmt = select(User).order_by(User.id.asc())
+            normalized_status = str(status or "").strip().lower()
+            if normalized_status:
+                stmt = stmt.where(User.status == normalized_status)
             return list(session.execute(stmt).scalars().all())
 
     def count_users(self) -> int:
@@ -58,6 +61,7 @@ class UserDAO(BaseDAO):
         username: Optional[str] = None,
         password: Optional[str] = None,
         role: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> Optional[User]:
         with self.session_scope() as session:
             user = session.get(User, int(user_id))
@@ -70,6 +74,8 @@ class UserDAO(BaseDAO):
                 user.password = password
             if role is not None:
                 user.role = role
+            if status is not None:
+                user.status = status
 
             user.update_time = datetime.utcnow()
             session.add(user)
@@ -77,6 +83,19 @@ class UserDAO(BaseDAO):
                 session.flush()
             except IntegrityError as exc:
                 raise ValueError(f"User update failed: {exc}") from exc
+            session.refresh(user)
+            return user
+
+    def touch_last_login(self, user_id: int) -> Optional[User]:
+        with self.session_scope() as session:
+            user = session.get(User, int(user_id))
+            if user is None:
+                return None
+            now = datetime.utcnow()
+            user.last_login = now
+            user.update_time = now
+            session.add(user)
+            session.flush()
             session.refresh(user)
             return user
 

@@ -14,6 +14,7 @@ def _utc_now() -> datetime:
 
 
 SUPPORTED_USER_ROLES = {"user", "admin"}
+SUPPORTED_USER_STATUSES = {"active", "disabled"}
 
 
 class User(Base):
@@ -27,6 +28,18 @@ class User(Base):
         nullable=False,
         default="user",
         server_default=text("'user'"),
+    )
+    status = Column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+        index=True,
+    )
+    last_login = Column(
+        DateTime,
+        nullable=True,
+        default=None,
     )
     insert_time = Column(
         DateTime,
@@ -69,12 +82,21 @@ class User(Base):
             raise ValueError("role must be one of: user, admin")
         return role
 
+    @validates("status")
+    def _validate_status(self, key, value: str) -> str:
+        status = str(value or "").strip().lower()
+        if status not in SUPPORTED_USER_STATUSES:
+            raise ValueError("status must be one of: active, disabled")
+        return status
+
     def to_dict(self, include_db_links: bool = False) -> Dict:
         payload = {
             "id": self.id,
             "username": self.username,
             "password": self.password,
             "role": self.role,
+            "status": self.status,
+            "last_login": self.last_login.isoformat() if self.last_login else None,
             "insert_time": self.insert_time.isoformat() if self.insert_time else None,
             "update_time": self.update_time.isoformat() if self.update_time else None,
         }
