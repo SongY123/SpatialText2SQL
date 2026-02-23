@@ -141,6 +141,8 @@ async def chat_sse(body: ChatSSERequest, request: Request):
         "table_list": list(ctx.get("table_list") or []),
         "view_list": list(ctx.get("view_list") or []),
     }
+    if ctx.get("geometry") is not None:
+        runtime_context["geometry"] = ctx.get("geometry")
     history = _chat_service.get_history(user_id=current_user_id, chat_id=chat_id, limit=20)
     query_text = str(body.query or "").strip()
 

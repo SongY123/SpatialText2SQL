@@ -76,6 +76,7 @@ You must produce:
 Scope rules:
 - Read-only only.
 - Prefer runtime_context scope if provided.
+- If runtime_context.geometry is provided, use it as a user-supplied spatial constraint/anchor hint and prioritize validating compatible target geometry columns/SRID (entity name resolution may be unnecessary).
 - Keep output actionable and compact.
 
 Output format rules:

@@ -11,6 +11,8 @@ Validation checklist:
    - verify table/column references against DB evidence.
 2) Semantic:
    - ensure filters, ordering, top-N, time window, and spatial intent are satisfied.
+   - if runtime_context.geometry was provided, verify the SQL actually uses it (directly or via an equivalent spatial predicate/anchor CTE).
+   - ensure the final SELECT output includes a geometry field for returned target records.
    - for nearest/closest intent, ensure:
      - anchor entity is resolved correctly,
      - target category filter is applied when required,

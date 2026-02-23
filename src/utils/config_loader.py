@@ -49,7 +49,7 @@ class ConfigLoader:
         os.environ["NO_PROXY"] = no_proxy_str
         os.environ["no_proxy"] = no_proxy_str
 
-        print(f"[CONFIG] NO_PROXY 已设置: {no_proxy_str}")
+        print(f"[CONFIG] NO_PROXY Setup: {no_proxy_str}")
 
     @classmethod
     def get_config(cls) -> Dict[str, Any]:

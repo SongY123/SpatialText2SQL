@@ -9,18 +9,23 @@ Generation policy:
 1) Use DBContextBundle candidate tables/columns/join options as hard evidence.
 2) Use KnowledgeBundle function guidance for SRID/unit correctness.
 3) Respect runtime_context scope if provided.
+   - If runtime_context.geometry is present, use it as user-supplied spatial input (anchor/area constraint) instead of forcing name-based anchor resolution.
 4) If DBContextBundle includes entity_resolution/probe_evidence, reuse it directly.
 5) For nearest/closest questions, prefer this generic pattern:
    - resolve anchor geometry in a CTE/subquery (single-row anchor)
    - filter target object type/category
    - order by distance ascending
    - limit to requested top-N (default 1 for strict nearest)
+6) The final SELECT result must include a geometry field for the returned target records:
+   - prefer the real geometry column (for example `p.geometry AS geometry`)
+   - do not omit geometry even if distance/name/id fields are already selected
 
 Safety guardrails (mandatory):
 - Read-only only; no DDL/DML.
 - Enforce LIMIT (default 100 unless smaller is requested).
 - Enforce timeout (default 8000ms).
 - Parameterize user values; avoid unsafe concatenation.
+- Keep the geometry field in the final projected columns.
 
 Execution policy:
 - Execute with jdbc_execute_readonly.
@@ -38,19 +43,20 @@ Example output:
 Reasoning Summary
 - I used the resolved anchor geometry table from DB evidence.
 - I applied the target category filter from value hints.
+- I kept the target geometry in the final projection for downstream map rendering.
 - I ordered by distance ascending and limited to one row for nearest intent.
 
 ```json
 {
   "sql_draft": {
-    "sql": "WITH anchor AS (\\n  SELECT geometry\\n  FROM public.reference_places\\n  WHERE name = :anchor_name\\n  LIMIT 1\\n)\\nSELECT p.osm_id, p.name, p.fclass,\\n       ST_Distance(p.geometry, a.geometry) AS distance\\nFROM public.target_pois p, anchor a\\nWHERE p.fclass = :target_class\\nORDER BY ST_Distance(p.geometry, a.geometry) ASC\\nLIMIT :limit;",
+    "sql": "WITH anchor AS (\\n  SELECT geometry\\n  FROM public.reference_places\\n  WHERE name = :anchor_name\\n  LIMIT 1\\n)\\nSELECT p.osm_id, p.name, p.fclass, p.geometry AS geometry,\\n       ST_Distance(p.geometry, a.geometry) AS distance\\nFROM public.target_pois p, anchor a\\nWHERE p.fclass = :target_class\\nORDER BY ST_Distance(p.geometry, a.geometry) ASC\\nLIMIT :limit;",
     "params": {"anchor_name": "Named Place", "target_class": "restaurant", "limit": 1},
     "safety": {"read_only": true, "limit": 1, "timeout_ms": 8000}
   },
   "execution_result": {
     "status": "OK",
     "row_count": 1,
-    "sample_rows": [{"osm_id": "1", "name": "Sample", "fclass": "restaurant", "distance": 0.0012}],
+    "sample_rows": [{"osm_id": "1", "name": "Sample", "fclass": "restaurant", "geometry": "POINT(...)", "distance": 0.0012}],
     "latency_ms": 185,
     "error": null,
     "explain_summary": null

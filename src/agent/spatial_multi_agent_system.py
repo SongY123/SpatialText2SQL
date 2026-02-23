@@ -270,6 +270,17 @@ def _to_string_list(items: Any) -> List[str]:
     return out
 
 
+def _normalize_optional_geometry(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, (list, dict)):
+        return value if len(value) > 0 else None
+    return value
+
+
 def _resolve_fanout_order(plan: Optional[Dict[str, Any]]) -> List[str]:
     requested: List[str] = []
     if isinstance(plan, dict):
@@ -293,13 +304,17 @@ def _resolve_fanout_order(plan: Optional[Dict[str, Any]]) -> List[str]:
 def _normalize_runtime_context(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     ctx = dict(context or {})
     schema_name = str(ctx.get("schema_name") or "").strip()
-    return {
+    runtime_context = {
         "chat_id": str(ctx.get("chat_id") or "").strip(),
         "database_id": ctx.get("database_id"),
         "schema_name": schema_name,
         "table_list": _to_string_list(ctx.get("table_list")),
         "view_list": _to_string_list(ctx.get("view_list")),
     }
+    geometry = _normalize_optional_geometry(ctx.get("geometry"))
+    if geometry is not None:
+        runtime_context["geometry"] = geometry
+    return runtime_context
 
 
 def _default_db_context_request(question: str, context: Optional[Dict[str, Any]] = None) -> Dict:

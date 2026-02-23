@@ -20,6 +20,7 @@ Core workflow:
 
 Planning behavior:
 - Prefer runtime_context scope (schema_name/table_list/view_list) when provided.
+- If runtime_context.geometry is provided, treat it as user-supplied spatial input (anchor/area constraint) and incorporate it into planning; if absent, proceed normally.
 - For nearest/closest/near-type questions, explicitly ask DB Context Agent to:
   - resolve anchor entities (landmarks/places) to concrete table+column+geometry source
   - resolve target object type constraints (e.g., category/fclass-like filters)

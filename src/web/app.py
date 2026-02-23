@@ -108,10 +108,10 @@ def main() -> None:
     port = int(get_config("server.port", 8888))
 
     logger.info("=" * 60)
-    logger.info("启动Data-Agent服务")
-    logger.info(f"服务地址: http://{host}:{port}")
-    logger.info(f"Swagger文档: http://{host}:{port}/docs")
-    logger.info(f"ReDoc文档: http://{host}:{port}/redoc")
+    logger.info("Launch Spatial Multi-Agent Service")
+    logger.info(f"Service Address: http://{host}:{port}")
+    logger.info(f"Swagger Doc: http://{host}:{port}/docs")
+    logger.info(f"ReDoc: http://{host}:{port}/redoc")
 
     uvicorn.run(app, host=host, port=port, reload=False)
 

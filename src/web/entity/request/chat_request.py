@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -10,6 +10,22 @@ class ChatContextRequest(BaseModel):
     schema_name: Optional[str] = Field(default=None, min_length=1, max_length=128)
     table_list: List[str] = Field(default_factory=list)
     view_list: List[str] = Field(default_factory=list)
+    geometry: Optional[Any] = Field(
+        default=None,
+        description="Optional geometry payload (e.g. GeoJSON object or WKT string). Null/empty means no geometry constraint.",
+    )
+
+    @field_validator("geometry", mode="before")
+    @classmethod
+    def _normalize_geometry(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        if isinstance(value, (list, dict)):
+            return value if len(value) > 0 else None
+        return value
 
 
 class ChatSSERequest(BaseModel):

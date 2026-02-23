@@ -73,6 +73,8 @@ class ChatService:
                 current_context["table_list"] = normalized_patch["table_list"]
             if "view_list" in patch:
                 current_context["view_list"] = normalized_patch["view_list"]
+            if "geometry" in patch:
+                current_context["geometry"] = normalized_patch.get("geometry")
         return {
             "user_id": int(user_id),
             "chat_id": int(session_row["chat_id"]),

@@ -34,7 +34,19 @@ class ChatDAO(BaseDAO):
             "schema_name": "",
             "table_list": [],
             "view_list": [],
+            "geometry": None,
         }
+
+    @staticmethod
+    def _normalize_optional_geometry(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        if isinstance(value, (list, dict)):
+            return value if len(value) > 0 else None
+        return value
 
     @staticmethod
     def _normalize_context(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -56,6 +68,8 @@ class ChatDAO(BaseDAO):
                     if text_value:
                         out.append(text_value)
                 base[key] = out
+        if "geometry" in raw:
+            base["geometry"] = ChatDAO._normalize_optional_geometry(raw.get("geometry"))
         return base
 
     @staticmethod
