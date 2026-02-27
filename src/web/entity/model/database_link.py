@@ -10,7 +10,7 @@ from sqlalchemy.orm import relationship, validates
 from .base import Base
 
 
-SUPPORTED_DB_TYPES = {"Spatial", "Postgis"}
+SUPPORTED_DB_TYPES = {"Spatialite", "Postgis", "Sedona", "MySQL"}
 
 
 def _utc_now() -> datetime:
@@ -19,11 +19,15 @@ def _utc_now() -> datetime:
 
 def _normalize_db_type(raw_value: str) -> str:
     value = str(raw_value or "").strip().lower()
-    if value == "spatial":
-        return "Spatial"
+    if value == "spatialite":
+        return "Spatialite"
     if value == "postgis":
         return "Postgis"
-    raise ValueError("type must be one of: Spatial, Postgis")
+    if value == "sedona":
+        return "Sedona"
+    if value == "mysql":
+        return "MySQL"
+    raise ValueError("type must be one of: Spatialite, Postgis, Sedona, MySQL")
 
 
 class DatabaseLink(Base):
@@ -116,11 +120,15 @@ class DatabaseLink(Base):
         return cleaned
 
     def to_dict(self) -> Dict:
+        try:
+            db_type = _normalize_db_type(self.type)
+        except Exception:
+            db_type = str(self.type or "")
         return {
             "id": self.id,
             "user_id": self.user_id,
             "name": self.name,
-            "type": self.type,
+            "type": db_type,
             "url": self.url,
             "db_username": self.db_username,
             "db_password": self.db_password,

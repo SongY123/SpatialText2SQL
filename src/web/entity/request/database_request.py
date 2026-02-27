@@ -24,13 +24,24 @@ class DatabaseCreateRequest(BaseModel):
         class Config:
             allow_population_by_field_name = True
 
+    @staticmethod
+    def _normalize_db_type(value: str) -> str:
+        low = str(value or "").strip().lower()
+        type_map = {
+            "postgis": "Postgis",
+            "spatialite": "Spatialite",
+            "sedona": "Sedona",
+            "mysql": "MySQL",
+        }
+        normalized = type_map.get(low)
+        if normalized is None:
+            raise ValueError("type must be one of: Spatialite, Postgis, Sedona, MySQL")
+        return normalized
+
     @field_validator("type")
     @classmethod
     def _validate_type(cls, value: str) -> str:
-        low = value.strip().lower()
-        if low not in {"postgis", "spatial"}:
-            raise ValueError("type must be Spatial or Postgis")
-        return "Postgis" if low == "postgis" else "Spatial"
+        return cls._normalize_db_type(value)
 
 
 class DatabaseUpdateRequest(BaseModel):
@@ -52,10 +63,7 @@ class DatabaseUpdateRequest(BaseModel):
     def _validate_type(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        low = value.strip().lower()
-        if low not in {"postgis", "spatial"}:
-            raise ValueError("type must be Spatial or Postgis")
-        return "Postgis" if low == "postgis" else "Spatial"
+        return DatabaseCreateRequest._normalize_db_type(value)
 
     @model_validator(mode="after")
     def _validate_any_field(self):
@@ -86,10 +94,7 @@ class DatabaseSchemaProbeRequest(BaseModel):
     @field_validator("type")
     @classmethod
     def _validate_type(cls, value: str) -> str:
-        low = value.strip().lower()
-        if low not in {"postgis", "spatial"}:
-            raise ValueError("type must be Spatial or Postgis")
-        return "Postgis" if low == "postgis" else "Spatial"
+        return DatabaseCreateRequest._normalize_db_type(value)
 
 
 class DatabaseSqlExecuteRequest(BaseModel):

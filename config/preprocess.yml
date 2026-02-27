@@ -1,6 +1,6 @@
 db_import:
   input_path: data/osm/new-york-260210
-  # true: 表存在则先删除后导入; false: 表存在则跳过该表
+  # true: drop and re-import if table exists; false: skip existing table
   if_exists: false
   # Default: PostGIS
   target: postgis
@@ -12,9 +12,9 @@ db_import:
     password: 123456
     schema: public
 
-  # Alternative: Spatial (Spatialite) (uncomment to use)
-  # target: spatial
-  # spatial:
+  # Alternative: Spatialite (uncomment to use)
+  # target: spatialite
+  # spatialite:
   #   path: data/osm/test_spatial.sqlite
 
 vectorize:

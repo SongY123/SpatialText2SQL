@@ -25,7 +25,7 @@ keyword_search:
   output_path: "data/indexes/keyword/keyword_index.json"
   min_token_length: 2
 
-# 日志配置
+# Logging configuration
 logging:
   level: INFO
   file_path: "../../logs/app.log"
@@ -35,21 +35,38 @@ logging:
   console: true
 
 model:
-  # 选择模型提供商: ollama | dashscope
-  provider: "dashscope"  # 或 "ollama"
+  # Model provider: ollama | dashscope | openai | gemini
+  provider: "dashscope"  # e.g. ollama / openai / gemini
   
-  # Ollama 配置（本地/远程模型）
+  # Ollama settings (local/remote model)
   ollama:
     model_name: "qwen3-coder:30b-a3b-fp16"
     host: "10.132.80.119:11434"
     stream: true
     keep_alive: "5m"
-    enable_thinking: false  # 启用 Qwen3 的 thinking 功能
+    enable_thinking: false  # Enable Qwen3 thinking mode
   
-  # DashScope/ModelScope 配置（阿里云百炼）
+  # DashScope/ModelScope settings (Alibaba Cloud DashScope)
   dashscope:
-    model_name: "qwen-max"  # 可选: qwen-plus, qwen-turbo, qwen-max, qwen3-coder-32b, qwq-32b-preview
-    api_key: sk-2caf0b86c95a4b51bc29a550f50e6771  # 从阿里云百炼获取
+    model_name: "qwen-max"  # Options: qwen-plus, qwen-turbo, qwen-max, qwen3-coder-32b, qwq-32b-preview
+    api_key: sk-2caf0b86c95a4b51bc29a550f50e6771  # Obtain from Alibaba Cloud DashScope
     stream: true
-    enable_thinking: false  # ⚠️ qwen-max 不支持 thinking，改为 false
-    base_url: null  # 可选，自定义 API 地址
+    enable_thinking: false  # qwen-max does not support thinking mode; keep false
+    base_url: null  # Optional custom API endpoint
+    model_kwargs: {}
+
+  # OpenAI settings
+  openai:
+    model_name: "gpt-4.1-mini"
+    api_key: null
+    api_base: null
+    stream: true
+    model_kwargs: {}
+
+  # Gemini settings
+  gemini:
+    model_name: "gemini-1.5-pro"
+    api_key: null
+    api_base: null
+    stream: true
+    model_kwargs: {}

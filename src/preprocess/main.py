@@ -127,8 +127,8 @@ def run_db_import(config: Dict) -> None:
         db_url = _build_postgis_url(pg_cfg)
         logger.info("Step 1/3: target=postgis, checking extension status...")
         _ensure_postgis_ready(db_url, schema)
-    elif target in {"spatialite", "spatial"}:
-        sl_cfg = config.get("spatialite", {}) or config.get("spatial", {}) or {}
+    elif target == "spatialite":
+        sl_cfg = config.get("spatialite", {})
         sqlite_path = _resolve_path(sl_cfg.get("path"))
         db_url = f"sqlite:///{sqlite_path}"
         schema = None
@@ -136,7 +136,7 @@ def run_db_import(config: Dict) -> None:
             logger.info("Step 1/3 skipped: Spatialite DB is not empty (%s).", sqlite_path)
             return
     else:
-        raise ValueError("db_import.target must be 'postgis' or 'spatialite' (or alias 'spatial').")
+        raise ValueError("db_import.target must be 'postgis' or 'spatialite'.")
 
     try:
         from db_Importer import shp2db  # script mode

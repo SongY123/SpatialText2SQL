@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import json
 from contextlib import suppress
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -34,8 +34,36 @@ def _format_sse(event: str, data: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _first_config(paths: List[str], default: Any = None) -> Any:
+    for path in paths:
+        value = get_config(path, None)
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        return value
+    return default
+
+
+def _dict_config(path: str) -> Dict[str, Any]:
+    value = get_config(path, {})
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _bool_config(path: str, default: bool = True) -> bool:
+    value = get_config(path, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def _build_system_for_jdbc(jdbc_url: str):
     build_dashscope_system = None
+    build_gemini_system = None
     build_ollama_system = None
     build_openai_system = None
 
@@ -43,6 +71,7 @@ def _build_system_for_jdbc(jdbc_url: str):
         try:
             m = importlib.import_module(module_name)
             build_dashscope_system = getattr(m, "build_dashscope_system")
+            build_gemini_system = getattr(m, "build_gemini_system", None)
             build_ollama_system = getattr(m, "build_ollama_system")
             build_openai_system = getattr(m, "build_openai_system")
             break
@@ -56,7 +85,7 @@ def _build_system_for_jdbc(jdbc_url: str):
     web_config_path = str(get_config("web.config_path", "src/web/resources/config.yaml"))
 
     if provider == "ollama":
-        model_name = str(get_config("model.ollama.model_name", "qwen3-coder:30b-a3b-fp16"))
+        model_name = str(_first_config(["model.ollama.model_name", "model.ollama.model"], "qwen3-coder:30b-a3b-fp16"))
         base_url = str(get_config("model.ollama.host", "") or "").strip()
         if base_url and not base_url.startswith("http://") and not base_url.startswith("https://"):
             base_url = f"http://{base_url}"
@@ -65,26 +94,62 @@ def _build_system_for_jdbc(jdbc_url: str):
             jdbc_url=jdbc_url,
             config_path=web_config_path,
             base_url=base_url or None,
+            model_kwargs=_dict_config("model.ollama.model_kwargs"),
             max_rounds=max_rounds,
         )
 
     if provider == "openai":
-        model_name = str(get_config("model.openai.model_name", "gpt-4.1-mini"))
-        api_key = get_config("model.openai.api_key")
+        model_name = str(
+            _first_config(
+                ["model.openai.model_name", "model.openai.model", "model.openai.chat_model"],
+                "gpt-4.1-mini",
+            )
+        )
+        api_key = _first_config(["model.openai.api_key", "model.openai.key", "model.openai.token"], None)
+        api_base = _first_config(["model.openai.api_base", "model.openai.base_url", "model.openai.endpoint"], None)
         return build_openai_system(
             model_name=model_name,
             jdbc_url=jdbc_url,
             config_path=web_config_path,
             api_key=api_key,
+            api_base=(str(api_base).strip() if api_base is not None else None),
+            stream=_bool_config("model.openai.stream", True),
+            model_kwargs=_dict_config("model.openai.model_kwargs"),
+            max_rounds=max_rounds,
+        )
+
+    if provider == "gemini":
+        if build_gemini_system is None:
+            raise RuntimeError("gemini provider is not available in current agent system factory.")
+        model_name = str(
+            _first_config(
+                ["model.gemini.model_name", "model.gemini.model", "model.gemini.chat_model"],
+                "gemini-1.5-pro",
+            )
+        )
+        api_key = _first_config(["model.gemini.api_key", "model.gemini.key", "model.gemini.token"], None)
+        api_base = _first_config(["model.gemini.api_base", "model.gemini.base_url", "model.gemini.endpoint"], None)
+        return build_gemini_system(
+            model_name=model_name,
+            jdbc_url=jdbc_url,
+            config_path=web_config_path,
+            api_key=api_key,
+            api_base=(str(api_base).strip() if api_base is not None else None),
+            stream=_bool_config("model.gemini.stream", True),
+            model_kwargs=_dict_config("model.gemini.model_kwargs"),
             max_rounds=max_rounds,
         )
 
     model_name = str(get_config("model.dashscope.model_name", "qwen-max"))
     api_key = get_config("model.dashscope.api_key")
+    base_url = _first_config(["model.dashscope.api_base", "model.dashscope.base_url"], None)
     return build_dashscope_system(
         model_name=model_name,
         api_key=api_key,
         jdbc_url=jdbc_url,
+        base_url=(str(base_url).strip() if base_url is not None else None),
+        stream=_bool_config("model.dashscope.stream", True),
+        model_kwargs=_dict_config("model.dashscope.model_kwargs"),
         config_path=web_config_path,
         max_rounds=max_rounds,
     )

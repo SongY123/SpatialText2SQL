@@ -265,7 +265,8 @@ class DatabaseService:
         if not url.startswith("jdbc:"):
             return url
 
-        if str(db_type).strip().lower() != "postgis":
+        db_type_low = str(db_type or "").strip().lower()
+        if db_type_low not in {"postgis", "sedona", "mysql"}:
             return url
 
         user = str(username).strip() if username is not None else ""
@@ -274,10 +275,12 @@ class DatabaseService:
             return url
 
         body = url[5:]
-        if not body.startswith("postgresql://"):
+        if "://" not in body:
             return url
 
         parsed = urlparse(body)
+        if not parsed.scheme:
+            return url
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         if "user" not in query and "password" not in query:
             query["user"] = user

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS database_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL DEFAULT '',
-    type TEXT NOT NULL CHECK (type IN ('Spatial', 'Postgis')),
+    type TEXT NOT NULL CHECK (type IN ('Spatialite', 'Postgis', 'Sedona', 'MySQL')),
     url TEXT NOT NULL,
     db_username TEXT NULL,
     db_password TEXT NULL,
