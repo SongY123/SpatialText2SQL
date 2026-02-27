@@ -1,0 +1,65 @@
+server:
+  host: 0.0.0.0
+  port: 8888
+  session_secret: "change-me-in-production"
+
+database:
+  init_sql_path: "src/web/resources/db/init_db.sql"
+  db_path: "spatial_agent.db"
+
+agent:
+  max_rounds: 3
+
+vectorize:
+  chroma_path: "data/indexes/vector/chroma"
+  collection_name: "postgis_extracted"
+  model_name: "Qwen/Qwen3-Embedding-0.6B"
+  normalize_embeddings: true
+  batch_size: 8
+  model_kwargs: {}
+  tokenizer_kwargs: {}
+
+keyword_search:
+  output_path: "data/indexes/keyword/keyword_index.json"
+  min_token_length: 2
+
+logging:
+  level: INFO
+  file_path: "logs/app.log"
+  max_file_size_mb: 10
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(pathname)s:%(lineno)d - %(levelname)s - %(message)s"
+  console: true
+
+model:
+  provider: "dashscope"  # dashscope | ollama | openai | gemini
+
+  ollama:
+    model_name: "qwen3-coder:30b-a3b-fp16"
+    host: "127.0.0.1:11434"
+    stream: true
+    keep_alive: "5m"
+    enable_thinking: false
+    model_kwargs: {}
+
+  dashscope:
+    model_name: "qwen-max"
+    api_key: "replace-with-your-dashscope-api-key"
+    stream: true
+    enable_thinking: false
+    base_url: null
+    model_kwargs: {}
+
+  openai:
+    model_name: "gpt-4.1-mini"
+    api_key: null
+    api_base: null
+    stream: true
+    model_kwargs: {}
+
+  gemini:
+    model_name: "gemini-1.5-pro"
+    api_key: null
+    api_base: null
+    stream: true
+    model_kwargs: {}
