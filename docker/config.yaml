@@ -4,7 +4,7 @@ server:
   session_secret: "change-me-in-production"
 
 database:
-  init_sql_path: "src/web/resources/db/init_db.sql"
+  sql_dir: "src/web/resources/db/migrations"
   db_path: "spatial_agent.db"
 
 agent:

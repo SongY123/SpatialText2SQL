@@ -11,7 +11,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from web.api import admin_router, auth_router, chat_router, database_router, user_router
-from web.entity.model import create_all_tables, get_engine, init_engine
+from web.db_migration_runner import SqlMigrationRunner
+from web.entity.model import get_engine, init_engine
 from utils.config_loader import ConfigLoader, get_config
 
 
@@ -31,39 +32,19 @@ def _resolve_path(path_str: Optional[str]) -> Optional[Path]:
     return PROJECT_ROOT / p
 
 
-def _run_init_sql() -> None:
-    init_sql_path = get_config("database.init_sql_path")
-    sql_path = _resolve_path(init_sql_path)
-    if not sql_path or not sql_path.exists():
-        logger.warning("Init SQL file not found, skip: %s", sql_path)
+def _run_sql_migrations() -> None:
+    sql_dir = _resolve_path(get_config("database.sql_dir"))
+    if not sql_dir:
+        logger.warning("database.sql_dir is empty, skip SQL migrations.")
         return
-
     engine = get_engine()
-    sql_text = sql_path.read_text(encoding="utf-8")
-    if not sql_text.strip():
-        logger.info("Init SQL is empty, skip.")
-        return
-
-    if engine.dialect.name == "sqlite":
-        conn = engine.raw_connection()
-        try:
-            conn.executescript(sql_text)
-            conn.commit()
-        finally:
-            conn.close()
-    else:
-        stmts = [s.strip() for s in sql_text.split(";") if s.strip()]
-        with engine.begin() as conn:
-            for stmt in stmts:
-                conn.exec_driver_sql(stmt)
-    logger.info("Init SQL executed: %s", sql_path)
+    SqlMigrationRunner(engine=engine, sql_dir=sql_dir).run()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_engine(config_path=str(CURRENT_WEB_CONFIG_PATH))
-    create_all_tables()
-    _run_init_sql()
+    _run_sql_migrations()
     logger.info("Web app initialized.")
     yield
     logger.info("Web app shutdown.")

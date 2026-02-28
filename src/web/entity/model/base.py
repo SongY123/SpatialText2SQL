@@ -81,7 +81,5 @@ def get_db_session():
 
 
 def create_all_tables() -> None:
-    # Schema evolution is managed by src/web/resources/db/init_db.sql.
-    # Here we only ensure ORM metadata tables exist.
-    engine = get_engine()
-    Base.metadata.create_all(bind=engine)
+    # Database schema is initialized exclusively by SQL migrations.
+    return None

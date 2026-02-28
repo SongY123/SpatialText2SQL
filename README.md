@@ -29,7 +29,7 @@ Key fields:
 
 - `server.host` / `server.port`: service bind address and port
 - `database.db_path`: local sqlite DB path (default: `spatial_agent.db`)
-- `database.init_sql_path`: initialization SQL path (default: `src/web/resources/db/init_db.sql`)
+- `database.sql_dir`: SQL migration directory (default: `src/web/resources/db/migrations`)
 - `model.provider`: `dashscope` / `ollama` / `openai` / `gemini`
 - Provider-specific fields:
   - `model.dashscope.api_key`
@@ -45,12 +45,17 @@ If you serve a model with vLLM, expose it as an OpenAI-compatible API server, th
 - `model.openai.api_key`: value required by your gateway (can be a placeholder for local setups)
 - `model.openai.model_name`: the served model name
 
-### 4.2 DB Init SQL (Default Usually Works)
+### 4.2 SQL Migration Directory
 
-File: `src/web/resources/db/init_db.sql`
+Directory: `src/web/resources/db/migrations`
 
-- This SQL is executed automatically at startup (idempotent).
-- Usually no changes are required.
+- SQL files are scanned automatically at startup.
+- File names must follow Flyway-like version naming, for example:
+  - `V1__core-schema-ddl.sql`
+  - `V1_0_0_1__seed-default-users-dml.sql`
+- Migrations are ordered by version and executed in sequence.
+- File checksums are recorded in the database. If a previously applied file changes, startup fails.
+- Pending migrations are executed inside a transaction. If any file fails, the whole batch is rolled back.
 
 ### 4.3 Preprocess Config (Optional)
 

@@ -5,13 +5,12 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from ..entity.model import create_all_tables, get_db_session
+from ..entity.model import get_db_session
 
 
 class BaseDAO:
     def __init__(self, session: Optional[Session] = None) -> None:
         self._external_session = session
-        create_all_tables()
 
     @contextmanager
     def session_scope(self):
@@ -28,4 +27,3 @@ class BaseDAO:
             raise
         finally:
             session.close()
-
