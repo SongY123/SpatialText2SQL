@@ -1,3 +1,15 @@
+chromadb
+fiona
 geoalchemy2
 geopandas
+numpy
+openpyxl
+psycopg2-binary
 pyogrio
+pyyaml
+scikit-learn
+sentence-transformers
+sqlalchemy
+torch
+tqdm
+transformers

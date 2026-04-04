@@ -2,10 +2,10 @@ import unittest
 import os
 import sys
 
-# Add src to path so we can import shp2db
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
+# Add repository root to path so we can import the src package.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from preprocess.shp2db import shp2db
+from src.preprocess.shp2db import shp2db
 
 class TestShp2Db(unittest.TestCase):
     def setUp(self):

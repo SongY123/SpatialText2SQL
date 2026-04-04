@@ -208,3 +208,11 @@ __marimo__/
 
 dataset/
 postgis-doc/
+
+# Project-generated artifacts
+.DS_Store
+data/
+rag_db/
+results/
+scripts/spatialsql/migration_report*.json
+scripts/spatialsql/migration_report*.txt
