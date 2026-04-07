@@ -7,6 +7,12 @@ from tqdm import tqdm
 import yaml
 
 from src.inference.loaders.qwen_model_loader import QwenModelLoader
+from src.inference.loaders.vllm_openai_loader import VllmOpenAILoader
+
+
+def build_model_run_name(model_name: str, backend: str) -> str:
+    """构造带后端信息的运行标识，避免结果互相覆盖。"""
+    return f"{model_name}__{backend}"
 
 
 class ModelLoaderFactory:
@@ -14,7 +20,8 @@ class ModelLoaderFactory:
     
     # 注册模型加载器映射
     _loaders = {
-        'QwenModelLoader': QwenModelLoader
+        'QwenModelLoader': QwenModelLoader,
+        'VllmOpenAILoader': VllmOpenAILoader,
     }
     
     @classmethod
@@ -66,10 +73,61 @@ class ModelInference:
         
         self.inference_config = self.model_config.get('inference', {})
         self.results_config = self.eval_config.get('results', {})
+        self.default_backend = self.model_config.get('default_backend', 'vllm')
+
+    @staticmethod
+    def get_run_name(model_name: str, backend: str) -> str:
+        """返回模型在当前后端下的运行名称。"""
+        return build_model_run_name(model_name, backend)
+
+    def resolve_model_config(self, model_name: str, backend: str = None):
+        """
+        解析逻辑模型在指定后端下的真实配置。
+
+        Args:
+            model_name: 逻辑模型名称
+            backend: 推理后端名称
+
+        Returns:
+            (解析后的模型配置, 实际后端名)
+        """
+        model_info = self.model_config['models'].get(model_name)
+        if not model_info:
+            raise ValueError(f"未找到模型配置: {model_name}")
+
+        resolved_backend = backend or self.default_backend
+
+        # 兼容旧配置：若不存在 backends，按 transformers 单后端处理
+        if 'backends' not in model_info:
+            if resolved_backend != 'transformers':
+                raise ValueError(
+                    f"模型 {model_name} 使用旧版配置，仅支持 transformers 后端，"
+                    f"当前请求后端为: {resolved_backend}"
+                )
+            return model_info, resolved_backend
+
+        backends = model_info.get('backends', {})
+        backend_config = backends.get(resolved_backend)
+        if not backend_config:
+            available = ', '.join(sorted(backends.keys()))
+            raise ValueError(
+                f"模型 {model_name} 未配置后端 {resolved_backend}。"
+                f"可用后端: {available or '无'}"
+            )
+
+        shared_config = {k: v for k, v in model_info.items() if k != 'backends'}
+        merged_config = {**shared_config, **backend_config}
+        merged_config['generation_config'] = {
+            **shared_config.get('generation_config', {}),
+            **backend_config.get('generation_config', {}),
+        }
+        merged_config['backend'] = resolved_backend
+        merged_config['logical_model_name'] = model_name
+        return merged_config, resolved_backend
     
-    def run_inference(self, model_name: str, config_type: str, 
+    def run_inference(self, model_name: str, config_type: str,
                      prompts: List[str], data_items: List[Dict],
-                     save_dir: str):
+                     save_dir: str, backend: str = None):
         """
         运行模型推理
         
@@ -79,16 +137,15 @@ class ModelInference:
             prompts: prompt列表
             data_items: 数据项列表（包含id, question, gold_sql等）
             save_dir: 结果保存目录
+            backend: 推理后端名称
         """
+        model_info, resolved_backend = self.resolve_model_config(model_name, backend)
+        run_name = self.get_run_name(model_name, resolved_backend)
+
         print(f"\n{'='*70}")
-        print(f"模型推理: {model_name} | 配置: {config_type}")
+        print(f"模型推理: {run_name} | 配置: {config_type}")
         print(f"{'='*70}\n")
-        
-        # 获取模型配置
-        model_info = self.model_config['models'].get(model_name)
-        if not model_info:
-            raise ValueError(f"未找到模型配置: {model_name}")
-        
+
         # 创建模型加载器
         loader_class_name = model_info['loader_class']
         model_loader = ModelLoaderFactory.create(loader_class_name, model_info)
@@ -106,7 +163,7 @@ class ModelInference:
         
         # 使用tqdm显示进度
         iterator = tqdm(enumerate(prompts), total=len(prompts), 
-                       desc=f"{model_name}-{config_type}",
+                       desc=f"{run_name}-{config_type}",
                        disable=not show_progress)
         
         for idx, prompt in iterator:
@@ -126,7 +183,7 @@ class ModelInference:
                 
                 # 定期保存
                 if (idx + 1) % save_interval == 0:
-                    self._save_intermediate_results(results, save_dir, model_name, config_type)
+                    self._save_intermediate_results(results, save_dir, run_name, config_type)
                 
             except Exception as e:
                 print(f"\n错误: 处理第{idx+1}条数据时出错 - {str(e)}")
@@ -141,7 +198,7 @@ class ModelInference:
                 })
         
         # 最终保存
-        self._save_final_results(results, save_dir, model_name, config_type)
+        self._save_final_results(results, save_dir, run_name, config_type)
 
         # 释放模型和清理GPU内存，避免在多个配置/模型之间累积占用
         print("\n" + "="*70)

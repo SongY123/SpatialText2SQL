@@ -3,6 +3,7 @@ fiona
 geoalchemy2
 geopandas
 numpy
+openai
 openpyxl
 psycopg2-binary
 pyogrio

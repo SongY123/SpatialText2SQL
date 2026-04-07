@@ -1,5 +1,4 @@
 """Qwen系列模型加载器"""
-import re
 import os
 from typing import Dict, Any
 
@@ -9,6 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 from src.inference.base import BaseModelLoader
+from src.inference.sql_utils import extract_sql_from_text
 
 # 导入torch
 try:
@@ -102,73 +102,9 @@ class QwenModelLoader(BaseModelLoader):
         # 解码
         generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         
-        # 提取SQL（去除prompt部分）
-        sql = self._extract_sql(generated_text, prompt)
+        # 提取 SQL（去除 prompt 部分）
+        sql = extract_sql_from_text(generated_text, prompt)
         
-        return sql
-    
-    def _extract_sql(self, generated_text: str, prompt: str) -> str:
-        """
-        从生成的文本中提取SQL语句
-        
-        Args:
-            generated_text: 完整的生成文本
-            prompt: 输入的prompt
-            
-        Returns:
-            提取出的SQL语句
-        """
-        # 移除prompt部分
-        if generated_text.startswith(prompt):
-            sql = generated_text[len(prompt):].strip()
-        else:
-            sql = generated_text.strip()
-
-        # 移除markdown代码块标记
-        sql = re.sub(r'```sql\s*', '', sql)
-        sql = re.sub(r'```\s*', '', sql)
-
-        # 提取第一个完整的SQL语句（从 SQL 关键字开始，到第一个分号结束）
-        sql_keywords_pattern = r'(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\s+.*?;'
-        match = re.search(sql_keywords_pattern, sql, re.IGNORECASE | re.DOTALL)
-
-        if match:
-            sql = match.group(0)
-        else:
-            # 如果没有找到标准格式，尝试找到第一个分号之前的内容，
-            # 但需要确保以 SQL 关键字开头
-            sql_keywords = r'(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)'
-            keyword_match = re.search(sql_keywords, sql, re.IGNORECASE)
-            if keyword_match:
-                start_pos = keyword_match.start()
-                sql = sql[start_pos:]
-                # 找到第一个分号
-                semicolon_pos = sql.find(';')
-                if semicolon_pos > 0:
-                    sql = sql[:semicolon_pos + 1]
-                else:
-                    # 如果没有分号，找到第一个中文字符或明显的非 SQL 文本
-                    chinese_pattern = r'[\u4e00-\u9fff]'
-                    chinese_match = re.search(chinese_pattern, sql)
-                    if chinese_match:
-                        sql = sql[:chinese_match.start()].strip()
-                        # 确保以分号结尾
-                        if sql and not sql.endswith(';'):
-                            last_semicolon = sql.rfind(';')
-                            if last_semicolon > 0:
-                                sql = sql[:last_semicolon + 1]
-
-        # 移除注释
-        sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
-
-        # 清理多余的空白
-        sql = re.sub(r'\s+', ' ', sql)
-        sql = sql.strip()
-
-        # 确保以分号结尾
-        if sql and not sql.endswith(';'):
-            sql += ';'
-
         return sql
     
     def unload(self):

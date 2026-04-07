@@ -1,32 +1,43 @@
 # 模型配置文件
+default_backend: "vllm"
+
 models:
   qwen2.5-coder-7b:
-    loader_class: "QwenModelLoader"
-    model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B/snapshots/0396a76181e127dfc13e5c5ec48a8cee09938b02"
     model_type: "causal_lm"
-    device_map: "auto"  # 自动分配GPU
     generation_config:
       max_new_tokens: 512
       temperature: 0.1
       top_p: 0.9
       do_sample: false
       repetition_penalty: 1.1
+    backends:
+      transformers:
+        loader_class: "QwenModelLoader"
+        model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B/snapshots/0396a76181e127dfc13e5c5ec48a8cee09938b02"
+        device_map: "auto"  # 自动分配GPU
   
   qwen3-8b:
-    loader_class: "QwenModelLoader"
-    model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
     model_type: "causal_lm"
-    device_map: "auto"
     generation_config:
       max_new_tokens: 512
       temperature: 0.1
       top_p: 0.9
       do_sample: false
       repetition_penalty: 1.1
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8000/v1"
+        model: "/data/llm/qwen/Qwen3-8B"
+        api_key: ""
+        timeout: 600
+      transformers:
+        loader_class: "QwenModelLoader"
+        model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
+        device_map: "auto"
 
 # 默认使用的模型列表
 default_models:
-  - "qwen2.5-coder-7b"
   - "qwen3-8b"
 
 # 模型推理配置

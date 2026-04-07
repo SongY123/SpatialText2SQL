@@ -35,6 +35,9 @@ class MainPipeline:
             self.model_names = args.models
         else:
             self.model_names = self.model_config.get('default_models', [])
+
+        # 获取推理后端
+        self.backend = args.backend or self.model_config.get('default_backend', 'vllm')
         
         # 获取配置列表
         if args.configs:
@@ -182,7 +185,8 @@ class MainPipeline:
         for model_name in self.model_names:
             for config_type in self.config_types:
                 current_task += 1
-                print(f"\n[{current_task}/{total_tasks}] 处理: {model_name} - {config_type}")
+                run_name = model_inference.get_run_name(model_name, self.backend)
+                print(f"\n[{current_task}/{total_tasks}] 处理: {run_name} - {config_type}")
                 
                 # 准备prompts
                 prompts = self._prepare_prompts(
@@ -196,7 +200,7 @@ class MainPipeline:
                 # 运行推理
                 results_dir = os.path.join(
                     self.eval_config['results']['predictions_dir'],
-                    model_name,
+                    run_name,
                     config_type
                 )
                 predictions = model_inference.run_inference(
@@ -204,7 +208,8 @@ class MainPipeline:
                     config_type=config_type,
                     prompts=prompts,
                     data_items=preprocessed_data,
-                    save_dir=results_dir
+                    save_dir=results_dir,
+                    backend=self.backend
                 )
                 
                 # 运行评估
@@ -212,7 +217,7 @@ class MainPipeline:
                     eval_result = evaluator.evaluate(
                         predictions=predictions,
                         dataset_info=dataset_info,
-                        model_name=model_name,
+                        model_name=run_name,
                         config_type=config_type
                     )
                     
@@ -300,6 +305,7 @@ class MainPipeline:
         """
         from src.datasets.processing import DataLoaderFactory
         from src.evaluation.evaluator import Evaluator
+        from src.inference.model_inference import build_model_run_name
 
         print("\n" + "="*80)
         print("步骤: 评估已有预测结果")
@@ -326,21 +332,22 @@ class MainPipeline:
         
         # 遍历所有模型和配置
         for model_name in self.model_names:
-            model_dir = os.path.join(predictions_dir, model_name)
+            run_name = build_model_run_name(model_name, self.backend)
+            model_dir = os.path.join(predictions_dir, run_name)
             if not os.path.exists(model_dir):
-                print(f"警告: 模型 {model_name} 的预测结果目录不存在: {model_dir}")
+                print(f"警告: 模型 {run_name} 的预测结果目录不存在: {model_dir}")
                 continue
             
             # 遍历所有配置类型
             for config_type in self.config_types:
                 config_dir = os.path.join(model_dir, config_type)
-                prediction_file = os.path.join(config_dir, f"{model_name}_{config_type}.json")
+                prediction_file = os.path.join(config_dir, f"{run_name}_{config_type}.json")
                 
                 if not os.path.exists(prediction_file):
                     print(f"警告: 预测结果文件不存在: {prediction_file}")
                     continue
                 
-                print(f"\n评估: {model_name} - {config_type}")
+                print(f"\n评估: {run_name} - {config_type}")
                 print(f"  加载预测结果: {prediction_file}")
                 
                 # 加载预测结果
@@ -356,7 +363,7 @@ class MainPipeline:
                     eval_result = evaluator.evaluate(
                         predictions=predictions,
                         dataset_info=dataset_info,
-                        model_name=model_name,
+                        model_name=run_name,
                         config_type=config_type
                     )
                     
@@ -415,6 +422,11 @@ def main():
     parser.add_argument('--config-dir', type=str, default='config', help='配置文件目录')
     parser.add_argument('--dataset', type=str, help='数据集名称')
     parser.add_argument('--models', nargs='+', help='模型列表')
+    parser.add_argument(
+        '--backend',
+        choices=['vllm', 'transformers'],
+        help='推理后端，默认读取 model_config.yaml 中的 default_backend'
+    )
     parser.add_argument('--configs', nargs='+', choices=['base', 'rag', 'keyword', 'full'], 
                        help='配置类型列表')
     
