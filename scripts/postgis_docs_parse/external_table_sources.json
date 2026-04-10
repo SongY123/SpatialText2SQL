@@ -1,0 +1,9 @@
+{
+  "tables": {
+    "nyc_census_blocks": "https://postgis.net/workshops/postgis-intro/about_data.html",
+    "nyc_neighborhoods": "https://postgis.net/workshops/postgis-intro/about_data.html",
+    "nyc_streets": "https://postgis.net/workshops/postgis-intro/about_data.html",
+    "nyc_subway_stations": "https://postgis.net/workshops/postgis-intro/about_data.html",
+    "nyc_census_sociodata": "https://postgis.net/workshops/postgis-intro/about_data.html"
+  }
+}
