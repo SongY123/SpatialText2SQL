@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "description_zh": "与 scenario_database_blueprints 中 ggim.category 一致的 14 类英文标签（第二层 UN-GGIM 工程内编码）",
+  "categories": [
+    { "id": "ggim_1", "sort_order": 1, "label_en": "Global Geodetic Reference Frame" },
+    { "id": "ggim_2", "sort_order": 2, "label_en": "Addresses" },
+    { "id": "ggim_3", "sort_order": 3, "label_en": "Buildings and Settlements" },
+    { "id": "ggim_4", "sort_order": 4, "label_en": "Elevation and Depth" },
+    { "id": "ggim_5", "sort_order": 5, "label_en": "Functional Areas" },
+    { "id": "ggim_6", "sort_order": 6, "label_en": "Geographical Names" },
+    { "id": "ggim_7", "sort_order": 7, "label_en": "Geology and Soils" },
+    { "id": "ggim_8", "sort_order": 8, "label_en": "Land Cover and Land Use" },
+    { "id": "ggim_9", "sort_order": 9, "label_en": "Land Parcels" },
+    { "id": "ggim_10", "sort_order": 10, "label_en": "Orthoimagery" },
+    { "id": "ggim_11", "sort_order": 11, "label_en": "Physical Infrastructure" },
+    { "id": "ggim_12", "sort_order": 12, "label_en": "Population Distribution" },
+    { "id": "ggim_13", "sort_order": 13, "label_en": "Transport Networks" },
+    { "id": "ggim_14", "sort_order": 14, "label_en": "Water" }
+  ]
+}
