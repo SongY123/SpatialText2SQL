@@ -1,0 +1,15 @@
+[project]
+name = "spatial-text2sql-benchmark"
+version = "0.1.0"
+description = "Research-oriented pipeline for building scenario-specific spatial Text-to-SQL benchmarks from NYC OpenData."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
