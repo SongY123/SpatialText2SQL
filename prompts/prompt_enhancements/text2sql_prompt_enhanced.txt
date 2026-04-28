@@ -1,0 +1,28 @@
+You are an expert in spatial text-to-SQL. Generate one PostgreSQL + PostGIS SQL query from the information below.
+
+## SQL Construction Guidelines
+- Use only the tables and columns shown in the Database Schema, with identifiers written exactly as shown.
+- Use Content Information as database context and value grounding, not as the answer itself. When it shows a database value that matches the question, use that value form.
+- Choose the SQL structure needed for the question: joins, filters, aggregation, grouping, ordering, limits, subqueries, CTEs, predicates, or computations.
+- Match the requested answer shape. Return complete rows or all columns only when the question asks for them; otherwise return the answer fields or aggregate values.
+- Keep the query read-only, self-contained, syntactically valid, and executable in PostgreSQL + PostGIS.
+
+## User Question
+{{question_block}}
+
+## Database Schema
+{{schema_block}}
+
+## Content Information
+{{content_information_block}}
+
+## Output Format
+Return only one SQL code block in the following format:
+
+```sql
+SELECT ...
+```
+
+The SQL inside the code fence must be a PostgreSQL + PostGIS SELECT statement or a WITH query whose final statement is a SELECT statement.
+Do not include SQL comments, explanations, JSON, XML tags, natural language, or any text outside the code fence.
+The SQL must be syntactically valid and executable.
