@@ -37,6 +37,18 @@ datasets:
           - "dataset2_tourism"
           - "dataset2_traffic"
 
+  floodsql_pg:
+    type: "benchmark_json"
+    loader_class: "FloodSQLLoader"
+    data_path: "../FloodSQL-Bench"
+    database: "floodsql"
+    use_sql_dialect_adapter: true
+    sql_dialect_adapter: "duckdb_to_postgis"
+    grouping:
+      fields: ["level"]
+      values:
+        level: ["L0", "L1", "L2", "L3", "L4", "L5"]
+
 # 默认数据集（保持原样，原流程不变）
 default_dataset: "spatial_qa"
 

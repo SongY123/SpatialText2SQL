@@ -1,0 +1,23 @@
+You are an expert in spatial text-to-SQL. Generate one PostgreSQL + PostGIS SQL query from the information below.
+
+## Database Schema
+{{schema_block}}
+
+## Sample Data
+{{sample_data_block}}
+
+## Retrieved Context
+{{rag_block}}
+
+## Keyword Context
+{{keyword_block}}
+
+## User Question
+{{question_block}}
+
+## Output Requirements
+1. Only use tables and columns explicitly present in the schema. Treat sample data only as value hints, not as a complete representation of the database.
+2. Return one PostgreSQL + PostGIS SQL query only.
+3. Prefer existing columns over invented derived fields.
+4. Preserve literal values exactly as stored in the database.
+5. Ensure the SQL is syntactically valid and executable.

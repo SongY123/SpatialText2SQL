@@ -1,34 +1,57 @@
 #!/bin/bash
-# SpatialSQL 小样本测试：从 dataset1_ada 挑 3 条做推理评估，验证流程可通
-set -e
+# 单样本测试脚本：直接调用 run_single_sample.py，并在输出中展示 token 与 latency
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# 备份原始文件
-cp data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json \
-   data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json.bak
+DATASET="${DATASET:-spatialsql_pg}"
+GROUP_VALUE="${GROUP_VALUE:-dataset1_ada}"
+SAMPLE_ID="${SAMPLE_ID:-1}"
+SAMPLE_LIMIT="${SAMPLE_LIMIT:-1}"
+MODEL="${MODEL:-qwen2.5-coder-7b}"
+BACKEND="${BACKEND:-vllm}"
+CONFIG_TYPE="${CONFIG_TYPE:-base}"
+PREVIEW_CHARS="${PREVIEW_CHARS:-12000}"
+SHOW_PROMPT="${SHOW_PROMPT:-1}"
+NO_EVAL="${NO_EVAL:-0}"
+CONDA_ENV="${CONDA_ENV:-}"
 
-# 临时仅保留前 3 条用于测试（快速验证）
-conda run -n text2sql python - <<'PY'
-import json
-with open('data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json','r',encoding='utf-8') as f:
-    data=json.load(f)
-sample=data[:3]
-with open('data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json','w',encoding='utf-8') as f:
-    json.dump(sample,f,ensure_ascii=False,indent=2)
-print(f'Reduced to {len(sample)} samples for quick test')
-PY
+CMD=(python scripts/evaluation/run_single_sample.py
+  --dataset "$DATASET"
+  --group-value "$GROUP_VALUE"
+  --model "$MODEL"
+  --backend "$BACKEND"
+  --config "$CONFIG_TYPE"
+  --preview-chars "$PREVIEW_CHARS")
 
-# 执行推理评估（仅 base 配置，单模型）
-echo "Running inference+evaluation on 3 samples..."
-conda run -n text2sql python scripts/evaluation/run_pipeline.py --inference --evaluate \
-  --dataset spatialsql_pg \
-  --models qwen2.5-coder-7b \
-  --configs base
+if [[ -n "$SAMPLE_ID" ]]; then
+  CMD+=(--sample-id "$SAMPLE_ID")
+else
+  CMD+=(--sample-limit "$SAMPLE_LIMIT")
+fi
 
-# 恢复原始文件
-mv data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json.bak \
-   data/preprocessed/spatialsql_pg/splitdataset1_ada_with_schema.json
+if [[ "$SHOW_PROMPT" == "1" ]]; then
+  CMD+=(--show-prompt)
+fi
 
-echo "Test completed! Check results/predictions/ and results/evaluations/"
+if [[ "$NO_EVAL" == "1" ]]; then
+  CMD+=(--no-eval)
+fi
+
+echo "Running single-sample test with:"
+echo "  dataset       : $DATASET"
+echo "  group_value   : ${GROUP_VALUE:-<none>}"
+echo "  sample_id     : ${SAMPLE_ID:-<none>}"
+echo "  sample_limit  : $SAMPLE_LIMIT"
+echo "  model         : $MODEL"
+echo "  backend       : $BACKEND"
+echo "  config_type   : $CONFIG_TYPE"
+echo "  show_prompt   : $SHOW_PROMPT"
+echo "  no_eval       : $NO_EVAL"
+
+if [[ -n "$CONDA_ENV" ]]; then
+  conda run -n "$CONDA_ENV" "${CMD[@]}"
+else
+  "${CMD[@]}"
+fi

@@ -2,12 +2,10 @@
 import os
 from typing import Dict, Any
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 # 设置使用Hugging Face镜像加速模型下载
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
-from src.inference.base import BaseModelLoader
+from src.inference.base import BaseModelLoader, GenerationResult
 from src.inference.sql_utils import extract_sql_from_text
 
 # 导入torch
@@ -16,6 +14,12 @@ try:
 except ImportError:
     print("警告: torch未安装，模型推理将无法工作")
     torch = None
+
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except ImportError:
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
 
 
 class QwenModelLoader(BaseModelLoader):
@@ -41,6 +45,9 @@ class QwenModelLoader(BaseModelLoader):
         model_path = os.path.expanduser(model_path)
         
         print(f"\n加载模型: {model_path}")
+
+        if AutoTokenizer is None or AutoModelForCausalLM is None:
+            raise RuntimeError("transformers未安装，无法加载Qwen模型")
         
         try:
             # 加载tokenizer
@@ -63,16 +70,16 @@ class QwenModelLoader(BaseModelLoader):
             print(f"✗ 模型加载失败: {str(e)}")
             raise
     
-    def generate_sql(self, prompt: str, **gen_kwargs) -> str:
+    def generate(self, prompt: str, **gen_kwargs) -> GenerationResult:
         """
-        根据prompt生成SQL
+        根据 prompt 生成结构化结果。
         
         Args:
             prompt: 输入提示词
             **gen_kwargs: 生成参数（会覆盖配置中的默认参数）
             
         Returns:
-            生成的SQL语句
+            结构化生成结果
         """
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("模型未加载，请先调用load_model()")
@@ -91,21 +98,27 @@ class QwenModelLoader(BaseModelLoader):
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=gen_config.get('max_new_tokens', 512),
-                temperature=gen_config.get('temperature', 0.1),
-                top_p=gen_config.get('top_p', 0.9),
+                max_new_tokens=gen_config.get('max_new_tokens', 2048),
+                temperature=gen_config.get('temperature', 0.0),
+                top_p=gen_config.get('top_p', 1.0),
                 do_sample=gen_config.get('do_sample', False),
-                repetition_penalty=gen_config.get('repetition_penalty', 1.1),
+                repetition_penalty=gen_config.get('repetition_penalty', 1.0),
                 pad_token_id=self.tokenizer.eos_token_id
             )
-        
-        # 解码
-        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # 提取 SQL（去除 prompt 部分）
-        sql = extract_sql_from_text(generated_text, prompt)
-        
-        return sql
+
+        prompt_token_count = inputs["input_ids"].shape[-1]
+        completion_tokens = outputs[0][prompt_token_count:]
+        completion_text = self.tokenizer.decode(completion_tokens, skip_special_tokens=True)
+        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        return GenerationResult(
+            sql=extract_sql_from_text(full_text, prompt),
+            raw_text=completion_text,
+        )
+
+    def generate_sql(self, prompt: str, **gen_kwargs) -> str:
+        """兼容旧接口，仅返回 SQL 文本。"""
+        return self.generate(prompt, **gen_kwargs).sql
     
     def unload(self):
         """

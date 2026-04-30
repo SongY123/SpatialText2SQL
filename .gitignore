@@ -211,8 +211,10 @@ postgis-doc/
 
 # Project-generated artifacts
 .DS_Store
+.remote-experiment.env
 data/
 rag_db/
 results/
+server_outputs/
 scripts/spatialsql/migration_report*.json
 scripts/spatialsql/migration_report*.txt

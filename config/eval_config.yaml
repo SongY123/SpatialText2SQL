@@ -30,12 +30,28 @@ ablation_configs:
     use_rag: true
     use_keyword: true
 
+  prompt_enhanced:
+    name: "Enhanced Prompt"
+    description: "Question + Schema + dataset-specific prompt enhancement"
+    use_rag: false
+    use_keyword: false
+    prompt_style: "prompt_enhanced"
+
 # 默认使用的配置列表
 default_configs:
   - "base"
-  - "rag"
-  - "keyword"
-  - "full"
+
+prompt_styles:
+  default:
+    template_path: "prompts/text2sql_prompt.txt"
+    include_sample_data: true
+    use_dataset_context: false
+
+  prompt_enhanced:
+    template_path: "prompts/text2sql_prompt.txt"
+    include_sample_data: true
+    use_dataset_context: false
+    dataset_specific: true
 
 # RAG配置
 rag:
@@ -51,16 +67,33 @@ keyword_search:
   method: "tfidf"  # 使用TF-IDF方法
   doc_source: "data/postgis_extracted.json"
 
+floodsql_pg:
+  metadata:
+    doc_source: "../FloodSQL-Bench/data/metadata_parquet.json"
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+    vector_db_path: "data/indexes/vector/floodsql"
+    table_top_k_by_level:
+      L0: 3
+      L1: 4
+      L2: 4
+      L3: 5
+      L4: 5
+      L5: 5
+    column_top_k: 5
+
 # 评估运行配置
 evaluation:
   timeout: 60  # SQL执行超时时间（秒）
   parallel_workers: 4  # 并行评估的worker数量
   save_details: true  # 是否保存详细结果
 
+prediction_postprocess:
+  enable_spatialsql_normalization: true
+  enable_floodsql_normalization: true
+
 # 结果输出配置
 results:
   output_dir: "results"
-  predictions_dir: "results/predictions"
-  evaluations_dir: "results/evaluations"
-  logs_dir: "results/logs"
-  summary_file: "results/evaluations/summary.json"
+  tasks_dir: "results/tasks"
+  benchmarks_dir: "results/benchmarks"
+  sessions_dir: "results/sessions"

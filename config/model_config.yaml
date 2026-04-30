@@ -1,33 +1,220 @@
 # 模型配置文件
+#
+# 说明：
+# 1. paper_group=open_source 的模型会进入论文截图对应的 open-source 表格导出。
+# 2. 对于仓库内尚未固定下来的服务地址，api_base/model 使用显式占位值，请在实际跑实验前替换。
+
 default_backend: "vllm"
 
 models:
   qwen2.5-coder-7b:
+    display_name: "Qwen2.5-Coder-7B-Instruct"
+    size_label: "7B"
+    paper_group: "open_source"
+    paper_order: 10
     model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen2.5-Coder-7B-Instruct"
     generation_config:
-      max_new_tokens: 512
-      temperature: 0.1
-      top_p: 0.9
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
       do_sample: false
-      repetition_penalty: 1.1
-    backends:
-      transformers:
-        loader_class: "QwenModelLoader"
-        model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B/snapshots/0396a76181e127dfc13e5c5ec48a8cee09938b02"
-        device_map: "auto"  # 自动分配GPU
-  
-  qwen3-8b:
-    model_type: "causal_lm"
-    generation_config:
-      max_new_tokens: 512
-      temperature: 0.1
-      top_p: 0.9
-      do_sample: false
-      repetition_penalty: 1.1
+      repetition_penalty: 1.0
     backends:
       vllm:
         loader_class: "VllmOpenAILoader"
         api_base: "http://10.132.80.118:8000/v1"
+        model: "/data/llm/qwen/Qwen2.5-Coder-7B-Instruct"
+        api_key: ""
+        timeout: 600
+      transformers:
+        loader_class: "QwenModelLoader"
+        model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-Coder-7B/snapshots/0396a76181e127dfc13e5c5ec48a8cee09938b02"
+        device_map: "auto"
+
+  qwen2.5-coder-14b:
+    display_name: "Qwen2.5-Coder-14B-Instruct"
+    size_label: "14B"
+    paper_group: "open_source"
+    paper_order: 20
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen2.5-Coder-14B-Instruct"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8001/v1"
+        model: "/data/llm/qwen/Qwen2.5-Coder-14B-Instruct"
+        api_key: ""
+        timeout: 600
+
+  qwen2.5-coder-32b:
+    display_name: "Qwen2.5-Coder-32B-Instruct"
+    size_label: "32B"
+    paper_group: "open_source"
+    paper_order: 30
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen2.5-Coder-32B-Instruct"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8002/v1"
+        model: "/data/llm/qwen/Qwen2.5-Coder-32B-Instruct"
+        api_key: ""
+        timeout: 600
+
+  qwen3-coder-30b-a3b-instruct:
+    display_name: "Qwen3-Coder-30B-A3B-Instruct"
+    size_label: "30B"
+    paper_group: "open_source"
+    paper_order: 40
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8003/v1"
+        model: "/data/llm/qwen/Qwen3-Coder-30B-A3B-Instruct"
+        api_key: ""
+        timeout: 600
+
+  qwen3-coder-next-fp8:
+    display_name: "Qwen3-Coder-Next"
+    size_label: "80B"
+    paper_group: "open_source"
+    paper_order: 50
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen3-Coder-Next"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8004/v1"
+        model: "/data/llm/qwen/Qwen3-Coder-Next"
+        api_key: ""
+        timeout: 600
+
+  llama3.1-8b-instruct:
+    display_name: "Llama3.1-8B-Instruct"
+    size_label: "8B"
+    paper_group: "open_source"
+    paper_order: 60
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "meta-llama/Llama-3.1-8B-Instruct"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8005/v1"
+        model: "/data/llm/llama/Meta-Llama-3.1-8B-Instruct"
+        api_key: ""
+        timeout: 600
+
+  llama3.1-70b-instruct:
+    display_name: "Llama3.1-70B-Instruct"
+    size_label: "70B"
+    paper_group: "open_source"
+    paper_order: 70
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "meta-llama/Llama-3.1-70B-Instruct"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8006/v1"
+        model: "/data/llm/llama/Meta-Llama-3.1-70B-Instruct"
+        api_key: ""
+        timeout: 600
+
+  gemma4-26b-a4b-it:
+    display_name: "Gemma4-26B-A4B-it"
+    size_label: "26B"
+    paper_group: "open_source"
+    paper_order: 80
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "google/gemma-3-27b-it"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8007/v1"
+        model: "/data/llm/google/gemma-4-26B-A4B-it"
+        api_key: ""
+        timeout: 600
+
+  gemma4-31b-it:
+    display_name: "Gemma4-31B-it"
+    size_label: "31B"
+    paper_group: "open_source"
+    paper_order: 90
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "google/gemma-3-27b-it"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8008/v1"
+        model: "/data/llm/google/gemma-4-31B-it"
+        api_key: ""
+        timeout: 600
+
+  qwen3-8b:
+    display_name: "Qwen3-8B"
+    size_label: "8B"
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen3-8B"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8009/v1"
         model: "/data/llm/qwen/Qwen3-8B"
         api_key: ""
         timeout: 600
@@ -36,12 +223,31 @@ models:
         model_path: "~/.cache/huggingface/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
         device_map: "auto"
 
+  qwen3-235b-a22b-thinking:
+    display_name: "Qwen3-235B-A22B-Thinking"
+    size_label: "235B"
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "Qwen/Qwen3-235B-A22B-Thinking-2507"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8000/v1"
+        model: "/data/llm/qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
+        api_key: ""
+        timeout: 900
+
 # 默认使用的模型列表
 default_models:
   - "qwen3-8b"
 
 # 模型推理配置
 inference:
-  batch_size: 1  # 批处理大小
-  show_progress: true  # 显示进度条
-  save_interval: 10  # 每10条保存一次结果
+  batch_size: 1
+  show_progress: true
+  save_interval: 10

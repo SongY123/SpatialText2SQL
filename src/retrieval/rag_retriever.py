@@ -182,7 +182,7 @@ class RAGRetriever:
             
             print(f"  已处理 {min(i+batch_size, len(documents))}/{len(documents)} 个文档")
     
-    def retrieve(self, question: str) -> List[str]:
+    def retrieve(self, question: str, item: Optional[Dict] = None) -> List[str]:
         """
         根据问题检索相关文档
         
@@ -192,6 +192,7 @@ class RAGRetriever:
         Returns:
             相关文档列表（格式化为自然语言描述）
         """
+        del item
         if self.collection is None:
             # 如果集合未加载，加载现有集合
             if self.client is None:

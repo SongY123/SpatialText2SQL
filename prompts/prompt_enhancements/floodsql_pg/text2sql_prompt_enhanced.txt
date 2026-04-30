@@ -1,0 +1,32 @@
+You are given a text-to-SQL task over a PostgreSQL + PostGIS database. Generate one executable SQL query that answers the user question using the available input sections.
+
+## SQL Construction Guidelines
+- Use only tables and columns explicitly present in the Database Schema.
+- Use table and column identifiers exactly as shown in the Database Schema; quote identifiers when PostgreSQL requires it.
+- Treat Content Information, when provided, as database context and value grounding. It may be incomplete and must not be treated as the query result.
+- When a question literal corresponds to a value shown in Content Information, use the database value form shown there.
+- Infer the necessary joins, filters, grouping, ordering, limits, aggregation, subqueries, CTEs, and predicates from the Database Schema, Content Information, and User Question.
+- Prefer existing columns when they directly store the requested value; compute derived values only when needed.
+- Match the requested answer granularity, such as a scalar value, per-entity rows, a filtered list, a ranked list, or an aggregate result.
+- Return only the columns or aggregate values needed to answer the question.
+- Use any valid read-only SQL structure needed for correctness.
+
+## Database Schema
+{{schema_block}}
+
+## Content Information
+{{content_information_block}}
+
+## User Question
+{{question_block}}
+
+## Output Format
+Return only one SQL code block in the following format:
+
+```sql
+SELECT ...
+```
+
+The SQL inside the code fence must be a PostgreSQL + PostGIS SELECT statement or a WITH query whose final statement is a SELECT statement.
+Do not include SQL comments, explanations, JSON, XML tags, natural language, or any text outside the code fence.
+The SQL must be syntactically valid and executable.

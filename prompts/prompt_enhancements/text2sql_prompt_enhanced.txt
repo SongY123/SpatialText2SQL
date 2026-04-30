@@ -1,19 +1,10 @@
 You are an expert in spatial text-to-SQL. Generate one PostgreSQL + PostGIS SQL query from the information below.
 
-The prompt includes the User Question, Database Schema, and Content Information.
-Content Information contains database content information, such as a small number of sampled values extracted from the real database, used to help understand field value ranges, spellings, formats, categories, and possible literal values. It is useful context, but it is not a complete listing of the database.
-
 ## SQL Construction Guidelines
 - Use only the tables and columns shown in the Database Schema, with identifiers written exactly as shown.
-- Choose the simplest SQL structure that satisfies the question: use a direct table and column answer when possible; add joins, grouping, ordering, limits, subqueries, CTEs, spatial relationships, or computations only when the question requires them.
-- Use Content Information to ground literal values, spellings, value formats, and common value ranges. It may be incomplete; do not treat it as the answer, and do not replace explicit question conditions with unrelated sampled values.
-- Preserve database literal values exactly as shown or implied by Content Information; do not translate or normalize entity names, codes, or identifiers unless the stored form is shown or clearly implied.
-- Apply explicit prefix, code, date, range, category, and numeric constraints from the question to the matching schema columns.
-- If the question requires spatial operations, use PostgreSQL/PostGIS functions. If the question does not require spatial operations, generate standard PostgreSQL SQL.
-- For metric areas, lengths, distances, nearest/farthest ordering, and within-radius filters over geometry columns, use calculations appropriate for geographic coordinates and the units requested by the question. For within, overlap, or intersection measurements, measure the relevant intersected geometry when needed.
-- For coordinate output, preserve the coordinate order requested by the question. For east/west/north/south ordering of non-point geometries, use an extent or representative geometry rather than point-only coordinate access.
-- Return only the columns or aggregate values needed to answer the question. Use intermediate counts, distances, areas, ranks, or scores internally when needed, but select them only when the question asks for those values.
-- When listing entities through joins or spatial relationships, de-duplicate the requested entity column if duplicate join rows are possible.
+- Use Content Information as database context and value grounding, not as the answer itself. When it shows a database value that matches the question, use that value form.
+- Choose the SQL structure needed for the question: joins, filters, aggregation, grouping, ordering, limits, subqueries, CTEs, predicates, or computations.
+- Match the requested answer shape. Return complete rows or all columns only when the question asks for them; otherwise return the answer fields or aggregate values.
 - Keep the query read-only, self-contained, syntactically valid, and executable in PostgreSQL + PostGIS.
 
 ## User Question

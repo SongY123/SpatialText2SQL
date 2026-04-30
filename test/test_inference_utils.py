@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import unittest
@@ -124,6 +126,25 @@ class ExtractSqlFromTextTests(unittest.TestCase):
         )
         self.assertEqual(sql_utils.extract_sql_from_text(text), "")
 
+    def test_rejects_explanatory_sentence_starting_with_with(self):
+        text = (
+            "with the highest non-null percentage of individuals with zero vulnerability "
+            "components. From the schema, I can see the svi table has related columns."
+        )
+        self.assertEqual(sql_utils.extract_sql_from_text(text), "")
+
+    def test_extracts_valid_with_cte_query(self):
+        text = (
+            "WITH ranked AS (\n"
+            "  SELECT name FROM county\n"
+            ")\n"
+            "SELECT name FROM ranked;"
+        )
+        self.assertEqual(
+            sql_utils.extract_sql_from_text(text),
+            "WITH ranked AS ( SELECT name FROM county ) SELECT name FROM ranked;",
+        )
+
     def test_rejects_incomplete_with_fragment(self):
         self.assertEqual(sql_utils.extract_sql_from_text("Within;"), "")
 
@@ -132,6 +153,13 @@ class ExtractSqlFromTextTests(unittest.TestCase):
 
     def test_normalizes_code_fence_output(self):
         text = "```sql\nSELECT name FROM roads WHERE maxspeed > 50;\n```"
+        self.assertEqual(
+            sql_utils.extract_sql_from_text(text),
+            "SELECT name FROM roads WHERE maxspeed > 50;",
+        )
+
+    def test_extracts_sql_from_sql_code_fence_without_terminal_semicolon(self):
+        text = "```sql\nSELECT name FROM roads WHERE maxspeed > 50\n```"
         self.assertEqual(
             sql_utils.extract_sql_from_text(text),
             "SELECT name FROM roads WHERE maxspeed > 50;",
@@ -270,7 +298,7 @@ class VllmRequestBuilderTests(unittest.TestCase):
             True,
         )
 
-    def test_build_request_kwargs_forces_enable_thinking_for_qwen3_thinking_model(self):
+    def test_build_request_kwargs_keeps_enable_thinking_opt_in_for_qwen3_thinking_model(self):
         loader = vllm_loader.VllmOpenAILoader(
             {
                 "api_base": "http://example.com/v1",
@@ -290,8 +318,28 @@ class VllmRequestBuilderTests(unittest.TestCase):
 
         self.assertEqual(
             request_kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"],
-            True,
+            False,
         )
+        self.assertNotIn("max_tokens", request_kwargs)
+
+    def test_build_request_kwargs_keeps_explicit_max_tokens_for_qwen3_thinking_model(self):
+        loader = vllm_loader.VllmOpenAILoader(
+            {
+                "api_base": "http://example.com/v1",
+                "model": "/data/llm/qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
+                "logical_model_name": "qwen3-235b-a22b-thinking",
+                "generation_config": {},
+            }
+        )
+
+        request_kwargs = loader._build_request_kwargs(
+            "SQL:",
+            {
+                "max_new_tokens": 2048,
+            },
+        )
+
+        self.assertEqual(request_kwargs["max_tokens"], 2048)
 
     def test_prepare_prompt_for_model_keeps_prompt_unchanged(self):
         loader = vllm_loader.VllmOpenAILoader(
@@ -371,6 +419,22 @@ class VllmRequestBuilderTests(unittest.TestCase):
         self.assertEqual(split["answer"], "SELECT 1")
         self.assertTrue(split["think_incomplete"])
 
+    def test_collect_stream_parts_preserves_think_tags_and_final_sql(self):
+        event1 = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content="<think>分析"))]
+        )
+        event2 = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content="过程</think>\n\nSELECT"))]
+        )
+        event3 = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content=" 1"))]
+        )
+
+        parts = vllm_loader.VllmOpenAILoader._collect_stream_parts([event1, event2, event3])
+
+        self.assertEqual(parts["reasoning"], "")
+        self.assertEqual(parts["content"], "<think>分析过程</think>\n\nSELECT 1")
+
     def test_extract_final_answer_returns_whole_content_without_think_tags(self):
         loader = vllm_loader.VllmOpenAILoader(
             {
@@ -390,6 +454,28 @@ class VllmRequestBuilderTests(unittest.TestCase):
 
         self.assertEqual(sql, "SELECT name FROM roads WHERE maxspeed > 50")
 
+    def test_thinking_vllm_model_uses_streaming_completion_path(self):
+        loader = vllm_loader.VllmOpenAILoader(
+            {
+                "api_base": "http://example.com/v1",
+                "model": "/data/llm/qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
+                "logical_model_name": "qwen3-235b-a22b-thinking",
+                "generation_config": {},
+                "request_wall_timeout": 1,
+            }
+        )
+        loader.client = Mock()
+        loader._invoke_streaming_completion = Mock(
+            return_value={"reasoning": "", "content": "<think>分析</think>\nSELECT 1"}
+        )
+        loader._run_subprocess_request = Mock(return_value={"reasoning": "", "content": ""})
+
+        parts = loader._invoke_completion_isolated({"model": "dummy", "messages": []})
+
+        loader._invoke_streaming_completion.assert_called_once_with({"model": "dummy", "messages": []})
+        loader._run_subprocess_request.assert_not_called()
+        self.assertEqual(parts["content"], "<think>分析</think>\nSELECT 1")
+
     def test_non_thinking_vllm_model_keeps_existing_sql_extraction_path(self):
         loader = vllm_loader.VllmOpenAILoader(
             {
@@ -407,6 +493,55 @@ class VllmRequestBuilderTests(unittest.TestCase):
         sql = loader.generate_sql("dummy prompt")
 
         self.assertEqual(sql, "SELECT name FROM roads WHERE maxspeed > 50")
+
+    def test_generate_returns_usage_when_response_exposes_it(self):
+        loader = vllm_loader.VllmOpenAILoader(
+            {
+                "api_base": "http://example.com/v1",
+                "model": "/data/llm/qwen/Qwen3-8B",
+                "logical_model_name": "qwen3-8b",
+                "generation_config": {},
+            }
+        )
+        response = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        reasoning="",
+                        content="SELECT gid FROM roads",
+                    )
+                )
+            ],
+            usage=types.SimpleNamespace(
+                prompt_tokens=12,
+                completion_tokens=6,
+                total_tokens=18,
+            ),
+        )
+        loader.client = Mock()
+        loader.client.chat.completions.create = Mock(return_value=response)
+
+        result = loader.generate("dummy prompt")
+
+        self.assertEqual(result.sql, "SELECT gid FROM roads")
+        self.assertEqual(result.raw_text, "SELECT gid FROM roads")
+        self.assertEqual(result.usage["prompt_tokens"], 12)
+        self.assertEqual(result.usage["completion_tokens"], 6)
+
+    def test_collect_stream_parts_keeps_usage_from_final_chunk(self):
+        event1 = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content="<think>分析"))],
+            usage=None,
+        )
+        event2 = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content="过程</think>\n\nSELECT 1"))],
+            usage=types.SimpleNamespace(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+        )
+
+        parts = vllm_loader.VllmOpenAILoader._collect_stream_parts([event1, event2])
+
+        self.assertEqual(parts["usage"]["prompt_tokens"], 20)
+        self.assertEqual(parts["usage"]["total_tokens"], 30)
 
     def test_retries_retryable_errors_before_success(self):
         loader = vllm_loader.VllmOpenAILoader(
@@ -548,16 +683,22 @@ class ModelInferenceFailureRecordingTests(unittest.TestCase):
             "metadata": {"split": "dataset1_ada"},
         }
 
-        result_item = inference._build_failed_result_item(exc, data_item)
+        result_item = inference._build_failed_result_item(
+            exc,
+            data_item,
+            inference_metrics={"latency_ms": 181500.0, "status": "skipped"},
+        )
 
         self.assertTrue(result_item["skipped"])
         self.assertEqual(result_item["skip_reason_code"], "network_recovery_timeout")
         self.assertEqual(result_item["skip_details"]["attempts"], 4)
         self.assertEqual(result_item["skip_details"]["last_error_type"], "RuntimeError")
+        self.assertEqual(result_item["inference_metrics"]["status"], "skipped")
 
     def test_normalize_prediction_default_disabled(self):
         inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
         inference.enable_spatialsql_prediction_normalization = False
+        inference.enable_floodsql_prediction_normalization = False
         normalized = inference._normalize_prediction(
             "SELECT name FROM cities;",
             {
@@ -568,9 +709,41 @@ class ModelInferenceFailureRecordingTests(unittest.TestCase):
 
         self.assertEqual(normalized, "SELECT name FROM cities;")
 
+    def test_normalize_prediction_strips_markdown_fence_globally(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+        inference.enable_spatialsql_prediction_normalization = False
+        inference.enable_floodsql_prediction_normalization = False
+        normalized = inference._normalize_prediction(
+            "```sql\nSELECT name FROM cities;\n```",
+            {
+                "dataset": "spatial_qa",
+                "metadata": {},
+            },
+        )
+
+        self.assertEqual(normalized, "SELECT name FROM cities;")
+
+    def test_normalize_prediction_clears_explanatory_non_sql_output(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+        inference.enable_spatialsql_prediction_normalization = False
+        inference.enable_floodsql_prediction_normalization = False
+        normalized = inference._normalize_prediction(
+            (
+                "with the highest non-null percentage of individuals with zero vulnerability "
+                "components. From the schema, I can see the svi table has related columns."
+            ),
+            {
+                "dataset": "floodsql_pg",
+                "metadata": {"family": "double_table_key"},
+            },
+        )
+
+        self.assertEqual(normalized, "")
+
     def test_normalize_prediction_applies_spatialsql_rules_when_enabled(self):
         inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
         inference.enable_spatialsql_prediction_normalization = True
+        inference.enable_floodsql_prediction_normalization = False
         normalized = inference._normalize_prediction(
             "SELECT name FROM cities;",
             {
@@ -580,6 +753,230 @@ class ModelInferenceFailureRecordingTests(unittest.TestCase):
         )
 
         self.assertEqual(normalized, "SELECT name FROM dataset1_ada_cities;")
+
+    def test_normalize_prediction_cleans_then_applies_floodsql_rules(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+        inference.enable_spatialsql_prediction_normalization = False
+        inference.enable_floodsql_prediction_normalization = True
+        normalized = inference._normalize_prediction(
+            "```sql\nSELECT STRFTIME('%Y', dateOfLoss) AS year FROM claims;\n```",
+            {
+                "dataset": "floodsql_pg",
+                "metadata": {"family": "single_table"},
+            },
+        )
+
+        self.assertEqual(normalized, "SELECT TO_CHAR(dateOfLoss, 'YYYY') AS year FROM claims;")
+
+    def test_build_inference_metrics_uses_tokenizer_fallback_when_usage_absent(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+
+        class _DummyLoader:
+            @staticmethod
+            def count_tokens(text):
+                return len(text.split()) if text else 0
+
+        metrics = inference._build_inference_metrics(
+            model_loader=_DummyLoader(),
+            prompt="SELECT name FROM roads",
+            generation_result=model_inference_module.GenerationResult(
+                sql="SELECT name FROM roads",
+                raw_text="SELECT name FROM roads WHERE gid = 1",
+            ),
+            started_at_unix_ms=1000,
+            finished_at_unix_ms=1125,
+            latency_ms=125.0,
+            status="success",
+        )
+
+        self.assertEqual(metrics["measurement_source"], "tokenizer_fallback")
+        self.assertEqual(metrics["input_tokens"], 4)
+        self.assertEqual(metrics["output_tokens"], 8)
+        self.assertEqual(metrics["total_tokens"], 12)
+        self.assertEqual(metrics["status"], "success")
+
+    def test_run_inference_persists_metrics_for_success_and_failure(self):
+        class DummyMetricsLoader:
+            def __init__(self, _config):
+                self.tokenizer = None
+
+            def load_model(self, *args, **kwargs):
+                return None
+
+            def generate(self, prompt: str, **_gen_kwargs):
+                if "bad" in prompt:
+                    raise RuntimeError("boom")
+                return model_inference_module.GenerationResult(
+                    sql="SELECT 1;",
+                    raw_text="SELECT 1;",
+                )
+
+            @staticmethod
+            def count_tokens(text):
+                return len(text.split()) if text else 0
+
+            def unload(self):
+                return None
+
+        model_inference_module.ModelLoaderFactory.register_loader(
+            "DummyMetricsLoader",
+            DummyMetricsLoader,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_config_path = Path(tmpdir) / "model_config.yaml"
+            eval_config_path = Path(tmpdir) / "eval_config.yaml"
+            model_config_path.write_text(
+                json.dumps(
+                    {
+                        "default_backend": "vllm",
+                        "models": {
+                            "dummy-model": {
+                                "generation_config": {},
+                                "backends": {
+                                    "vllm": {
+                                        "loader_class": "DummyMetricsLoader",
+                                    }
+                                },
+                            }
+                        },
+                        "inference": {
+                            "show_progress": False,
+                            "save_interval": 100,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            eval_config_path.write_text(
+                json.dumps(
+                    {
+                        "results": {
+                            "predictions_dir": str(Path(tmpdir) / "predictions"),
+                            "evaluations_dir": str(Path(tmpdir) / "evaluations"),
+                        },
+                        "prediction_postprocess": {
+                            "enable_spatialsql_normalization": False,
+                            "enable_floodsql_normalization": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inference = model_inference_module.ModelInference(
+                model_config_path=str(model_config_path),
+                eval_config_path=str(eval_config_path),
+            )
+            results = inference.run_inference(
+                model_name="dummy-model",
+                config_type="base",
+                prompts=["good prompt", "bad prompt"],
+                data_items=[
+                    {"id": 1, "question": "Q1", "gold_sql": "SELECT 1;", "metadata": {}},
+                    {"id": 2, "question": "Q2", "gold_sql": "SELECT 2;", "metadata": {}},
+                ],
+                save_dir=str(Path(tmpdir) / "predictions"),
+                backend="vllm",
+            )
+
+        self.assertEqual(results[0]["inference_metrics"]["status"], "success")
+        self.assertEqual(results[0]["inference_metrics"]["measurement_source"], "tokenizer_fallback")
+        self.assertNotIn("prompt", results[0])
+        self.assertEqual(results[1]["inference_metrics"]["status"], "error")
+        self.assertIn("latency_ms", results[1]["inference_metrics"])
+        self.assertNotIn("prompt", results[1])
+        self.assertEqual(results[1]["predicted_sql"], "")
+
+    def test_run_inference_saves_rendered_prompt_in_separate_prompts_file(self):
+        class DummyPromptPersistenceLoader:
+            def __init__(self, _config):
+                self.tokenizer = None
+
+            def load_model(self, *args, **kwargs):
+                return None
+
+            def generate(self, prompt: str, **_gen_kwargs):
+                return model_inference_module.GenerationResult(
+                    sql=f"SELECT '{prompt}' AS prompt_text;",
+                    raw_text=f"SELECT '{prompt}' AS prompt_text;",
+                )
+
+            @staticmethod
+            def count_tokens(text):
+                return len(text.split()) if text else 0
+
+            def unload(self):
+                return None
+
+        model_inference_module.ModelLoaderFactory.register_loader(
+            "DummyPromptPersistenceLoader",
+            DummyPromptPersistenceLoader,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            predictions_dir = Path(tmpdir) / "predictions"
+            model_config_path = Path(tmpdir) / "model_config.yaml"
+            eval_config_path = Path(tmpdir) / "eval_config.yaml"
+            model_config_path.write_text(
+                json.dumps(
+                    {
+                        "default_backend": "vllm",
+                        "models": {
+                            "dummy-model": {
+                                "generation_config": {},
+                                "backends": {
+                                    "vllm": {
+                                        "loader_class": "DummyPromptPersistenceLoader",
+                                    }
+                                },
+                            }
+                        },
+                        "inference": {
+                            "show_progress": False,
+                            "save_interval": 100,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            eval_config_path.write_text(
+                json.dumps(
+                    {
+                        "results": {
+                            "predictions_dir": str(predictions_dir),
+                            "evaluations_dir": str(Path(tmpdir) / "evaluations"),
+                        },
+                        "prediction_postprocess": {
+                            "enable_spatialsql_normalization": False,
+                            "enable_floodsql_normalization": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inference = model_inference_module.ModelInference(
+                model_config_path=str(model_config_path),
+                eval_config_path=str(eval_config_path),
+            )
+            inference.run_inference(
+                model_name="dummy-model",
+                config_type="base",
+                prompts=["restored prompt"],
+                data_items=[
+                    {"id": 1, "question": "Q1", "gold_sql": "SELECT 1;", "metadata": {}},
+                ],
+                save_dir=str(predictions_dir),
+                backend="vllm",
+            )
+
+            saved = json.loads((predictions_dir / "predictions.json").read_text(encoding="utf-8"))
+            prompt_saved = json.loads((predictions_dir / "prompts.json").read_text(encoding="utf-8"))
+
+        self.assertNotIn("prompt", saved[0])
+        self.assertEqual(prompt_saved[0]["id"], 1)
+        self.assertEqual(prompt_saved[0]["prompt"], "restored prompt")
 
 
 if __name__ == "__main__":

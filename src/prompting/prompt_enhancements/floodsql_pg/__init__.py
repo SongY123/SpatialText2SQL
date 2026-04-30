@@ -1,0 +1,2 @@
+"""FloodSQL prompt enhancement package."""
+

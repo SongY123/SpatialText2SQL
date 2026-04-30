@@ -124,8 +124,16 @@ class SpatialSQLLoader(BaseDataLoader):
             item = {
                 "id": idx,
                 "question": question,
+                "source_sql": gold_sql,
+                "source_sql_candidates": list(gold_sql_candidates),
                 "gold_sql": gold_sql,
                 "gold_sql_candidates": gold_sql_candidates,
+                "source_backend": "sqlite",
+                "target_backend": "postgres",
+                "source_split": split_value,
+                "target_table_prefix": f"{split_value}_" if split_value != "unknown" else "",
+                "repair_status": "raw",
+                "repair_source": "source",
                 "metadata": {
                     "dataset_version": dataset_version,
                     "domain": domain,

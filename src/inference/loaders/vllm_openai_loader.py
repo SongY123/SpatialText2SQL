@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from src.inference.base import BaseModelLoader
+from src.inference.base import BaseModelLoader, GenerationResult
 
 try:
     from openai import OpenAI
@@ -100,7 +100,7 @@ class VllmOpenAILoader(BaseModelLoader):
     THINK_OPEN_REDACTED = "<redacted_thinking>"
     THINK_CLOSE_REDACTED = "</redacted_thinking>"
 
-    def _uses_structured_thinking_output(self) -> bool:
+    def _uses_streaming_think_tags_output(self) -> bool:
         return self.logical_model_name == self.THINKING_MODEL_NAME
 
     def _prepare_prompt_for_model(self, prompt: str) -> str:
@@ -120,19 +120,117 @@ class VllmOpenAILoader(BaseModelLoader):
             return "".join(parts)
         return str(content or "")
 
+    @staticmethod
+    def _normalize_usage(usage: Any) -> Optional[Dict[str, Any]]:
+        if usage is None:
+            return None
+
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+            completion_tokens = usage.get("completion_tokens", completion_tokens)
+            total_tokens = usage.get("total_tokens", total_tokens)
+
+        if total_tokens is None and (
+            prompt_tokens is not None or completion_tokens is not None
+        ):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+            return None
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+
     @classmethod
     def _extract_message_parts(cls, message: Any) -> Dict[str, str]:
+        if isinstance(message, dict):
+            reasoning = (
+                message.get("reasoning")
+                or message.get("reasoning_content")
+                or message.get("thinking")
+                or ""
+            )
+            content = cls._content_to_text(message.get("content"))
+        else:
+            reasoning = (
+                getattr(message, "reasoning", None)
+                or getattr(message, "reasoning_content", None)
+                or getattr(message, "thinking", None)
+                or ""
+            )
+            content = cls._content_to_text(getattr(message, "content", None))
+        if not isinstance(reasoning, str):
+            reasoning = str(reasoning or "")
+        return {"reasoning": reasoning, "content": content}
+
+    @classmethod
+    def _extract_chunk_usage(cls, chunk: Any) -> Optional[Dict[str, Any]]:
+        usage = getattr(chunk, "usage", None)
+        if usage is None and isinstance(chunk, dict):
+            usage = chunk.get("usage")
+        return cls._normalize_usage(usage)
+
+    @classmethod
+    def _extract_chunk_parts(cls, chunk: Any) -> Dict[str, Any]:
+        choices = getattr(chunk, "choices", None)
+        if choices is None and isinstance(chunk, dict):
+            choices = chunk.get("choices")
+        if not choices:
+            return {
+                "reasoning": "",
+                "content": "",
+                "usage": cls._extract_chunk_usage(chunk),
+            }
+
+        choice = choices[0]
+        delta = getattr(choice, "delta", None)
+        if delta is None and isinstance(choice, dict):
+            delta = choice.get("delta")
+
         reasoning = (
-            getattr(message, "reasoning", None)
-            or getattr(message, "reasoning_content", None)
-            or getattr(message, "thinking", None)
+            getattr(delta, "reasoning", None)
+            or getattr(delta, "reasoning_content", None)
+            or getattr(delta, "thinking", None)
             or ""
         )
+        if isinstance(delta, dict):
+            reasoning = (
+                delta.get("reasoning")
+                or delta.get("reasoning_content")
+                or delta.get("thinking")
+                or reasoning
+            )
+            content = cls._content_to_text(delta.get("content"))
+        else:
+            content = cls._content_to_text(getattr(delta, "content", None))
+
         if not isinstance(reasoning, str):
             reasoning = str(reasoning or "")
 
-        content = cls._content_to_text(getattr(message, "content", None))
-        return {"reasoning": reasoning, "content": content}
+        if content:
+            return {
+                "reasoning": reasoning,
+                "content": content,
+                "usage": cls._extract_chunk_usage(chunk),
+            }
+
+        message = getattr(choice, "message", None)
+        if message is None and isinstance(choice, dict):
+            message = choice.get("message")
+        if message is not None:
+            parts = cls._extract_message_parts(message)
+            parts["usage"] = cls._extract_chunk_usage(chunk)
+            return parts
+        return {
+            "reasoning": reasoning,
+            "content": "",
+            "usage": cls._extract_chunk_usage(chunk),
+        }
 
     @classmethod
     def _find_earliest_open(cls, content: str):
@@ -214,6 +312,18 @@ class VllmOpenAILoader(BaseModelLoader):
         split = cls._split_think_and_answer(content)
         return split["answer"].strip()
 
+    @classmethod
+    def _compose_raw_completion_text(cls, parts: Dict[str, Any]) -> str:
+        reasoning = (parts.get("reasoning") or "").strip()
+        content = (parts.get("content") or "").strip()
+        if not reasoning:
+            return content
+        if cls._find_earliest_open(content) is not None:
+            return content
+        if content:
+            return f"{cls.THINK_OPEN}{reasoning}{cls.THINK_CLOSE}\n\n{content}"
+        return f"{cls.THINK_OPEN}{reasoning}{cls.THINK_CLOSE}"
+
     def _create_client(self):
         """创建 OpenAI 兼容客户端。"""
         if OpenAI is None:
@@ -253,12 +363,11 @@ class VllmOpenAILoader(BaseModelLoader):
     def _build_request_kwargs(self, prompt: str, gen_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """构建 chat.completions.create 的参数。"""
         gen_config = {**self.generation_config, **gen_kwargs}
+        explicit_max_tokens = "max_new_tokens" in gen_kwargs
         do_sample = bool(gen_config.get("do_sample", False))
         temperature = gen_config.get("temperature", 0.3 if do_sample else 0.0)
         top_p = gen_config.get("top_p", 0.8 if do_sample else 1.0)
         enable_thinking = bool(gen_config.get("enable_thinking", False))
-        if self._uses_structured_thinking_output():
-            enable_thinking = True
 
         extra_body: Dict[str, Any] = {
             "chat_template_kwargs": {
@@ -271,13 +380,16 @@ class VllmOpenAILoader(BaseModelLoader):
         request_kwargs: Dict[str, Any] = {
             "model": self.remote_model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": gen_config.get("max_new_tokens", 512),
             "temperature": temperature,
             "top_p": top_p,
             "extra_body": extra_body,
         }
+        if not (self._uses_streaming_think_tags_output() and not explicit_max_tokens):
+            request_kwargs["max_tokens"] = gen_config.get("max_new_tokens", 2048)
         if "stop" in gen_config:
             request_kwargs["stop"] = gen_config["stop"]
+        if self._uses_streaming_think_tags_output():
+            request_kwargs["stream_options"] = {"include_usage": True}
         return request_kwargs
 
     def _is_retryable_error(self, exc: BaseException) -> bool:
@@ -304,7 +416,7 @@ class VllmOpenAILoader(BaseModelLoader):
             return "max_retries"
         return None
 
-    def _run_subprocess_request(self, request_kwargs: Dict[str, Any]) -> Dict[str, str]:
+    def _run_subprocess_request(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """在独立子进程中执行请求，避免主进程长期阻塞。"""
         runner_path = Path(__file__).resolve().parents[1] / "vllm_subprocess_runner.py"
         payload = {
@@ -351,22 +463,67 @@ class VllmOpenAILoader(BaseModelLoader):
         return {
             "reasoning": body.get("reasoning", "") or "",
             "content": body.get("content", "") or "",
+            "usage": self._normalize_usage(body.get("usage")),
         }
 
-    def _invoke_completion_isolated(self, request_kwargs: Dict[str, Any]) -> Dict[str, str]:
+    @classmethod
+    def _collect_stream_parts(cls, events: Any) -> Dict[str, Any]:
+        reasoning_parts = []
+        content_parts = []
+        usage = None
+        for chunk in events:
+            parts = cls._extract_chunk_parts(chunk)
+            if parts["reasoning"]:
+                reasoning_parts.append(parts["reasoning"])
+            if parts["content"]:
+                content_parts.append(parts["content"])
+            if parts.get("usage"):
+                usage = parts["usage"]
+        return {
+            "reasoning": "".join(reasoning_parts),
+            "content": "".join(content_parts),
+            "usage": usage,
+        }
+
+    def _invoke_streaming_completion(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """按网页端相同的流式路径读取返回，保留 think-tag 与最终答案顺序。"""
+        if self.client is None:
+            raise RuntimeError("vLLM 客户端未初始化，请先调用 load_model()")
+
+        stream_kwargs = dict(request_kwargs)
+        stream_kwargs["stream"] = True
+        stream = self.client.chat.completions.create(**stream_kwargs)
+
+        if hasattr(stream, "__enter__") and hasattr(stream, "__exit__"):
+            with stream as events:
+                return self._collect_stream_parts(events)
+
+        try:
+            return self._collect_stream_parts(stream)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+
+    def _invoke_completion_isolated(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """执行一次请求；配置了墙钟超时则走子进程保护。"""
         if self.client is None:
             raise RuntimeError("vLLM 客户端未初始化，请先调用 load_model()")
+
+        if self._uses_streaming_think_tags_output():
+            return self._invoke_streaming_completion(request_kwargs)
 
         if self.request_wall_timeout and float(self.request_wall_timeout) > 0:
             return self._run_subprocess_request(request_kwargs)
 
         response = self.client.chat.completions.create(**request_kwargs)
         if not response.choices:
-            return {"reasoning": "", "content": ""}
-        return self._extract_message_parts(response.choices[0].message)
+            return {"reasoning": "", "content": "", "usage": self._normalize_usage(getattr(response, "usage", None))}
+        parts = self._extract_message_parts(response.choices[0].message)
+        parts["usage"] = self._normalize_usage(getattr(response, "usage", None))
+        return parts
 
-    def _create_chat_completion_with_retry(self, request_kwargs: Dict[str, Any]) -> Dict[str, str]:
+    def _create_chat_completion_with_retry(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """在可恢复错误上进行重试，并在超时后跳过当前样本。"""
         attempt = 0
         recovery_start: Optional[float] = None
@@ -413,16 +570,16 @@ class VllmOpenAILoader(BaseModelLoader):
                 )
                 time.sleep(max(0.0, backoff))
 
-    def generate_sql(self, prompt: str, **gen_kwargs) -> str:
+    def generate(self, prompt: str, **gen_kwargs) -> GenerationResult:
         """
-        通过 vLLM 生成 SQL。
+        通过 vLLM 生成结构化结果。
 
         Args:
             prompt: 输入提示词
             **gen_kwargs: 生成参数，会覆盖默认配置
 
         Returns:
-            提取后的 SQL 语句
+            结构化生成结果
         """
         if self.client is None:
             raise RuntimeError("vLLM 客户端未初始化，请先调用 load_model()")
@@ -430,7 +587,19 @@ class VllmOpenAILoader(BaseModelLoader):
         prompt = self._prepare_prompt_for_model(prompt)
         request_kwargs = self._build_request_kwargs(prompt, gen_kwargs)
         parts = self._create_chat_completion_with_retry(request_kwargs)
-        return self._extract_final_answer_from_parts(parts)
+        return GenerationResult(
+            sql=self._extract_final_answer_from_parts(parts),
+            raw_text=self._compose_raw_completion_text(parts),
+            usage=parts.get("usage"),
+            response_metadata={
+                "reasoning": parts.get("reasoning", ""),
+                "content": parts.get("content", ""),
+            },
+        )
+
+    def generate_sql(self, prompt: str, **gen_kwargs) -> str:
+        """兼容旧接口，仅返回 SQL 文本。"""
+        return self.generate(prompt, **gen_kwargs).sql
 
     def unload(self):
         """释放客户端引用。"""

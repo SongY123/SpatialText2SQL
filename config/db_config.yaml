@@ -36,6 +36,21 @@ databases:
       query_timeout: 60
       connection_timeout: 10
 
+  floodsql:
+    host: "10.132.80.204"
+    port: 5432
+    database: "floodsql"
+    user: "postgres"
+    password: "123456"
+
+    pool:
+      min_connections: 1
+      max_connections: 10
+
+    timeout:
+      query_timeout: 60
+      connection_timeout: 10
+
 # 向后兼容：默认数据库配置（指向 postgres）
 database:
   host: "10.132.80.204"

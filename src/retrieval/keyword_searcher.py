@@ -85,7 +85,7 @@ class KeywordSearcher:
         
         return " ".join(parts)
     
-    def search(self, question: str) -> List[str]:
+    def search(self, question: str, item: Dict = None) -> List[str]:
         """
         根据问题进行关键词检索
         
@@ -95,6 +95,7 @@ class KeywordSearcher:
         Returns:
             相关文档列表（格式化为自然语言描述）
         """
+        del item
         if not self.documents:
             self.load_documents()
         
