@@ -1,4 +1,4 @@
-"""SpatialSQL 数据集加载器 - 解析 QA-*.txt（SpatialSQL 仓库格式）"""
+"""SpatialSQL dataset loader for QA-*.txt files from the upstream repository."""
 import os
 import re
 from typing import List, Dict, Any, Optional
@@ -6,15 +6,17 @@ from typing import List, Dict, Any, Optional
 from src.datasets.base import BaseDataLoader
 
 
-# dataset1/dataset2 下各 domain 的目录名
+# Domain directory names under dataset1/dataset2.
 SPATIALSQL_DOMAINS = ["ada", "edu", "tourism", "traffic"]
 SPATIALSQL_VERSIONS = ["dataset1", "dataset2"]
 
 
 def _parse_qa_txt_block(block: str) -> Optional[Dict[str, Any]]:
     """
-    解析一个 QA 块（key: value 行，空行分隔块）。
-    返回包含 label, question, questionCHI, SQL, Eval, id 等字段的字典。
+    Parse one QA block separated by blank lines.
+
+    Returns a dictionary containing fields such as label, question,
+    questionCHI, SQL, Eval, and id.
     """
     lines = [ln.strip() for ln in block.strip().splitlines() if ln.strip()]
     if not lines:
@@ -33,7 +35,7 @@ def _parse_qa_txt_block(block: str) -> Optional[Dict[str, Any]]:
 
 
 def _split_sql_candidates(sql_field: str) -> List[str]:
-    """将 SQL 或 Eval 字段按 %%% 拆成多条 SQL，并做空白规范化。"""
+    """Split SQL or Eval fields on %%% and normalize whitespace."""
     if not sql_field or not sql_field.strip():
         return []
     parts = [p.strip() for p in sql_field.split("%%%") if p.strip()]
@@ -42,8 +44,10 @@ def _split_sql_candidates(sql_field: str) -> List[str]:
 
 class SpatialSQLLoader(BaseDataLoader):
     """
-    SpatialSQL 数据集加载器：从 sdbdatasets 目录下的 QA-*.txt 加载数据。
-    输出统一格式：question, gold_sql, gold_sql_candidates, metadata（dataset_version, domain, label, source_id）。
+    Load SpatialSQL data from QA-*.txt files under sdbdatasets.
+
+    The loader returns normalized records with question, gold_sql,
+    gold_sql_candidates, and metadata fields.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -54,20 +58,18 @@ class SpatialSQLLoader(BaseDataLoader):
         self.domains = config.get("domains", SPATIALSQL_DOMAINS)
 
     def load_raw_data(self, data_path: str) -> List[Dict]:
-        """
-        扫描 data_path 下的 dataset1/dataset2 及各 domain，读取所有 QA-*.txt，解析为原始记录列表。
-        """
+        """Read QA-*.txt files under dataset1/dataset2 and return raw records."""
         root = data_path or self.data_path
         all_data = []
         for version in self.dataset_versions:
             version_dir = os.path.join(root, version)
             if not os.path.isdir(version_dir):
-                print(f"警告: 目录不存在 {version_dir}")
+                print(f"Warning: directory does not exist: {version_dir}")
                 continue
             for domain in self.domains:
                 domain_dir = os.path.join(version_dir, domain)
                 if not os.path.isdir(domain_dir):
-                    print(f"警告: 目录不存在 {domain_dir}")
+                    print(f"Warning: directory does not exist: {domain_dir}")
                     continue
                 for fname in os.listdir(domain_dir):
                     if not fname.startswith("QA-") or not fname.endswith(".txt"):
@@ -87,16 +89,18 @@ class SpatialSQLLoader(BaseDataLoader):
                             record["_domain"] = domain
                             all_data.append(record)
                     except Exception as e:
-                        print(f"错误: 读取 {filepath} 失败 - {e}")
+                        print(f"Error: failed to read {filepath} - {e}")
                         continue
         if all_data:
-            print(f"成功加载 SpatialSQL 原始记录: {len(all_data)} 条")
+            print(f"Loaded {len(all_data)} raw SpatialSQL records")
         return all_data
 
     def extract_questions_and_sqls(self, raw_data: List[Dict]) -> List[Dict]:
         """
-        转为统一格式：id, question, gold_sql, gold_sql_candidates, metadata。
-        question 默认英文，可配置为中文；gold_sql 取 SQL 字段第一条；gold_sql_candidates 来自 Eval 拆分。
+        Convert raw records into the normalized benchmark format.
+
+        The default question field is English. gold_sql uses the first SQL
+        candidate, and gold_sql_candidates are derived from Eval when present.
         """
         question_key = "questionCHI" if self.use_chinese_question else "question"
         extracted = []
@@ -146,7 +150,7 @@ class SpatialSQLLoader(BaseDataLoader):
         return extracted
 
     def get_dataset_info(self) -> Dict:
-        """返回 SpatialSQL 数据集元信息；分组字段为 split（dataset_version_domain）。"""
+        """Return SpatialSQL dataset metadata grouped by split."""
         splits = []
         for v in self.dataset_versions:
             for d in self.domains:

@@ -1,0 +1,1 @@
+"""Spatial QA benchmark entrypoints."""

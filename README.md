@@ -62,3 +62,66 @@ If the volume of requests to Socrata is large, you can configure `SOCRATA_APP_TO
 ```bash
 SOCRATA_APP_TOKEN=your_token scripts/dataset_construction/crawl_open_data_maps.sh --sample 20
 ```
+
+## PostGIS Docs Parse
+
+Use the unified entry point below for PostGIS documentation parsing workflows:
+
+```bash
+scripts/postgis_docs_parse/run_postgis_docs_parse.sh
+```
+
+Common commands:
+
+```bash
+scripts/postgis_docs_parse/run_postgis_docs_parse.sh extract --input-dir xml_data --output-file extract_result/postgis_extracted.json
+scripts/postgis_docs_parse/run_postgis_docs_parse.sh validate --input extract_result/postgis_extracted.json --output validation_result/postgis_validated.json --review manual_review/manual_review.json
+```
+
+## Benchmarks
+
+Benchmark implementations now live under:
+
+```text
+src/benchmark/<benchmark_name>/
+```
+
+Use the shell entrypoints under `scripts/benchmark/` to run them.
+
+### FloodSQL
+
+Typical commands:
+
+```bash
+scripts/benchmark/floodsql/migrate_to_postgis.sh
+scripts/benchmark/floodsql/validate_gold_sql.sh --preprocess-first
+scripts/benchmark/floodsql/build_execution_consistency.sh
+```
+
+Reports are written to `scripts/benchmark/floodsql/`.
+
+### Spatial QA
+
+Create or inspect the PostgreSQL indexes used by the benchmark:
+
+```bash
+scripts/benchmark/spatial_qa/create_benchmark_indexes.sh
+scripts/benchmark/spatial_qa/create_benchmark_indexes.sh --check-only
+```
+
+### SpatialSQL
+
+Fetch the dataset, validate the integration, then run the migration workflow:
+
+```bash
+scripts/benchmark/spatialsql/fetch_sdbdatasets.sh
+scripts/benchmark/spatialsql/verify_adaptation.sh
+scripts/benchmark/spatialsql/migrate_to_separate_db.sh
+scripts/benchmark/spatialsql/validate_gold_sql.sh --preprocess-first
+```
+
+Legacy schema-per-database migration is still available at:
+
+```bash
+scripts/benchmark/spatialsql/migrate_sqlite_to_pg.sh
+```

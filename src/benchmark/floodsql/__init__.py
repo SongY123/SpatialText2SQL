@@ -1,0 +1,1 @@
+"""FloodSQL benchmark entrypoints."""

@@ -1,4 +1,4 @@
-"""FloodSQL-Bench 数据集加载器。"""
+"""FloodSQL-Bench dataset loader."""
 from __future__ import annotations
 
 import json
@@ -86,7 +86,7 @@ def _resolve_benchmark_root(data_path: str | os.PathLike[str]) -> Path:
 
 
 class FloodSQLLoader(BaseDataLoader):
-    """从 FloodSQL-Bench benchmark 目录加载更新版 443 条官方样本。"""
+    """Load the updated 443 official samples from FloodSQL-Bench."""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -99,7 +99,7 @@ class FloodSQLLoader(BaseDataLoader):
         raw_records: List[Dict[str, Any]] = []
 
         if not benchmark_root.exists():
-            print(f"警告: FloodSQL benchmark 根目录不存在 {benchmark_root}")
+            print(f"Warning: FloodSQL benchmark root does not exist: {benchmark_root}")
 
         for spec in self.benchmark_specs:
             family = spec["family"]
@@ -107,7 +107,7 @@ class FloodSQLLoader(BaseDataLoader):
             questions_path = family_dir / spec["questions_file"]
             results_path = family_dir / spec["results_file"]
             if not questions_path.exists():
-                print(f"警告: FloodSQL benchmark 文件不存在 {questions_path}")
+                print(f"Warning: FloodSQL benchmark file does not exist: {questions_path}")
                 continue
 
             question_rows = _load_json(str(questions_path))
@@ -119,7 +119,7 @@ class FloodSQLLoader(BaseDataLoader):
                     if isinstance(row, dict) and row.get("id")
                 }
             else:
-                print(f"警告: FloodSQL 结果文件不存在 {results_path}")
+                print(f"Warning: FloodSQL results file does not exist: {results_path}")
 
             for row in question_rows:
                 if not isinstance(row, dict):
@@ -136,7 +136,7 @@ class FloodSQLLoader(BaseDataLoader):
                 raw_records.append(merged)
 
         if raw_records:
-            print(f"成功加载 FloodSQL 原始记录: {len(raw_records)} 条")
+            print(f"Loaded {len(raw_records)} raw FloodSQL records")
         return raw_records
 
     def extract_questions_and_sqls(self, raw_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
