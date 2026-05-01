@@ -1,1 +1,0 @@
-from .shp2db import shp2db

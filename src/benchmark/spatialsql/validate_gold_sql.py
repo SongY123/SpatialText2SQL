@@ -3,7 +3,7 @@
 Validate all spatialsql_pg gold SQL queries on PostgreSQL.
 
 Usage:
-    python -m src.benchmark.spatialsql.validate_gold_sql [--preprocess-first] [--connect-timeout SEC]
+    python -m src.benchmark.spatialsql.validate_gold_sql [--utils-first] [--connect-timeout SEC]
 
 Outputs:
     - Per-query execution status on stdout
@@ -132,7 +132,7 @@ def validate_all(
 
 def main():
     parser = argparse.ArgumentParser(description="Validate gold SQL on PostgreSQL")
-    parser.add_argument("--preprocess-first", action="store_true",
+    parser.add_argument("--utils-first", action="store_true",
                         help="Re-run preprocessing before validation")
     parser.add_argument(
         "--connect-timeout",
@@ -161,7 +161,7 @@ def main():
 
     items = load_preprocessed_items()
     if not items:
-        print("No preprocessed items found. Run with --preprocess-first or ensure data exists.")
+        print("No preprocessed items found. Run with --utils-first or ensure data exists.")
         return
 
     print(f"Loaded {len(items)} gold SQL items")

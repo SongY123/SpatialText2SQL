@@ -5,7 +5,7 @@ import sys
 # Add repository root to path so we can import the src package.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from src.preprocess.shp2db import shp2db
+from src.utils.shp2db import shp2db
 
 class TestShp2Db(unittest.TestCase):
     def setUp(self):

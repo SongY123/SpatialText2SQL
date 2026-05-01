@@ -69,8 +69,8 @@ class MainPipeline:
             return
 
         conflicting_actions = []
-        if getattr(args, "preprocess", False):
-            conflicting_actions.append("--preprocess")
+        if getattr(args, "utils", False):
+            conflicting_actions.append("--utils")
         if getattr(args, "build_rag", False):
             conflicting_actions.append("--build-rag")
         if getattr(args, "inference", False):
@@ -1273,7 +1273,7 @@ class MainPipeline:
             "models": list(self.model_names),
             "configs": list(self.config_types),
             "actions": {
-                "preprocess": bool(self.args.preprocess),
+                "utils": bool(self.args.preprocess),
                 "build_rag": bool(self.args.build_rag),
                 "inference": bool(self.args.inference),
                 "evaluate": bool(self.args.evaluate),
@@ -1294,7 +1294,7 @@ class MainPipeline:
 def main():
     parser = argparse.ArgumentParser(description="Spatial Text2SQL 推理评估框架")
 
-    parser.add_argument("--preprocess", action="store_true", help="运行数据预处理")
+    parser.add_argument("--utils", action="store_true", help="运行数据预处理")
     parser.add_argument("--build-rag", action="store_true", help="构建RAG索引")
     parser.add_argument("--inference", action="store_true", help="运行推理")
     parser.add_argument("--evaluate", action="store_true", help="运行评估")

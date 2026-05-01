@@ -3,7 +3,7 @@
 Validate all FloodSQL gold SQL queries on PostgreSQL/PostGIS.
 
 Usage:
-    python -m src.benchmark.floodsql.validate_gold_sql [--preprocess-first] [--connect-timeout SEC]
+    python -m src.benchmark.floodsql.validate_gold_sql [--utils-first] [--connect-timeout SEC]
 
 Outputs:
     - Per-query validation progress on stdout
@@ -299,7 +299,7 @@ def validate_all(
 def main():
     parser = argparse.ArgumentParser(description="Validate FloodSQL gold SQL on PostgreSQL")
     parser.add_argument(
-        "--preprocess-first",
+        "--utils-first",
         action="store_true",
         help="Re-run preprocessing before validation",
     )
@@ -349,7 +349,7 @@ def main():
 
     items = load_preprocessed_items()
     if not items:
-        print("No preprocessed items found. Run with --preprocess-first or ensure data exists.")
+        print("No preprocessed items found. Run with --utils-first or ensure data exists.")
         return
 
     print(f"Loaded {len(items)} gold SQL items")

@@ -94,7 +94,7 @@ Typical commands:
 
 ```bash
 scripts/benchmark/floodsql/migrate_to_postgis.sh
-scripts/benchmark/floodsql/validate_gold_sql.sh --preprocess-first
+scripts/benchmark/floodsql/validate_gold_sql.sh --utils-first
 scripts/benchmark/floodsql/build_execution_consistency.sh
 ```
 
@@ -117,7 +117,7 @@ Fetch the dataset, validate the integration, then run the migration workflow:
 scripts/benchmark/spatialsql/fetch_sdbdatasets.sh
 scripts/benchmark/spatialsql/verify_adaptation.sh
 scripts/benchmark/spatialsql/migrate_to_separate_db.sh
-scripts/benchmark/spatialsql/validate_gold_sql.sh --preprocess-first
+scripts/benchmark/spatialsql/validate_gold_sql.sh --utils-first
 ```
 
 Legacy schema-per-database migration is still available at:
