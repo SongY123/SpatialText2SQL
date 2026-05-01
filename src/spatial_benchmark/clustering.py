@@ -192,8 +192,42 @@ def weighted_tokens(name: str, description: str, tags: list[str], columns: list[
 
 
 def load_metadata(metadata_path: Path) -> dict[str, dict[str, Any]]:
+    if not metadata_path.exists():
+        return {}
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    return {item["csv_filename"]: item for item in metadata}
+    if isinstance(metadata, dict):
+        items = metadata.get("datasets") or metadata.get("records") or metadata.get("downloads") or []
+    else:
+        items = metadata
+
+    by_file: dict[str, dict[str, Any]] = {}
+    flattened_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("datasets")
+        if isinstance(nested, list):
+            for dataset_item in nested:
+                if isinstance(dataset_item, dict):
+                    merged = dict(dataset_item)
+                    merged.setdefault("city", item.get("city_id") or item.get("City"))
+                    flattened_items.append(merged)
+            continue
+        flattened_items.append(item)
+
+    for item in flattened_items:
+        names = [
+            item.get("geojson_filename"),
+            item.get("csv_filename"),
+        ]
+        for key in ("geojson_path", "path", "csv_path"):
+            value = item.get(key)
+            if value:
+                names.append(Path(str(value)).name)
+        for name in names:
+            if isinstance(name, str) and name:
+                by_file[name] = item
+    return by_file
 
 
 def load_socrata_manifest(manifest_path: Path) -> tuple[dict[str, dict[str, Any]], str]:
@@ -674,22 +708,27 @@ def classify_scenarios(profiles: list[TableProfile]) -> None:
 
 
 def build_profiles(raw_dir: Path) -> list[TableProfile]:
-    metadata_by_file = load_metadata(raw_dir / "nyc_opendata_maps.json")
+    metadata_path = raw_dir / "nyc_opendata_maps.json"
+    if not metadata_path.exists():
+        metadata_path = raw_dir / "manifest.json"
+    if not metadata_path.exists():
+        metadata_path = raw_dir.parent / "metadata.json"
+    metadata_by_file = load_metadata(metadata_path)
     profiles: list[TableProfile] = []
-    for csv_path in sorted(raw_dir.glob("*.csv")):
-        if csv_path.name.startswith("._"):
+    for data_path in _iter_city_data_files(raw_dir):
+        if data_path.name.startswith("._"):
             continue
-        metadata = metadata_by_file.get(csv_path.name, {})
-        columns = read_header(csv_path)
-        row = sample_row(csv_path)
+        metadata = metadata_by_file.get(data_path.name, {})
+        columns = read_header(data_path)
+        row = sample_row(data_path)
         spatial_columns = detect_spatial_columns(columns)
         description = normalize_text(metadata.get("description", ""))
-        dataset_name = metadata.get("name", csv_path.stem.replace("_", " "))
+        dataset_name = metadata.get("name", data_path.stem.replace("_", " "))
         profile = TableProfile(
             city="nyc",
             city_label="New York City",
-            file_name=csv_path.name,
-            dataset_id=dataset_id_from_name(csv_path.name),
+            file_name=data_path.name,
+            dataset_id=dataset_id_from_name(data_path.name),
             dataset_name=dataset_name,
             description=description,
             tags=[normalize_text(tag) for tag in metadata.get("tags", []) if tag],
@@ -703,10 +742,10 @@ def build_profiles(raw_dir: Path) -> list[TableProfile]:
             geometry_type=infer_geometry_type(columns, row),
             join_keys=infer_join_keys(columns, f"{dataset_name} {description}"),
         )
-        profile.normalized_name_blob = normalize_text(f"{dataset_name} {csv_path.stem}")
+        profile.normalized_name_blob = normalize_text(f"{dataset_name} {data_path.stem}")
         profile.normalized_desc_blob = description
         profile.normalized_columns_blob = normalize_text(" ".join(columns))
-        profile.token_weights = weighted_tokens(dataset_name, description, profile.tags, columns, csv_path.name)
+        profile.token_weights = weighted_tokens(dataset_name, description, profile.tags, columns, data_path.name)
         profile.theme, profile.theme_confidence, profile.theme_explanation = classify_theme(profile)
         classify_ggim_categories(profile)
         profiles.append(profile)

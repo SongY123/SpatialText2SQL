@@ -1,82 +1,64 @@
-# SpatialText2SQL (Current Pipeline)
+# SpatialText2SQL Crawler
 
-This repository currently uses a **7-city local-data pipeline** as the main path.
-
-The old NYC-only staged README content has been archived to `pass.md`.
-
-## Current Main Flow
-
-### 1) Full Pipeline (recommended)
-
-Run the end-to-end pipeline from repository root:
+The unified entry point for the crawler in this repository is:
 
 ```bash
-python scripts/run_full_pipeline_local_scan.py
+scripts/dataset_construction/crawl_open_data_maps.sh
 ```
 
-This script does:
+By default, it will download map datasets from all 7 cities. The format is unified as GeoJSON, and the data is saved to:
 
-1. Multi-city clustering from local files under `scripts/artifacts/socrata_maps/`
-2. Classification input export (`ai_classification_input.jsonl/.csv`)
-3. Taxonomy report/tree export
-4. Taxonomy M2M edge + Postgres SQL export
+```text
+data/raw/<city_name>/geojson/
+```
 
-### 2) Source Dataset Statistics
+The current city directory names are: `new_york_city`, `los_angeles`, `chicago`, `seattle`, `san_francisco`, `boston`, and `phoenix`.
+
+The crawler will prioritize reading the existing `data/raw/metadata.json`:
+
+- If a dataset already appears in `metadata.json`, it will not be downloaded again by default.
+- The default mode is "append/skip", which will not overwrite existing data.
+- The `metadata.json` will only be written back after the datasets for all cities have been processed.
+
+A single summarized metadata file will be generated:
+
+```text
+data/raw/metadata.json
+```
+
+`metadata.json` is a JSON array, where each object corresponds to a city and contains statistical fields such as `City`, `#Table`, `#Field/Table`, `#Spatial Field/Table`, `#Row/Table`, etc.
+
+## Common Usage
+
+Download all map data for all cities (Full Download):
 
 ```bash
-python scripts/compute_source_dataset_stats.py
+scripts/dataset_construction/crawl_open_data_maps.sh
 ```
 
-Outputs:
-
-- `scripts/artifacts/seven_city_output/source_dataset_stats.json`
-- `scripts/artifacts/seven_city_output/source_dataset_stats.csv`
-- `scripts/artifacts/seven_city_output/source_dataset_stats.md`
-
-### 3) Weighted Consistency Check (optional)
+Download a sample of 10 datasets for each city:
 
 ```bash
-python scripts/compute_weighted_stats_check.py
+scripts/dataset_construction/crawl_open_data_maps.sh 10
 ```
 
-This verifies weighted metrics using:
+*Note: You can also use other parameters to customize the behavior, which are detailed below.*
 
-`sum(#Table * metric) / sum(#Table)`
+## Key Parameters
 
-and compares them against `Overall` in `source_dataset_stats.json`.
+- `--sample N`: Download at most `N` datasets per city. If omitted, downloads all map data for all cities.
+- `--cities LIST`: Comma-separated list of cities. Options: `nyc,lacity,chicago,seattle,sf,boston,phoenix`. Default: `all`.
+- `--out-root PATH`: Root directory for downloads. Default: `data/raw`.
+- `--metadata-name NAME`: Filename for the root metadata. Default: `metadata.json`.
+- `--page-size N`: Pagination size for catalog APIs. Default: `100`.
+- `--row-limit N`: Maximum number of rows exported by Socrata GeoJSON fallback. Default: `5000000`.
+- `--sleep SECONDS`: Waiting time between two downloads. Default: `0`.
+- `--timeout SECONDS`: HTTP request timeout. Default: `120`.
+- `--override`: Force overwrite existing datasets. Default is not to overwrite (skips datasets already present in `metadata.json`).
+- `--list-cities`: Print configured city ids and exit.
 
-## Key Inputs
+If the volume of requests to Socrata is large, you can configure `SOCRATA_APP_TOKEN`:
 
-- `scripts/artifacts/socrata_maps/nyc-opendata/nyc_opendata_maps.json` (required for NYC)
-- Local CSV/GeoJSON folders for other cities under:
-  - `scripts/artifacts/socrata_maps/chicago`
-  - `scripts/artifacts/socrata_maps/lacity`
-  - `scripts/artifacts/socrata_maps/seattle` (or `seattle_maps_geojson`)
-  - `scripts/artifacts/socrata_maps/boston`
-  - `scripts/artifacts/socrata_maps/sf`
-  - `scripts/artifacts/socrata_maps/phoenix`
-
-## Key Outputs
-
-Main output directory:
-
-- `scripts/artifacts/seven_city_output/`
-
-Typical generated files include:
-
-- `table_catalog.json`
-- `unified_inventory.json`
-- `scenario_clusters.json`
-- `category_clusters.json`
-- `ai_classification_input.jsonl`
-- `taxonomy_tree_report.html`
-- `taxonomy_dendrogram.html`
-- `taxonomy_dataset_utax_edge.csv`
-- `taxonomy_dataset_l3_edge.csv`
-- `pg_import_taxonomy.sql`
-- `pg_import_taxonomy_m2m.sql`
-
-## Notes
-
-- Legacy scripts (`cluster_tables.py`, `build_databases.py`, `run_etl.py`) still exist, but are not the main path documented here.
-- Taxonomy definitions are in `scripts/taxonomy/`.
+```bash
+SOCRATA_APP_TOKEN=your_token scripts/dataset_construction/crawl_open_data_maps.sh --sample 20
+```
