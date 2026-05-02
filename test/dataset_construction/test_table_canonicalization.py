@@ -23,10 +23,11 @@ class TableCanonicalizationTests(unittest.TestCase):
         self.assertEqual(normalize_column_name("Order", existing_names=existing, column_index=1), "order_col_2")
         self.assertEqual(normalize_column_name("2024 Status", existing_names=existing, column_index=2), "col_2024_status_2")
         self.assertEqual(normalize_column_name("%%% ", existing_names=set(), column_index=3), "col_3")
+        self.assertEqual(normalize_column_name("Point__  X", existing_names=set(), column_index=4), "point_x")
 
     def test_normalize_table_name_uses_dataset_name_rules(self):
         self.assertEqual(
-            normalize_table_name("NYC Hydrants (Citywide) 2024!!"),
+            normalize_table_name("NYC__  Hydrants (Citywide) 2024!!"),
             "nyc_hydrants_citywide_2024",
         )
 
@@ -121,6 +122,79 @@ class TableCanonicalizationTests(unittest.TestCase):
         canonical = canonicalize_tables([raw_table])[0]
         self.assertEqual([field["field_name"] for field in canonical["spatial_fields"]], ["the_geom"])
 
+    def test_metadata_flow_drops_spatial_hint_columns_when_geometry_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            dataset_path = tmp_path / "sample.geojson"
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "crs": {"type": "name", "properties": {"name": "EPSG:4326"}},
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {
+                                    "longitude": -73.9,
+                                    "latitude": 40.7,
+                                    "point_x": 100.0,
+                                    "point_y": 200.0,
+                                    "status": "active",
+                                },
+                                "geometry": {"type": "Point", "coordinates": [-73.9, 40.7]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metadata_path = tmp_path / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "City": "New York City",
+                            "city_id": "nyc",
+                            "datasets": [
+                                {
+                                    "id": "hydrants",
+                                    "name": "NYC Hydrants",
+                                    "description": "Hydrant assets in the city.",
+                                    "path": str(dataset_path),
+                                    "columns": [
+                                        {"name": "the_geom", "type": "geometry"},
+                                        {"name": "longitude", "type": "number"},
+                                        {"name": "latitude", "type": "number"},
+                                        {"name": "point_x", "type": "number"},
+                                        {"name": "point_y", "type": "number"},
+                                        {"name": "status", "type": "text"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            output_path = canonicalize_metadata_file(metadata_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        dataset = payload[0]["datasets"][0]
+        self.assertEqual(dataset["canonical_name"], "nyc_hydrants")
+        self.assertEqual(
+            [column["name"] for column in dataset["columns"]],
+            ["the_geom", "status"],
+        )
+        self.assertEqual(
+            [column["canonical_name"] for column in dataset["columns"]],
+            ["the_geom", "status"],
+        )
+        self.assertEqual(
+            dataset["spatial_fields"],
+            [{"canonical_name": "the_geom", "crs": "EPSG:4326"}],
+        )
+
     def test_metadata_file_flow_preserves_original_metadata_and_writes_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -179,15 +253,25 @@ class TableCanonicalizationTests(unittest.TestCase):
         self.assertTrue(output_path.name.endswith("metadata_canonicalized.json"))
         dataset = payload[0]["datasets"][0]
         self.assertEqual(dataset["name"], "NYC Hydrants (Citywide)!!")
-        self.assertIn("canonical_table", dataset)
-        self.assertEqual(dataset["canonical_table"]["table_name"], "nyc_hydrants_citywide")
-        self.assertNotIn("raw_to_canonical_columns", dataset["canonical_table"])
+        self.assertNotIn("canonical_table", dataset)
+        self.assertEqual(dataset["canonical_name"], "nyc_hydrants_citywide")
         self.assertEqual(
-            [field["field_name"] for field in dataset["canonical_table"]["spatial_fields"]],
-            ["the_geom"],
+            dataset["spatial_fields"],
+            [{"canonical_name": "the_geom", "crs": "EPSG:4326"}],
         )
-        schema_names = [column["raw_name"] for column in dataset["canonical_table"]["schema"]]
+        self.assertIn("semantic_summary", dataset)
+        self.assertIn("themes", dataset)
+        schema_names = [column["name"] for column in dataset["columns"]]
         self.assertNotIn("ignored_extra", schema_names)
+        self.assertEqual(schema_names, ["the_geom", "status"])
+        self.assertEqual(
+            [column["canonical_name"] for column in dataset["columns"]],
+            ["the_geom", "status"],
+        )
+        self.assertEqual(
+            [column["canonical_type"] for column in dataset["columns"]],
+            ["spatial", "text"],
+        )
 
 
 if __name__ == "__main__":

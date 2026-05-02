@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from src.dataset_construction.crawl.metadata import SPATIAL_NAME_HINTS
+
 
 CANONICAL_TYPES = {
     "integer",
@@ -432,18 +434,34 @@ def _sample_rows(rows: Any, max_rows_for_inference: int) -> list[dict[str, Any]]
 
 
 def _normalize_name_for_matching(name: str) -> str:
-    return normalize_column_name(name, existing_names=None, column_index=1)
+    normalized = re.sub(r"[^a-z0-9_ ]+", "", str(name or "").strip().lower())
+    return re.sub(r"[ _]+", "_", normalized).strip("_")
+
+
+def _normalize_identifier(name: Any) -> str:
+    cleaned = re.sub(r"[^a-z0-9_ ]+", "", str(name or "").strip().lower())
+    return re.sub(r"[ _]+", "_", cleaned).strip("_")
 
 
 def normalize_table_name(name: Any) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9 ]+", "", str(name or ""))
-    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
-    return cleaned.replace(" ", "_")
+    base = _normalize_identifier(name)
+    if base and base[0].isdigit():
+        base = f"table_{base}"
+    if not base:
+        base = "table"
+    if base in SQL_RESERVED_WORDS:
+        base = f"{base}_table"
+    return base
 
 
 def _geometryish_name(name: str) -> bool:
     normalized = _normalize_name_for_matching(name)
     return any(hint == normalized or hint in normalized for hint in GEOMETRY_NAME_HINTS)
+
+
+def _matches_spatial_name_hint(name: str) -> bool:
+    normalized = _normalize_name_for_matching(name)
+    return any(hint == normalized or hint in normalized for hint in SPATIAL_NAME_HINTS)
 
 
 def _geometryish_type(raw_type: Any) -> bool:
@@ -488,6 +506,31 @@ def _ordered_raw_columns(
             columns.append({"name": key, "type": "geometry"})
 
     return columns
+
+
+def _filter_dataset_columns_for_canonicalization(raw_schema: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_schema, list):
+        return []
+
+    normalized_geometry_names = {
+        _normalize_name_for_matching(_normalize_text(column.get("name")))
+        for column in raw_schema
+        if isinstance(column, Mapping) and _normalize_text(column.get("name"))
+    } & {"the_geom", "geometry"}
+
+    filtered_columns: list[dict[str, Any]] = []
+    for column in raw_schema:
+        if not isinstance(column, Mapping):
+            continue
+        raw_name = _normalize_text(column.get("name"))
+        if not raw_name:
+            continue
+        normalized_name = _normalize_name_for_matching(raw_name)
+        if normalized_geometry_names and normalized_name not in {"the_geom", "geometry"}:
+            if _matches_spatial_name_hint(raw_name):
+                continue
+        filtered_columns.append(dict(column))
+    return filtered_columns
 
 
 def _build_property_alias_map(raw_schema: Any) -> dict[str, str]:
@@ -630,8 +673,7 @@ def normalize_column_name(
     existing_names: Optional[set[str]] = None,
     column_index: int = 1,
 ) -> str:
-    base = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower())
-    base = re.sub(r"_+", "_", base).strip("_")
+    base = _normalize_identifier(name)
     if base and base[0].isdigit():
         base = f"col_{base}"
     if not base:
@@ -1506,7 +1548,7 @@ def _build_raw_table_from_dataset_record(
     dataset_path = Path(
         _normalize_text(dataset_record.get("path") or dataset_record.get("geojson_path"))
     )
-    raw_schema = dataset_record.get("columns")
+    raw_schema = _filter_dataset_columns_for_canonicalization(dataset_record.get("columns"))
     rows, geojson_geometry, crs, source_format = _load_rows_from_dataset_path(
         dataset_path,
         raw_schema,
@@ -1585,7 +1627,47 @@ def canonicalize_metadata(
                 raw_table,
                 max_rows_for_inference=max_rows_for_inference,
             )
-            dataset["canonical_table"] = canonical_table.to_dict()
+            dataset["canonical_name"] = canonical_table.table_name
+            dataset["spatial_fields"] = [
+                {
+                    "canonical_name": field_item.field_name,
+                    "crs": field_item.crs,
+                }
+                for field_item in canonical_table.spatial_fields
+            ]
+            dataset["semantic_summary"] = canonical_table.semantic_summary
+            dataset["themes"] = list(canonical_table.themes)
+
+            canonical_columns_by_raw = {
+                column.raw_name: column for column in canonical_table.schema
+            }
+            source_columns = raw_table.get("raw_schema") or []
+            if isinstance(source_columns, list) and source_columns:
+                updated_columns: list[dict[str, Any]] = []
+                for column in source_columns:
+                    if not isinstance(column, Mapping):
+                        continue
+                    raw_name = _normalize_text(column.get("name"))
+                    canonical_column = canonical_columns_by_raw.get(raw_name)
+                    if canonical_column is None:
+                        continue
+                    updated_column = dict(column)
+                    updated_column["canonical_name"] = canonical_column.canonical_name
+                    updated_column["canonical_type"] = canonical_column.type
+                    updated_column["nullable"] = canonical_column.nullable
+                    updated_columns.append(updated_column)
+                dataset["columns"] = updated_columns
+            else:
+                dataset["columns"] = [
+                    {
+                        "name": column.raw_name,
+                        "type": "",
+                        "canonical_name": column.canonical_name,
+                        "canonical_type": column.type,
+                        "nullable": column.nullable,
+                    }
+                    for column in canonical_table.schema
+                ]
     return canonicalized_metadata
 
 
