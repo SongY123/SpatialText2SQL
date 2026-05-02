@@ -1,0 +1,52 @@
+database:
+  host: localhost
+  port: 5432
+  database: syntheized
+  user: postgres
+  password: "123456"
+  search_path: public
+  connect_timeout: 10
+  statement_timeout: 60000
+
+llm:
+  provider: openai_compatible
+  model: gpt-4o-mini
+  base_url: http://localhost:8000/v1
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_tokens: 1200
+  timeout: 120
+  max_retries: 2
+
+synthesis:
+  input_path: data/processed/synthesized_spatial_databases.jsonl
+  output_path: data/processed/synthesized_sql_queries.jsonl
+  num_sql_per_database: 5
+  difficulty_weights:
+    easy: 1.0
+    medium: 1.0
+    hard: 1.0
+    extra-hard: 1.0
+  random_seed: 42
+  keep_invalid: false
+  keep_failed_execution: false
+  max_revision_rounds: 2
+
+functions:
+  postgis_function_json_path: data/postgis_extracted.json
+  st_function_markdown_path: ST_Function.md
+  exclude_categories:
+    - raster
+    - topology
+
+execution:
+  enable_execution_check: true
+  require_non_empty_result: true
+  max_result_rows_for_check: 20
+  execution_timeout: 60
+  dry_run: false
+  explain_only: false
+
+logging:
+  log_level: INFO
+  log_path: ""

@@ -63,6 +63,164 @@ If the volume of requests to Socrata is large, you can configure `SOCRATA_APP_TO
 SOCRATA_APP_TOKEN=your_token scripts/dataset_construction/crawl_open_data_maps.sh --sample 20
 ```
 
+## Table Canonicalization
+
+Canonicalize the crawled metadata and enrich each dataset entry in place:
+
+```bash
+scripts/dataset_construction/table_canonicalization.sh data/raw/metadata.json
+```
+
+By default this writes:
+
+```text
+data/raw/metadata_canonicalized.json
+```
+
+The canonicalization step updates each dataset in place:
+
+- dataset-level `canonical_name`
+- column-level `canonical_name` and `canonical_type`
+- dataset-level `spatial_fields`
+
+`nullable` is not written into the canonicalized metadata.
+
+City selection matches `crawl_open_data_maps.sh`. For example:
+
+```bash
+scripts/dataset_construction/table_canonicalization.sh data/raw/metadata.json --cities nyc,sf
+```
+
+## Spatial Database Synthesis
+
+The relation-aware synthesis entrypoint is:
+
+```bash
+scripts/dataset_construction/synthesize_spatial_databases.sh
+```
+
+The shell wrapper calls the Python CLI in:
+
+```text
+src/synthesis/database/cli.py
+```
+
+Default behavior:
+
+- Input: `data/raw/metadata_canonicalized.json`
+- Output: `data/processed/synthesized_spatial_databases.jsonl`
+- Number of synthesized databases per city: automatically set to `ceil(num_tables_in_city / 10)`
+- `TARGET_AVG_DEGREE=4`
+- `EXPLORATION_PROB=0.1`
+- `SIZE_MEAN=8`
+- `SIZE_STD=2`
+- `MIN_TABLES=2`
+- `MAX_TABLES=12`
+- `EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2`
+- `RANDOM_SEED=42`
+- `MAX_SAMPLING_STEPS=100`
+- `LOG_LEVEL=INFO`
+
+Run with all defaults:
+
+```bash
+scripts/dataset_construction/synthesize_spatial_databases.sh
+```
+
+Override the input and output with positional arguments:
+
+```bash
+scripts/dataset_construction/synthesize_spatial_databases.sh \
+  data/raw/metadata_canonicalized.json \
+  data/processed/synthesized_spatial_databases.jsonl
+```
+
+Restrict synthesis to selected cities using the same `--cities` syntax as `crawl_open_data_maps.sh`:
+
+```bash
+scripts/dataset_construction/synthesize_spatial_databases.sh \
+  data/raw/metadata_canonicalized.json \
+  data/processed/synthesized_spatial_databases.jsonl \
+  --cities nyc,sf
+```
+
+Override other sampling defaults through environment variables, and pass any extra CLI flags after the first two positional arguments:
+
+```bash
+EXPLORATION_PROB=0.2 \
+scripts/dataset_construction/synthesize_spatial_databases.sh \
+  data/raw/metadata_canonicalized.json \
+  data/processed/synthesized_spatial_databases.jsonl \
+  --cities nyc,sf \
+  --embedding-model sentence-transformers/all-MiniLM-L6-v2
+```
+
+This stage requires `networkx`, and the default embedding backend also requires `sentence-transformers`.
+
+## PostGIS Migration
+
+Migrate synthesized spatial databases into PostGIS schemas:
+
+```bash
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
+```
+
+Common options:
+
+```bash
+# Override input file
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
+  data/processed/synthesized_spatial_databases.jsonl
+
+# Restrict to specific cities
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
+  data/processed/synthesized_spatial_databases.jsonl \
+  --cities nyc,sf
+```
+
+Database configuration defaults:
+
+- Host: `localhost`
+- Port: `5432`
+- User: `postgres`
+- Password: `123456`
+- Catalog: `synthesis`
+- Bootstrap database: `postgres`
+
+Edit persistent settings in `config/migrate.yaml`.
+
+## SQL Synthesis
+
+Generate PostGIS SQL samples from synthesized spatial databases:
+
+```bash
+scripts/dataset_construction/synthesize_sql_queries.sh
+```
+
+Common options:
+
+```bash
+# Override input, output, and difficulty
+scripts/dataset_construction/synthesize_sql_queries.sh \
+  --input data/processed/synthesized_spatial_databases.jsonl \
+  --output data/processed/synthesized_sql_queries.jsonl \
+  --difficulty hard \
+  --num-sql-per-database 3
+
+# Dry run without execution checks
+scripts/dataset_construction/synthesize_sql_queries.sh \
+  --disable-execution-check \
+  --dry-run
+```
+
+Default settings:
+
+- Input: `data/processed/synthesized_spatial_databases.jsonl`
+- Output: `data/processed/synthesized_sql_queries.jsonl`
+- Database connection: `localhost:5432/synthesis`
+
+Edit persistent settings in `config/sql_synthesis.yaml`.
+
 ## PostGIS Docs Parse
 
 Use the unified entry point below for PostGIS documentation parsing workflows:

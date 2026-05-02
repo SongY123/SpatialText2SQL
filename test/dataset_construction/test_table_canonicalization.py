@@ -190,6 +190,7 @@ class TableCanonicalizationTests(unittest.TestCase):
             [column["canonical_name"] for column in dataset["columns"]],
             ["the_geom", "status"],
         )
+        self.assertTrue(all("nullable" not in column for column in dataset["columns"]))
         self.assertEqual(
             dataset["spatial_fields"],
             [{"canonical_name": "the_geom", "crs": "EPSG:4326"}],
@@ -272,6 +273,88 @@ class TableCanonicalizationTests(unittest.TestCase):
             [column["canonical_type"] for column in dataset["columns"]],
             ["spatial", "text"],
         )
+        self.assertTrue(all("nullable" not in column for column in dataset["columns"]))
+
+    def test_metadata_file_flow_filters_selected_cities(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            nyc_path = tmp_path / "nyc.geojson"
+            nyc_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"status": "active"},
+                                "geometry": {"type": "Point", "coordinates": [-73.9, 40.7]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sf_path = tmp_path / "sf.geojson"
+            sf_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"status": "open"},
+                                "geometry": {"type": "Point", "coordinates": [-122.4, 37.8]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metadata_path = tmp_path / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "City": "New York City",
+                            "city_id": "nyc",
+                            "datasets": [
+                                {
+                                    "id": "hydrants",
+                                    "name": "NYC Hydrants",
+                                    "path": str(nyc_path),
+                                    "columns": [
+                                        {"name": "the_geom", "type": "geometry"},
+                                        {"name": "status", "type": "text"},
+                                    ],
+                                }
+                            ],
+                        },
+                        {
+                            "City": "San Francisco",
+                            "city_id": "sf",
+                            "datasets": [
+                                {
+                                    "id": "facilities",
+                                    "name": "SF Facilities",
+                                    "path": str(sf_path),
+                                    "columns": [
+                                        {"name": "the_geom", "type": "geometry"},
+                                        {"name": "status", "type": "text"},
+                                    ],
+                                }
+                            ],
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            output_path = canonicalize_metadata_file(metadata_path, selected_city_ids=["nyc"])
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["city_id"], "nyc")
+        self.assertEqual(payload[0]["datasets"][0]["canonical_name"], "nyc_hydrants")
 
 
 if __name__ == "__main__":

@@ -335,14 +335,12 @@ class CanonicalColumn:
     raw_name: str
     canonical_name: str
     type: str
-    nullable: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "raw_name": self.raw_name,
             "canonical_name": self.canonical_name,
             "type": self.type,
-            "nullable": self.nullable,
         }
 
 
@@ -1284,7 +1282,7 @@ def normalize_schema(
                 values = [row.get(raw_name) for row in sampled_rows]
         else:
             values = [row.get(raw_name) for row in sampled_rows]
-        inferred_type, nullable = infer_column_type(
+        inferred_type, _nullable = infer_column_type(
             column.get("type"),
             values,
             is_spatial=raw_name in complete_spatial_raw_columns,
@@ -1294,7 +1292,6 @@ def normalize_schema(
                 raw_name=raw_name,
                 canonical_name=raw_to_canonical[raw_name],
                 type=inferred_type,
-                nullable=nullable or total_rows == 0,
             )
         )
 
@@ -1429,19 +1426,16 @@ def _canonical_table_from_raw_table(
     for column in ordered_columns:
         raw_name = column["name"]
         values = _schema_values_for_column(raw_name, sampled_rows, raw_table, geojson_field_name or None)
-        inferred_type, nullable = infer_column_type(
+        inferred_type, _nullable = infer_column_type(
             column.get("type"),
             values,
             is_spatial=raw_name in complete_spatial_raw_columns,
         )
-        if not values and not sampled_rows:
-            nullable = True
         schema.append(
             CanonicalColumn(
                 raw_name=raw_name,
                 canonical_name=raw_to_canonical[raw_name],
                 type=inferred_type,
-                nullable=nullable,
             )
         )
 
@@ -1600,6 +1594,7 @@ def _build_raw_table_from_dataset_record(
 def canonicalize_metadata(
     metadata: Sequence[Mapping[str, Any]] | Mapping[str, Any],
     max_rows_for_inference: int = 100,
+    selected_city_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Canonicalize dataset records inside metadata while preserving original fields."""
 
@@ -1609,6 +1604,20 @@ def canonicalize_metadata(
         metadata_items = [dict(item) for item in metadata if isinstance(item, Mapping)]
     else:
         metadata_items = []
+
+    normalized_selected_city_ids = {
+        _normalize_text(city_id).lower()
+        for city_id in (selected_city_ids or [])
+        if _normalize_text(city_id)
+    }
+    if normalized_selected_city_ids:
+        metadata_items = [
+            item
+            for item in metadata_items
+            if _normalize_text(
+                item.get("city_id") or item.get("City") or item.get("city")
+            ).lower() in normalized_selected_city_ids
+        ]
 
     canonicalized_metadata = deepcopy(metadata_items)
     for city_metadata in canonicalized_metadata:
@@ -1654,7 +1663,6 @@ def canonicalize_metadata(
                     updated_column = dict(column)
                     updated_column["canonical_name"] = canonical_column.canonical_name
                     updated_column["canonical_type"] = canonical_column.type
-                    updated_column["nullable"] = canonical_column.nullable
                     updated_columns.append(updated_column)
                 dataset["columns"] = updated_columns
             else:
@@ -1664,7 +1672,6 @@ def canonicalize_metadata(
                         "type": "",
                         "canonical_name": column.canonical_name,
                         "canonical_type": column.type,
-                        "nullable": column.nullable,
                     }
                     for column in canonical_table.schema
                 ]
@@ -1676,6 +1683,7 @@ def canonicalize_metadata_file(
     *,
     output_path: str | Path | None = None,
     max_rows_for_inference: int = 100,
+    selected_city_ids: Sequence[str] | None = None,
 ) -> Path:
     """Read metadata.json, canonicalize its datasets, and write metadata_canonicalized.json."""
 
@@ -1687,6 +1695,7 @@ def canonicalize_metadata_file(
     canonicalized = canonicalize_metadata(
         payload,
         max_rows_for_inference=max_rows_for_inference,
+        selected_city_ids=selected_city_ids,
     )
 
     if output_path is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -92,9 +93,173 @@ class PromptBuilder:
         }
         return self._render_template(template_text, placeholders)
 
+    def build_sql_synthesis_prompt(
+        self,
+        *,
+        database: Any,
+        difficulty_level: str,
+        structural_constraints: Dict[str, Any],
+        sampled_functions: List[Dict[str, Any]],
+    ) -> str:
+        schema_lines: List[str] = []
+        representative_values: Dict[str, Any] = {}
+        spatial_lines: List[str] = []
+        for table in getattr(database, "selected_tables", []):
+            table_name = str(getattr(table, "table_name", "")).strip()
+            columns = []
+            for column in getattr(table, "normalized_schema", []):
+                if not isinstance(column, dict):
+                    continue
+                column_name = str(column.get("canonical_name") or column.get("name") or "").strip()
+                column_type = str(column.get("canonical_type") or column.get("type") or "text").strip()
+                if column_name:
+                    columns.append(f"{column_name} {column_type}")
+            schema_lines.append(f"- {table_name}({', '.join(columns)})")
+            table_rep_values = getattr(table, "representative_values", None) or {}
+            if table_rep_values:
+                representative_values[table_name] = table_rep_values
+            for field in getattr(table, "spatial_fields", []):
+                if not isinstance(field, dict):
+                    continue
+                spatial_name = str(field.get("canonical_name") or "").strip()
+                crs = str(field.get("crs") or "null").strip()
+                if spatial_name:
+                    spatial_lines.append(f"- {table_name}.{spatial_name} (crs={crs})")
+
+        functions_payload = []
+        for item in sampled_functions:
+            functions_payload.append(
+                {
+                    "function_name": item.get("function_name"),
+                    "signature": item.get("signature"),
+                    "categories": item.get("categories"),
+                    "description": item.get("description"),
+                    "example_usages": item.get("example_usages"),
+                }
+            )
+
+        prompt = f"""
+You are generating a single PostgreSQL/PostGIS SQL query for synthetic dataset construction.
+
+## Task Goal
+Generate exactly one executable PostgreSQL/PostGIS read-only SQL query for database "{getattr(database, 'database_id', '')}".
+The query must be spatially meaningful, executable, and consistent with the requested difficulty level.
+
+## Database Context
+- database_id: {getattr(database, 'database_id', '')}
+- city: {getattr(database, 'city', '')}
+- selected_tables: {', '.join(getattr(database, 'selected_table_names', []) or [])}
+
+## Schema
+{chr(10).join(schema_lines)}
+
+## Spatial Field Metadata
+{chr(10).join(spatial_lines) if spatial_lines else 'No spatial fields listed.'}
+
+## Representative Values
+{self._stable_json_text(representative_values)}
+
+## Difficulty Constraint
+{self._stable_json_text(structural_constraints)}
+
+## Required PostGIS Function Constraints
+Use at least one sampled PostGIS function. Prefer using all compatible sampled functions when possible.
+{self._stable_json_text(functions_payload)}
+
+## Composition Requirements
+- Use only the tables and columns listed in the schema section.
+- Do not invent any table names, column names, or PostGIS functions.
+- The SQL must satisfy the target difficulty level: {difficulty_level}.
+- Use table aliases for multi-table queries.
+- Use PostgreSQL/PostGIS syntax only.
+- Do not use raster or topology related functions.
+- Do not generate DDL, DML, transaction control, or administrative SQL.
+- Generate one SQL query only.
+- When the result may be large, include a LIMIT clause unless aggregation naturally keeps the result compact.
+- The SQL should be semantically plausible for the available tables and spatial columns.
+
+## Output Format
+Return a JSON object only, without Markdown code fences.
+The JSON object must contain:
+- sql
+- used_tables
+- used_columns
+- used_spatial_functions
+- reasoning_summary
+"""
+        return self._cleanup_rendered_prompt(prompt)
+
+    def build_sql_feedback_prompt(
+        self,
+        *,
+        database: Any,
+        difficulty_level: str,
+        structural_constraints: Dict[str, Any],
+        sampled_functions: List[Dict[str, Any]],
+        original_candidate: Dict[str, Any],
+        validation_errors: List[str],
+        execution_error: str = "",
+        empty_result: bool = False,
+    ) -> str:
+        schema_lines: List[str] = []
+        for table in getattr(database, "selected_tables", []):
+            table_name = str(getattr(table, "table_name", "")).strip()
+            columns = []
+            for column in getattr(table, "normalized_schema", []):
+                if not isinstance(column, dict):
+                    continue
+                column_name = str(column.get("canonical_name") or column.get("name") or "").strip()
+                column_type = str(column.get("canonical_type") or column.get("type") or "text").strip()
+                if column_name:
+                    columns.append(f"{column_name} {column_type}")
+            schema_lines.append(f"- {table_name}({', '.join(columns)})")
+
+        prompt = f"""
+You must revise an existing PostgreSQL/PostGIS SQL query while preserving the original task goal.
+
+## Original Candidate
+{self._stable_json_text(original_candidate)}
+
+## Database Context
+- database_id: {getattr(database, 'database_id', '')}
+- city: {getattr(database, 'city', '')}
+
+## Schema
+{chr(10).join(schema_lines)}
+
+## Difficulty Constraint
+Target difficulty level: {difficulty_level}
+{self._stable_json_text(structural_constraints)}
+
+## Original PostGIS Function Constraints
+{self._stable_json_text(sampled_functions)}
+
+## Validation Errors
+{self._stable_json_text(validation_errors)}
+
+## Execution Feedback
+- execution_error: {execution_error or 'none'}
+- empty_result: {str(bool(empty_result)).lower()}
+
+## Revision Requirements
+- Revise only the SQL and its directly related metadata.
+- Keep the same task goal and target difficulty level.
+- Still use only the provided schema tables and columns.
+- Still try to use the originally sampled PostGIS functions whenever compatible.
+- Avoid nonexistent columns, nonexistent tables, bad argument counts, type mismatches, and SRID mismatches.
+- If the query returned no rows, relax overly narrow filters, replace brittle literal values, or adjust spatial thresholds.
+- Return one JSON object only, with fields: sql, used_tables, used_columns, used_spatial_functions, reasoning_summary.
+- Do not return Markdown code fences.
+"""
+        return self._cleanup_rendered_prompt(prompt)
+
     @staticmethod
     def _stringify_value(value: Any) -> str:
         return str(value).strip() if value not in (None, "") else ""
+
+    @staticmethod
+    def _stable_json_text(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:
         rendered = template_text
