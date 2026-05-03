@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .core import PostGISConnectionSettings
+from .core import DEFAULT_INSERT_BATCH_SIZE, PostGISConnectionSettings
 
 
 def _project_root() -> Path:
@@ -24,6 +24,7 @@ class MigrationRuntimeConfig:
     input_path: str = str(DEFAULT_INPUT_PATH)
     cities: str = "all"
     log_level: str = "INFO"
+    insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE
     connection: PostGISConnectionSettings = field(default_factory=PostGISConnectionSettings)
 
 
@@ -83,5 +84,6 @@ def load_migration_config(config_path: str | Path | None = None) -> MigrationRun
         input_path=_resolve_input_path(payload.get("input"), path),
         cities=_as_text(payload.get("cities")) or "all",
         log_level=_as_text(logging_section.get("level")) or "INFO",
+        insert_batch_size=_as_positive_int(payload.get("insert_batch_size"), DEFAULT_INSERT_BATCH_SIZE),
         connection=connection,
     )

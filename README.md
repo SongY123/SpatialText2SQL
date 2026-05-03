@@ -176,6 +176,10 @@ scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
 scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
   data/processed/synthesized_spatial_databases.jsonl \
   --cities nyc,sf
+
+# Control bulk insert batch size
+INSERT_BATCH_SIZE=2000 \
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
 ```
 
 Database configuration defaults:
@@ -184,8 +188,17 @@ Database configuration defaults:
 - Port: `5432`
 - User: `postgres`
 - Password: `123456`
-- Catalog: `synthesis`
+- Catalog: `syntheized`
 - Bootstrap database: `postgres`
+- Insert batch size: `10000`
+
+`bootstrap_db` is only the bootstrap connection used to check or create the shared target catalog. The synthesized databases themselves are migrated as schemas inside the target catalog.
+
+Migration behavior:
+
+- Each synthesized `database_id` becomes one schema inside the shared catalog.
+- The migrator recreates that schema and then imports the selected tables into it.
+- GeoJSON features are inserted in batches, not one row at a time.
 
 Edit persistent settings in `config/migrate.yaml`.
 
@@ -217,7 +230,7 @@ Default settings:
 
 - Input: `data/processed/synthesized_spatial_databases.jsonl`
 - Output: `data/processed/synthesized_sql_queries.jsonl`
-- Database connection: `localhost:5432/synthesis`
+- Database connection: `localhost:5432/syntheized`
 
 Edit persistent settings in `config/sql_synthesis.yaml`.
 

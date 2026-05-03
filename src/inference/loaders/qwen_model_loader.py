@@ -2,8 +2,6 @@
 import os
 from typing import Dict, Any
 
-# 设置使用Hugging Face镜像加速模型下载
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 from src.inference.base import BaseModelLoader, GenerationResult
 from src.inference.sql_utils import extract_sql_from_text

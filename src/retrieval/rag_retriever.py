@@ -6,10 +6,6 @@ from typing import List, Dict, Optional
 import chromadb
 from sentence_transformers import SentenceTransformer
 
-# 设置使用Hugging Face镜像加速模型下载
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-
-
 class RAGRetriever:
     """RAG检索器 - 基于ChromaDB的语义检索"""
     
@@ -31,7 +27,18 @@ class RAGRetriever:
         self.embedding_model = None
         self.client = None
         self.collection = None
-    
+
+    def _load_embedding_model(self, prefer_local_cache: bool = True) -> SentenceTransformer:
+        """优先从本地缓存加载嵌入模型，失败后再走在线下载。"""
+        if prefer_local_cache:
+            try:
+                print(f"  尝试从本地缓存加载: {self.embedding_model_name}")
+                return SentenceTransformer(self.embedding_model_name, local_files_only=True)
+            except Exception:
+                print(f"  本地缓存不可用，改为从 Hugging Face 镜像加载: {self.embedding_model_name}")
+
+        return SentenceTransformer(self.embedding_model_name)
+
     def build_index(self):
         """构建或加载向量索引"""
         print("\n" + "="*60)
@@ -54,14 +61,7 @@ class RAGRetriever:
         
         # 加载嵌入模型
         print(f"步骤 2/4: 加载嵌入模型 ({self.embedding_model_name})")
-        # 首先尝试从本地缓存加载
-        local_model_path = os.path.expanduser("~/.cache/huggingface/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
-        if os.path.exists(local_model_path):
-            print(f"  从本地缓存加载: {local_model_path}")
-            self.embedding_model = SentenceTransformer(local_model_path, local_files_only=True)
-        else:
-            print(f"  本地缓存不存在，从HuggingFace镜像下载: {self.embedding_model_name}")
-            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        self.embedding_model = self._load_embedding_model(prefer_local_cache=True)
         print("嵌入模型加载完成\n")
         
         # 加载文档
@@ -200,15 +200,8 @@ class RAGRetriever:
             self.collection = self.client.get_collection(name="postgis_functions")
         
         if self.embedding_model is None:
-            # 首先尝试从本地缓存加载
-            local_model_path = os.path.expanduser("~/.cache/huggingface/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
-            if os.path.exists(local_model_path):
-                print(f"从本地缓存加载嵌入模型: {local_model_path}")
-                self.embedding_model = SentenceTransformer(local_model_path, local_files_only=True)
-            else:
-                print(f"本地缓存不存在，从HuggingFace镜像加载嵌入模型: {self.embedding_model_name}")
-                self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        
+            self.embedding_model = self._load_embedding_model(prefer_local_cache=True)
+
         # 生成问题嵌入
         question_embedding = self.embedding_model.encode(question).tolist()
         

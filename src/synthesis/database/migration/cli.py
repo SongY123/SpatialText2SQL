@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--catalog")
     parser.add_argument("--bootstrap-db")
     parser.add_argument("--maintenance-db", help=argparse.SUPPRESS)
+    parser.add_argument("--insert-batch-size", type=positive_int)
     parser.add_argument("--log-level")
     parser.add_argument("--list-cities", action="store_true", help="Print configured city ids and exit.")
     return parser
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     merged_input = args.input or file_config.input_path
     merged_cities = args.cities or file_config.cities
     merged_log_level = args.log_level or file_config.log_level
+    merged_insert_batch_size = args.insert_batch_size or file_config.insert_batch_size
     merged_connection = PostGISConnectionSettings(
         host=args.host or file_config.connection.host,
         port=args.port or file_config.connection.port,
@@ -82,7 +84,10 @@ def main(argv: list[str] | None = None) -> int:
     databases = load_synthesized_databases(merged_input)
     selected_city_ids = {profile.city_id for profile in selected_profiles}
     filtered = [item for item in databases if item.city in selected_city_ids]
-    migrator = PostGISSynthesizedDatabaseMigrator(merged_connection)
+    migrator = PostGISSynthesizedDatabaseMigrator(
+        merged_connection,
+        insert_batch_size=merged_insert_batch_size,
+    )
     migrated = migrator.migrate_databases(filtered)
     logging.info("Migrated %s synthesized database(s).", len(migrated))
     return 0

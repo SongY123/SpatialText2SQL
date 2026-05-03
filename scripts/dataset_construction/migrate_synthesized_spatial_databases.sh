@@ -25,6 +25,7 @@ Optional environment overrides:
   PGCATALOG
   PGBOOTSTRAP_DB
   PGMAINTENANCE_DB (legacy alias for PGBOOTSTRAP_DB)
+  INSERT_BATCH_SIZE
   LOG_LEVEL
 
 Examples:
@@ -67,6 +68,9 @@ if [[ -n "${PGBOOTSTRAP_DB:-}" ]]; then
 fi
 if [[ -n "${PGMAINTENANCE_DB:-}" ]]; then
   EXTRA_ARGS+=(--maintenance-db "${PGMAINTENANCE_DB}")
+fi
+if [[ -n "${INSERT_BATCH_SIZE:-}" ]]; then
+  EXTRA_ARGS+=(--insert-batch-size "${INSERT_BATCH_SIZE}")
 fi
 if [[ -n "${LOG_LEVEL:-}" ]]; then
   EXTRA_ARGS+=(--log-level "${LOG_LEVEL}")

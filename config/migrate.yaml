@@ -1,5 +1,6 @@
 input: data/processed/synthesized_spatial_databases.jsonl
 cities: all
+insert_batch_size: 10000
 
 database:
   host: localhost

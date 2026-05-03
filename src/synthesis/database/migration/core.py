@@ -12,12 +12,14 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extras import execute_values
 from psycopg2.extensions import connection as PGConnection
 
 from ..models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 from ..utils import is_missing, stable_jsonify, to_text
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_INSERT_BATCH_SIZE = 10000
 
 POSTGIS_EXTENSIONS = (
     "postgis",
@@ -184,6 +186,54 @@ def _extract_coordinate_pair(value: Any) -> Optional[tuple[float, float]]:
     return None
 
 
+def _format_wkt_number(value: Any) -> str:
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return format(numeric, ".15g")
+
+
+def _format_wkt_position(value: Sequence[Any]) -> str:
+    return " ".join(_format_wkt_number(item) for item in value)
+
+
+def _format_wkt_positions(values: Sequence[Sequence[Any]]) -> str:
+    return ", ".join(_format_wkt_position(item) for item in values)
+
+
+def _format_wkt_rings(values: Sequence[Sequence[Sequence[Any]]]) -> str:
+    return ", ".join(f"({_format_wkt_positions(ring)})" for ring in values)
+
+
+def _geojson_to_wkt(value: Mapping[str, Any]) -> str:
+    geometry_type = to_text(value.get("type")).upper()
+    coordinates = value.get("coordinates")
+    if geometry_type == "POINT" and isinstance(coordinates, Sequence):
+        return f"POINT ({_format_wkt_position(coordinates)})"
+    if geometry_type == "MULTIPOINT" and isinstance(coordinates, Sequence):
+        parts = ", ".join(f"({_format_wkt_position(item)})" for item in coordinates)
+        return f"MULTIPOINT ({parts})"
+    if geometry_type == "LINESTRING" and isinstance(coordinates, Sequence):
+        parts = _format_wkt_positions(coordinates)
+        return f"LINESTRING ({parts})"
+    if geometry_type == "MULTILINESTRING" and isinstance(coordinates, Sequence):
+        parts = ", ".join(f"({_format_wkt_positions(line)})" for line in coordinates)
+        return f"MULTILINESTRING ({parts})"
+    if geometry_type == "POLYGON" and isinstance(coordinates, Sequence):
+        parts = _format_wkt_rings(coordinates)
+        return f"POLYGON ({parts})"
+    if geometry_type == "MULTIPOLYGON" and isinstance(coordinates, Sequence):
+        parts = ", ".join(f"({_format_wkt_rings(polygon)})" for polygon in coordinates)
+        return f"MULTIPOLYGON ({parts})"
+    if geometry_type == "GEOMETRYCOLLECTION":
+        geometries = value.get("geometries") or []
+        if isinstance(geometries, Sequence):
+            return "GEOMETRYCOLLECTION ({})".format(
+                ", ".join(_geojson_to_wkt(item) for item in geometries if isinstance(item, Mapping))
+            )
+    raise ValueError(f"Unsupported GeoJSON geometry type: {geometry_type or '<missing>'}")
+
+
 def _coerce_scalar_value(value: Any, canonical_type: str) -> Any:
     if is_missing(value):
         return None
@@ -231,6 +281,24 @@ def _coerce_scalar_value(value: Any, canonical_type: str) -> Any:
     if isinstance(value, (Mapping, list)):
         return json.dumps(stable_jsonify(value), ensure_ascii=False)
     return value
+
+
+def _normalize_spatial_to_wkt(value: Any) -> Optional[str]:
+    if is_missing(value):
+        return None
+    if _is_geojson_geometry(value):
+        try:
+            return _geojson_to_wkt(value)
+        except ValueError:
+            LOGGER.warning("Unsupported GeoJSON geometry encountered; inserting NULL.")
+            return None
+    if _looks_like_wkt(value):
+        return to_text(value)
+    pair = _extract_coordinate_pair(value)
+    if pair is not None:
+        return f"POINT ({_format_wkt_number(pair[0])} {_format_wkt_number(pair[1])})"
+    LOGGER.warning("Unsupported spatial value encountered; inserting NULL.")
+    return None
 
 
 def _coordinate_role(name: str) -> Optional[str]:
@@ -371,8 +439,15 @@ def build_feature_row(
 class PostGISSynthesizedDatabaseMigrator:
     """Create PostGIS schemas in a shared catalog and load synthesized tables."""
 
-    def __init__(self, settings: PostGISConnectionSettings):
+    def __init__(
+        self,
+        settings: PostGISConnectionSettings,
+        insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE,
+    ):
         self.settings = settings
+        if int(insert_batch_size) <= 0:
+            raise ValueError(f"insert_batch_size must be positive, got: {insert_batch_size!r}")
+        self.insert_batch_size = int(insert_batch_size)
 
     def _connect(self, database: str) -> PGConnection:
         return psycopg2.connect(
@@ -500,25 +575,34 @@ class PostGISSynthesizedDatabaseMigrator:
                     (self._build_column_comment(spec),),
                 )
 
-    def _spatial_expression(self, value: Any, srid: int | None) -> tuple[sql.SQL, list[Any]]:
-        if is_missing(value):
-            return sql.SQL("NULL"), []
-        if _is_geojson_geometry(value):
-            geometry_json = json.dumps(stable_jsonify(value), ensure_ascii=False)
-            if srid is None:
-                return sql.SQL("ST_GeomFromGeoJSON(%s)"), [geometry_json]
-            return sql.SQL("ST_SetSRID(ST_GeomFromGeoJSON(%s), %s)"), [geometry_json, srid]
-        if _looks_like_wkt(value):
-            if srid is None:
-                return sql.SQL("ST_GeomFromText(%s)"), [to_text(value)]
-            return sql.SQL("ST_SetSRID(ST_GeomFromText(%s), %s)"), [to_text(value), srid]
-        pair = _extract_coordinate_pair(value)
-        if pair is not None:
-            if srid is None:
-                return sql.SQL("ST_MakePoint(%s, %s)"), [pair[0], pair[1]]
-            return sql.SQL("ST_SetSRID(ST_MakePoint(%s, %s), %s)"), [pair[0], pair[1], srid]
-        LOGGER.warning("Unsupported spatial value encountered; inserting NULL.")
-        return sql.SQL("NULL"), []
+    def _build_insert_template(self, specs: Sequence[ColumnMigrationSpec]) -> str:
+        parts: list[str] = []
+        for spec in specs:
+            if not spec.is_spatial:
+                parts.append("%s")
+                continue
+            if spec.srid is None:
+                parts.append("CASE WHEN %s IS NULL THEN NULL ELSE ST_GeomFromText(%s) END")
+            else:
+                parts.append(
+                    f"CASE WHEN %s IS NULL THEN NULL ELSE ST_SetSRID(ST_GeomFromText(%s), {int(spec.srid)}) END"
+                )
+        return f"({', '.join(parts)})"
+
+    def _build_insert_values(
+        self,
+        row: Mapping[str, Any],
+        specs: Sequence[ColumnMigrationSpec],
+    ) -> tuple[Any, ...]:
+        values: list[Any] = []
+        for spec in specs:
+            value = row.get(spec.canonical_name)
+            if spec.is_spatial:
+                wkt_value = _normalize_spatial_to_wkt(value)
+                values.extend([wkt_value, wkt_value])
+            else:
+                values.append(value)
+        return tuple(values)
 
     def _insert_features(
         self,
@@ -531,32 +615,36 @@ class PostGISSynthesizedDatabaseMigrator:
     ) -> None:
         if not features:
             return
+        qualified_table = sql.SQL("{}.{}").format(
+            sql.Identifier(schema_name),
+            sql.Identifier(table_name),
+        )
+        columns_sql = [sql.Identifier(spec.canonical_name) for spec in specs]
+        insert_sql = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+            qualified_table,
+            sql.SQL(", ").join(columns_sql),
+        ).as_string(conn)
+        template = self._build_insert_template(specs)
+        rows = [
+            self._build_insert_values(build_feature_row(table, feature, specs), specs)
+            for feature in features
+        ]
+        page_size = min(self.insert_batch_size, len(rows))
+        LOGGER.info(
+            "Bulk inserting %s feature(s) into %s.%s with batch_size=%s",
+            len(rows),
+            schema_name,
+            table_name,
+            page_size,
+        )
         with conn.cursor() as cur:
-            for feature in features:
-                row = build_feature_row(table, feature, specs)
-                columns_sql = [sql.Identifier(spec.canonical_name) for spec in specs]
-                values_sql: list[sql.SQL] = []
-                params: list[Any] = []
-                for spec in specs:
-                    value = row.get(spec.canonical_name)
-                    if spec.is_spatial:
-                        expression, expression_params = self._spatial_expression(value, spec.srid)
-                        values_sql.append(expression)
-                        params.extend(expression_params)
-                    else:
-                        values_sql.append(sql.SQL("%s"))
-                        params.append(value)
-                cur.execute(
-                    sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
-                        sql.SQL("{}.{}").format(
-                            sql.Identifier(schema_name),
-                            sql.Identifier(table_name),
-                        ),
-                        sql.SQL(", ").join(columns_sql),
-                        sql.SQL(", ").join(values_sql),
-                    ),
-                    params,
-                )
+            execute_values(
+                cur,
+                insert_sql,
+                rows,
+                template=template,
+                page_size=page_size,
+            )
 
     def migrate_database(self, database: SynthesizedSpatialDatabase) -> str:
         catalog_name = normalize_postgres_identifier(self.settings.catalog, prefix="catalog")

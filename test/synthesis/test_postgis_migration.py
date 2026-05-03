@@ -15,6 +15,7 @@ from src.synthesis.database.migration import (
     parse_srid,
     prepare_column_specs,
 )
+from src.synthesis.database.migration.core import DEFAULT_INSERT_BATCH_SIZE
 from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 
 
@@ -107,6 +108,7 @@ class PostGISMigrationTests(unittest.TestCase):
                     [
                         "input: data/processed/synthesized_spatial_databases.jsonl",
                         "cities: nyc,sf",
+                        "insert_batch_size: 2000",
                         "database:",
                         "  host: db.local",
                         "  port: 6543",
@@ -126,7 +128,15 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertEqual(loaded.connection.port, 6543)
         self.assertEqual(loaded.connection.catalog, "syntheized")
         self.assertEqual(loaded.connection.bootstrap_db, "postgres")
+        self.assertEqual(loaded.insert_batch_size, 2000)
         self.assertTrue(loaded.input_path.endswith("data/processed/synthesized_spatial_databases.jsonl"))
+
+    def test_load_migration_config_uses_default_insert_batch_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "migrate.yaml"
+            config_path.write_text("{}", encoding="utf-8")
+            loaded = load_migration_config(config_path)
+        self.assertEqual(loaded.insert_batch_size, DEFAULT_INSERT_BATCH_SIZE)
 
     def test_ensure_catalog_uses_autocommit_connection(self):
         class FakeCursor:
@@ -220,6 +230,32 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertEqual(insert_features.call_args.args[1], expected_schema)
         self.assertTrue(fake_conn.closed)
         self.assertEqual(location, f"syntheized.{expected_schema}")
+
+    def test_bulk_insert_value_builder_converts_spatial_value_to_wkt(self):
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "hydrants",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                    {"name": "the_geom", "canonical_name": "the_geom", "canonical_type": "spatial"},
+                ],
+                "spatial_fields": [{"canonical_name": "the_geom", "crs": "EPSG:4326"}],
+            }
+        )
+        specs = prepare_column_specs(table)
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+        values = migrator._build_insert_values(
+            {
+                "id": 1,
+                "the_geom": {"type": "Point", "coordinates": [-73.9, 40.7]},
+            },
+            specs,
+        )
+        self.assertEqual(values[0], 1)
+        self.assertEqual(values[1], "POINT (-73.9 40.7)")
+        self.assertEqual(values[2], "POINT (-73.9 40.7)")
 
 
 if __name__ == "__main__":
