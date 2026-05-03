@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .core import DEFAULT_INSERT_BATCH_SIZE, PostGISConnectionSettings
+from .core import DEFAULT_INSERT_BATCH_SIZE, DEFAULT_SOURCE_ROW_LIMIT, PostGISConnectionSettings
 
 
 def _project_root() -> Path:
@@ -25,6 +25,7 @@ class MigrationRuntimeConfig:
     cities: str = "all"
     log_level: str = "INFO"
     insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE
+    source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT
     connection: PostGISConnectionSettings = field(default_factory=PostGISConnectionSettings)
 
 
@@ -39,6 +40,15 @@ def _as_positive_int(value: Any, default: int) -> int:
     if parsed <= 0:
         raise ValueError(f"Expected a positive integer, got: {value!r}")
     return parsed
+
+
+def _as_row_limit(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    parsed = int(value)
+    if parsed == -1 or parsed > 0:
+        return parsed
+    raise ValueError(f"Expected -1 or a positive integer, got: {value!r}")
 
 
 def _resolve_input_path(raw_input: Any, config_path: Path) -> str:
@@ -85,5 +95,6 @@ def load_migration_config(config_path: str | Path | None = None) -> MigrationRun
         cities=_as_text(payload.get("cities")) or "all",
         log_level=_as_text(logging_section.get("level")) or "INFO",
         insert_batch_size=_as_positive_int(payload.get("insert_batch_size"), DEFAULT_INSERT_BATCH_SIZE),
+        source_row_limit=_as_row_limit(payload.get("source_row_limit"), DEFAULT_SOURCE_ROW_LIMIT),
         connection=connection,
     )

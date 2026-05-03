@@ -10,12 +10,13 @@ from src.synthesis.database.migration import (
     PostGISSynthesizedDatabaseMigrator,
     build_feature_row,
     canonical_type_to_postgres_type,
+    load_geojson_features,
     load_migration_config,
     normalize_postgres_identifier,
     parse_srid,
     prepare_column_specs,
 )
-from src.synthesis.database.migration.core import DEFAULT_INSERT_BATCH_SIZE
+from src.synthesis.database.migration.core import DEFAULT_INSERT_BATCH_SIZE, DEFAULT_SOURCE_ROW_LIMIT
 from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 
 
@@ -109,6 +110,7 @@ class PostGISMigrationTests(unittest.TestCase):
                         "input: data/processed/synthesized_spatial_databases.jsonl",
                         "cities: nyc,sf",
                         "insert_batch_size: 2000",
+                        "source_row_limit: -1",
                         "database:",
                         "  host: db.local",
                         "  port: 6543",
@@ -129,6 +131,7 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertEqual(loaded.connection.catalog, "syntheized")
         self.assertEqual(loaded.connection.bootstrap_db, "postgres")
         self.assertEqual(loaded.insert_batch_size, 2000)
+        self.assertEqual(loaded.source_row_limit, -1)
         self.assertTrue(loaded.input_path.endswith("data/processed/synthesized_spatial_databases.jsonl"))
 
     def test_load_migration_config_uses_default_insert_batch_size(self):
@@ -137,6 +140,31 @@ class PostGISMigrationTests(unittest.TestCase):
             config_path.write_text("{}", encoding="utf-8")
             loaded = load_migration_config(config_path)
         self.assertEqual(loaded.insert_batch_size, DEFAULT_INSERT_BATCH_SIZE)
+        self.assertEqual(loaded.source_row_limit, DEFAULT_SOURCE_ROW_LIMIT)
+
+    def test_load_migration_config_rejects_invalid_source_row_limit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "migrate.yaml"
+            config_path.write_text("source_row_limit: 0", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_migration_config(config_path)
+
+    def test_load_geojson_features_applies_source_row_limit(self):
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"id": 1}, "geometry": None},
+                {"type": "Feature", "properties": {"id": 2}, "geometry": None},
+                {"type": "Feature", "properties": {"id": 3}, "geometry": None},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sample.geojson"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            limited = load_geojson_features(path, source_row_limit=2)
+            unlimited = load_geojson_features(path, source_row_limit=-1)
+        self.assertEqual(len(limited), 2)
+        self.assertEqual(len(unlimited), 3)
 
     def test_ensure_catalog_uses_autocommit_connection(self):
         class FakeCursor:
@@ -215,7 +243,7 @@ class PostGISMigrationTests(unittest.TestCase):
                                     with mock.patch(
                                         "src.synthesis.database.migration.core.load_geojson_features",
                                         return_value=[],
-                                    ):
+                                    ) as patched_load:
                                         location = migrator.migrate_database(database)
 
         ensure_catalog.assert_called_once_with("syntheized")
@@ -226,6 +254,7 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertEqual(recreate_schema.call_args.args[1], expected_schema)
         create_table.assert_called_once()
         self.assertEqual(create_table.call_args.args[1], expected_schema)
+        patched_load.assert_called_once_with("/tmp/hydrants.geojson", source_row_limit=DEFAULT_SOURCE_ROW_LIMIT)
         insert_features.assert_called_once()
         self.assertEqual(insert_features.call_args.args[1], expected_schema)
         self.assertTrue(fake_conn.closed)

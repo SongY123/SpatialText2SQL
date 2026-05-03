@@ -20,6 +20,13 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def row_limit_int(value: str) -> int:
+    parsed = int(value)
+    if parsed == -1 or parsed > 0:
+        return parsed
+    raise argparse.ArgumentTypeError("Value must be -1 or a positive integer.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Migrate synthesized spatial databases into PostGIS.")
     parser.add_argument(
@@ -40,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bootstrap-db")
     parser.add_argument("--maintenance-db", help=argparse.SUPPRESS)
     parser.add_argument("--insert-batch-size", type=positive_int)
+    parser.add_argument("--source-row-limit", type=row_limit_int)
     parser.add_argument("--log-level")
     parser.add_argument("--list-cities", action="store_true", help="Print configured city ids and exit.")
     return parser
@@ -58,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     merged_cities = args.cities or file_config.cities
     merged_log_level = args.log_level or file_config.log_level
     merged_insert_batch_size = args.insert_batch_size or file_config.insert_batch_size
+    merged_source_row_limit = args.source_row_limit or file_config.source_row_limit
     merged_connection = PostGISConnectionSettings(
         host=args.host or file_config.connection.host,
         port=args.port or file_config.connection.port,
@@ -87,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     migrator = PostGISSynthesizedDatabaseMigrator(
         merged_connection,
         insert_batch_size=merged_insert_batch_size,
+        source_row_limit=merged_source_row_limit,
     )
     migrated = migrator.migrate_databases(filtered)
     logging.info("Migrated %s synthesized database(s).", len(migrated))

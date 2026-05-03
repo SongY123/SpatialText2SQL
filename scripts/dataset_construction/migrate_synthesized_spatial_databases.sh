@@ -26,6 +26,7 @@ Optional environment overrides:
   PGBOOTSTRAP_DB
   PGMAINTENANCE_DB (legacy alias for PGBOOTSTRAP_DB)
   INSERT_BATCH_SIZE
+  SOURCE_ROW_LIMIT (-1 disables truncation)
   LOG_LEVEL
 
 Examples:
@@ -71,6 +72,9 @@ if [[ -n "${PGMAINTENANCE_DB:-}" ]]; then
 fi
 if [[ -n "${INSERT_BATCH_SIZE:-}" ]]; then
   EXTRA_ARGS+=(--insert-batch-size "${INSERT_BATCH_SIZE}")
+fi
+if [[ -n "${SOURCE_ROW_LIMIT:-}" ]]; then
+  EXTRA_ARGS+=(--source-row-limit "${SOURCE_ROW_LIMIT}")
 fi
 if [[ -n "${LOG_LEVEL:-}" ]]; then
   EXTRA_ARGS+=(--log-level "${LOG_LEVEL}")

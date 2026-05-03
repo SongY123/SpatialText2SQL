@@ -20,6 +20,7 @@ from ..utils import is_missing, stable_jsonify, to_text
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_INSERT_BATCH_SIZE = 10000
+DEFAULT_SOURCE_ROW_LIMIT = 500000
 
 POSTGIS_EXTENSIONS = (
     "postgis",
@@ -367,18 +368,36 @@ def prepare_column_specs(table: CanonicalSpatialTable) -> list[ColumnMigrationSp
     return specs
 
 
-def load_geojson_features(geojson_path: str | Path) -> list[dict[str, Any]]:
+def load_geojson_features(
+    geojson_path: str | Path,
+    source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT,
+) -> list[dict[str, Any]]:
     path = Path(geojson_path)
     if not path.is_file():
         raise FileNotFoundError(f"GeoJSON file not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, Mapping) and payload.get("type") == "FeatureCollection":
-        return [dict(item) for item in payload.get("features", []) if isinstance(item, Mapping)]
-    if isinstance(payload, Mapping) and payload.get("type") == "Feature":
-        return [dict(payload)]
-    if isinstance(payload, list):
-        return [dict(item) for item in payload if isinstance(item, Mapping)]
-    raise ValueError(f"Unsupported GeoJSON payload in {path}")
+        features = [dict(item) for item in payload.get("features", []) if isinstance(item, Mapping)]
+    elif isinstance(payload, Mapping) and payload.get("type") == "Feature":
+        features = [dict(payload)]
+    elif isinstance(payload, list):
+        features = [dict(item) for item in payload if isinstance(item, Mapping)]
+    else:
+        raise ValueError(f"Unsupported GeoJSON payload in {path}")
+
+    if int(source_row_limit) == -1:
+        return features
+    if int(source_row_limit) <= 0:
+        raise ValueError(f"source_row_limit must be -1 or a positive integer, got: {source_row_limit!r}")
+    if len(features) > int(source_row_limit):
+        LOGGER.info(
+            "Truncating features from %s to %s for %s",
+            len(features),
+            int(source_row_limit),
+            path,
+        )
+        return features[: int(source_row_limit)]
+    return features
 
 
 def _derive_geometry_from_feature(
@@ -443,11 +462,15 @@ class PostGISSynthesizedDatabaseMigrator:
         self,
         settings: PostGISConnectionSettings,
         insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE,
+        source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT,
     ):
         self.settings = settings
         if int(insert_batch_size) <= 0:
             raise ValueError(f"insert_batch_size must be positive, got: {insert_batch_size!r}")
         self.insert_batch_size = int(insert_batch_size)
+        if int(source_row_limit) != -1 and int(source_row_limit) <= 0:
+            raise ValueError(f"source_row_limit must be -1 or a positive integer, got: {source_row_limit!r}")
+        self.source_row_limit = int(source_row_limit)
 
     def _connect(self, database: str) -> PGConnection:
         return psycopg2.connect(
@@ -671,7 +694,7 @@ class PostGISSynthesizedDatabaseMigrator:
                     raise FileNotFoundError(
                         f"Missing source path for table {table.table_id} in database {database.database_id}"
                     )
-                features = load_geojson_features(source_path)
+                features = load_geojson_features(source_path, source_row_limit=self.source_row_limit)
                 self._insert_features(conn, schema_name, table_name, table, specs, features)
         finally:
             conn.close()

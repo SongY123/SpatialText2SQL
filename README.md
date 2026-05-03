@@ -180,6 +180,10 @@ scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
 # Control bulk insert batch size
 INSERT_BATCH_SIZE=2000 \
 scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
+
+# Truncate loaded source rows per table (-1 disables truncation)
+SOURCE_ROW_LIMIT=500000 \
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
 ```
 
 Database configuration defaults:
@@ -191,6 +195,7 @@ Database configuration defaults:
 - Catalog: `syntheized`
 - Bootstrap database: `postgres`
 - Insert batch size: `10000`
+- Source row limit per table: `500000` (`-1` disables truncation)
 
 `bootstrap_db` is only the bootstrap connection used to check or create the shared target catalog. The synthesized databases themselves are migrated as schemas inside the target catalog.
 

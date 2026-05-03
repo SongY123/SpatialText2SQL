@@ -1,6 +1,8 @@
 input: data/processed/synthesized_spatial_databases.jsonl
 cities: all
 insert_batch_size: 10000
+# Maximum number of source rows loaded per table; set to -1 to disable truncation.
+source_row_limit: 500000
 
 database:
   host: localhost
