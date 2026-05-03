@@ -12,7 +12,7 @@ from src.prompting.prompt_builder import PromptBuilder
 from .config import DEFAULT_SQL_SYNTHESIS_CONFIG_PATH, load_sql_synthesis_config, override_sql_synthesis_config
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary
-from .generator import OpenAICompatibleSQLGenerator
+from .generator import build_sql_generator
 from .io import load_input_databases, write_sql_queries
 from .synthesizer import ConstraintGuidedSQLSynthesizer
 from .validator import SQLValidator
@@ -143,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         config.functions.st_function_markdown_path,
         config.functions.exclude_categories,
     )
-    generator = OpenAICompatibleSQLGenerator(
+    generator = build_sql_generator(
+        provider=config.llm.provider,
         model=config.llm.model,
         base_url=config.llm.base_url,
         api_key_env=config.llm.api_key_env,

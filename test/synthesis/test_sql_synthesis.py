@@ -8,6 +8,7 @@ from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpat
 from src.synthesis.sql import (
     ConstraintGuidedSQLSynthesizer,
     MockSQLGenerator,
+    OllamaSQLGenerator,
     PostGISFunctionLibrary,
     SQLExecutionChecker,
     SQLExecutionCheckConfig,
@@ -18,6 +19,7 @@ from src.synthesis.sql import (
     SQLSynthesisLoggingConfig,
     SQLSynthesisRunConfig,
     SQLValidator,
+    build_sql_generator,
     contains_dangerous_sql,
     load_sql_synthesis_config,
     override_sql_synthesis_config,
@@ -222,6 +224,47 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(loaded.database.port, 6543)
         self.assertEqual(overridden.llm.model, "override-model")
         self.assertTrue(overridden.synthesis.output_path.endswith("override.jsonl"))
+
+    def test_build_sql_generator_supports_ollama_provider(self):
+        generator = build_sql_generator(
+            provider="ollama",
+            model="qwen2.5:14b",
+            base_url="http://localhost:11434",
+            api_key_env="IGNORED_FOR_OLLAMA",
+            temperature=0.1,
+            max_tokens=512,
+            timeout=30,
+            max_retries=1,
+        )
+        self.assertIsInstance(generator, OllamaSQLGenerator)
+
+    def test_ollama_generator_parses_response_payload(self):
+        generator = OllamaSQLGenerator(
+            model="qwen2.5:14b",
+            base_url="http://localhost:11434",
+            temperature=0.1,
+            max_tokens=512,
+            timeout=30,
+            max_retries=1,
+        )
+        from unittest import mock
+
+        with mock.patch.object(
+            generator,
+            "_post_json",
+            return_value={
+                "message": {"role": "assistant", "content": '{"sql":"SELECT 1","used_tables":[],"used_columns":[],"used_spatial_functions":[],"reasoning_summary":"ok"}'},
+                "prompt_eval_count": 12,
+                "eval_count": 34,
+            },
+        ) as patched:
+            response = generator.generate("Return SQL JSON")
+        patched.assert_called_once()
+        self.assertIn('"sql":"SELECT 1"', response.text)
+        self.assertEqual(response.usage["prompt_tokens"], 12)
+        self.assertEqual(response.usage["completion_tokens"], 34)
+        self.assertEqual(response.usage["total_tokens"], 46)
+        self.assertEqual(response.attempts, 1)
 
     def test_function_library_loads_json_and_markdown_and_excludes_raster_topology(self):
         with tempfile.TemporaryDirectory() as tmpdir:

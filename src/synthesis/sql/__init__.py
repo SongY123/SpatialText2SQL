@@ -14,7 +14,13 @@ from .config import (
 )
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary, infer_function_categories
-from .generator import MockSQLGenerator, OpenAICompatibleSQLGenerator, SQLGeneratorResponse
+from .generator import (
+    MockSQLGenerator,
+    OllamaSQLGenerator,
+    OpenAICompatibleSQLGenerator,
+    SQLGeneratorResponse,
+    build_sql_generator,
+)
 from .io import load_input_databases, write_sql_queries
 from .models import (
     DIFFICULTY_LEVELS,
@@ -33,6 +39,7 @@ __all__ = [
     "DIFFICULTY_LEVELS",
     "ConstraintGuidedSQLSynthesizer",
     "MockSQLGenerator",
+    "OllamaSQLGenerator",
     "OpenAICompatibleSQLGenerator",
     "PostGISFunction",
     "PostGISFunctionLibrary",
@@ -51,6 +58,7 @@ __all__ = [
     "SQLValidator",
     "SynthesizedSQLQuery",
     "contains_dangerous_sql",
+    "build_sql_generator",
     "infer_function_categories",
     "load_input_databases",
     "load_sql_synthesis_config",

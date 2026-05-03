@@ -9,12 +9,12 @@ database:
   statement_timeout: 60000
 
 llm:
-  provider: openai_compatible
-  model: gpt-4o-mini
-  base_url: http://localhost:8000/v1
-  api_key_env: OPENAI_API_KEY
+  provider: ollama
+  model: gemma4:31b
+  base_url: http://100.126.198.114:11434/v1
+  api_key_env: EMPTY
   temperature: 0.2
-  max_tokens: 1200
+  max_tokens: 5000
   timeout: 120
   max_retries: 2
 
