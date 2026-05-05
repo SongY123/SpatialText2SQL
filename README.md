@@ -250,20 +250,20 @@ Edit persistent settings in `config/sql_synthesis.yaml`.
 Generate semantically equivalent English questions from executable PostGIS SQL:
 
 ```bash
-scripts/dataset_construction/diversity_aware_question_generation.sh
+scripts/dataset_construction/synthesize_questions.sh
 ```
 
 Common options:
 
 ```bash
 # Override input and output
-scripts/dataset_construction/diversity_aware_question_generation.sh \
+scripts/dataset_construction/synthesize_questions.sh \
   --sql-input data/processed/synthesized_sql_queries.jsonl \
   --database-context-path data/processed/synthesized_spatial_databases.jsonl \
   --output data/processed/diversity_aware_questions.jsonl
 
 # Force a fixed linguistic style
-scripts/dataset_construction/diversity_aware_question_generation.sh \
+scripts/dataset_construction/synthesize_questions.sh \
   --style ranking_inquiry
 ```
 
@@ -272,11 +272,14 @@ Default settings:
 - Input SQL JSONL: `data/processed/synthesized_sql_queries.jsonl`
 - Input database context JSONL: `data/processed/synthesized_spatial_databases.jsonl`
 - Output: `data/processed/diversity_aware_questions.jsonl`
+- The only retained question-synthesis shell entrypoint is `scripts/dataset_construction/synthesize_questions.sh`
+- The canonical question-synthesis implementation is `src/synthesis/question/synthesizer.py`
 - Default styles: `factual_lookup`, `comparative_analysis`, `aggregation_inquiry`, `ranking_inquiry`, `exploratory_analysis`
 - Default number of questions per SQL: `1`
 - Default random seed: `42`
 - The question-generation prompt preserves SQL semantics exactly and rewrites spatial relations into natural language without exposing raw PostGIS function names
-- Question-generation prompt templates live in `prompts/question_generation_prompt.txt` and `prompts/question_feedback_prompt.txt`
+- Question generation is single-shot and does not use a feedback-revision prompt
+- The question-generation prompt template lives in `prompts/question_generation_prompt.txt`
 
 Edit persistent settings in `config/question_generation.yaml`.
 

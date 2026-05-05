@@ -8,7 +8,7 @@ import numpy as np
 from src.prompting.prompt_builder import PromptBuilder
 from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 from src.synthesis.question import (
-    DiversityAwareQuestionGenerator,
+    DiversityAwareQuestionSynthesizer,
     MockQuestionLLM,
     QuestionGenerationConfig,
     QuestionGenerationContext,
@@ -197,26 +197,6 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertIn('"style"', prompt)
         self.assertIn('"name": "parks_sample"', prompt)
 
-    def test_feedback_prompt_contains_validation_errors(self):
-        database = _make_database()
-        context = _make_context(database)
-        sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
-        features = SQLFeatureExtractor().extract(sql.sql)
-        constraints = SpatialPhraseSelector().build_constraints(features=features, rng=np.random.default_rng(11))
-        prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[2]})
-        prompt = prompt_builder.build_question_feedback_prompt(
-            sql_query=sql,
-            database_context=context.to_prompt_payload(),
-            sql_features=features.to_dict(),
-            style_constraint={"style": "factual_lookup", "description": "Ask directly."},
-            spatial_relation_constraints=[item.to_dict() for item in constraints],
-            original_candidate={"question": "Which parks use ST_DWithin?"},
-            validation_errors=["Question does not preserve the distance/threshold value 100."],
-        )
-        self.assertIn("Validation Errors", prompt)
-        self.assertIn("100", prompt)
-        self.assertIn("Original Candidate", prompt)
-
     def test_question_prompt_uses_row_oriented_representative_values_with_nulls(self):
         database = _make_database()
         context = _make_context(database)
@@ -286,7 +266,7 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertFalse(missing_threshold.is_valid)
         self.assertTrue(any("100" in item for item in missing_threshold.errors))
 
-    def test_end_to_end_generation_with_feedback(self):
+    def test_end_to_end_generation_single_shot_rejects_invalid_candidate(self):
         sql = _make_sql_source(
             "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
         )
@@ -302,29 +282,16 @@ class QuestionGenerationTests(unittest.TestCase):
                         "spatial_phrases": ["near"],
                     }
                 ),
-                json.dumps(
-                    {
-                        "question": "Which parks are within 100 units of neighborhoods, limited to the top 5 results?",
-                        "style": "factual_lookup",
-                        "reasoning_summary": "Preserved the distance threshold and limit semantics.",
-                        "spatial_phrases": ["within 100 units of"],
-                    }
-                ),
             ]
         )
-        generator = DiversityAwareQuestionGenerator(
+        generator = DiversityAwareQuestionSynthesizer(
             config=_make_config(),
             llm_client=llm,
             prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
         )
         rows = generator.generate_for_sql(sql, context)
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row.style, "factual_lookup")
-        self.assertIn("100", row.question)
-        self.assertTrue(row.validation_result["is_valid"])
-        self.assertEqual(len(row.feedback_prompts), 1)
-        self.assertEqual(len(llm.prompts), 2)
+        self.assertEqual(len(rows), 0)
+        self.assertEqual(len(llm.prompts), 1)
 
     def test_keep_invalid_preserves_failed_candidate(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
@@ -342,7 +309,7 @@ class QuestionGenerationTests(unittest.TestCase):
                 )
             ]
         )
-        generator = DiversityAwareQuestionGenerator(
+        generator = DiversityAwareQuestionSynthesizer(
             config=_make_config(keep_invalid=True, max_revision_rounds=0),
             llm_client=llm,
             prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
@@ -365,7 +332,7 @@ class QuestionGenerationTests(unittest.TestCase):
             loaded_sql = load_sql_question_sources(str(sql_path))
             loaded_contexts = load_question_generation_contexts(str(db_path))
 
-            generator = DiversityAwareQuestionGenerator(
+            generator = DiversityAwareQuestionSynthesizer(
                 config=_make_config(max_revision_rounds=0),
                 llm_client=MockQuestionLLM(
                     responses=[

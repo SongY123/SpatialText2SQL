@@ -41,7 +41,6 @@ class PromptBuilder:
             "sql_synthesis": self.project_root / "prompts" / "sql_synthesis_prompt.txt",
             "sql_feedback": self.project_root / "prompts" / "sql_feedback_prompt.txt",
             "question_generation": self.project_root / "prompts" / "question_generation_prompt.txt",
-            "question_feedback": self.project_root / "prompts" / "question_feedback_prompt.txt",
             "quality_control": self.project_root / "prompts" / "quality_control_prompt.txt",
         }
     
@@ -405,40 +404,6 @@ class PromptBuilder:
             template_text,
             {
                 "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
-                "database_id": self._stringify_value(database_context.get("database_id")),
-                "city": self._stringify_value(database_context.get("city")),
-                "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),
-                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
-                "representative_values_block": self._stable_json_text(representative_values),
-                "sql_feature_block": self._stable_json_text(sql_features),
-                "style_constraint_block": self._stable_json_text(style_constraint),
-                "spatial_relation_block": self._stable_json_text(spatial_relation_constraints),
-                "style_name": self._stringify_value(style_constraint.get("style")),
-            },
-        )
-
-    def build_question_feedback_prompt(
-        self,
-        *,
-        sql_query: Any,
-        database_context: Dict[str, Any],
-        sql_features: Dict[str, Any],
-        style_constraint: Dict[str, Any],
-        spatial_relation_constraints: List[Dict[str, Any]],
-        original_candidate: Dict[str, Any],
-        validation_errors: List[str],
-    ) -> str:
-        schema_lines = self._build_question_schema_lines(database_context)
-        representative_values = self._build_question_representative_values(database_context)
-        spatial_lines = self._build_question_spatial_lines(database_context)
-        template_text = self._load_named_template_text("question_feedback")
-        return self._render_template(
-            template_text,
-            {
-                "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
-                "original_candidate_block": self._stable_json_text(original_candidate),
-                "validation_errors_block": self._stable_json_text(validation_errors),
                 "database_id": self._stringify_value(database_context.get("database_id")),
                 "city": self._stringify_value(database_context.get("city")),
                 "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),

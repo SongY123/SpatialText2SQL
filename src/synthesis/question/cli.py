@@ -15,7 +15,7 @@ from .config import (
     load_question_generation_config,
     override_question_generation_config,
 )
-from .diversity_aware_question_generation import DiversityAwareQuestionGenerator
+from .synthesizer import DiversityAwareQuestionSynthesizer
 from .generator import build_question_llm
 from .io import (
     load_question_generation_contexts,
@@ -125,12 +125,12 @@ def main(argv: list[str] | None = None) -> int:
         max_retries=config.llm.max_retries,
     )
     prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[3]})
-    generator = DiversityAwareQuestionGenerator(
+    generator = DiversityAwareQuestionSynthesizer(
         config=config,
         llm_client=llm_client,
         prompt_builder=prompt_builder,
     )
-    rows = generator.generate_all(sql_queries, contexts)
+    rows = generator.run(sql_queries, contexts)
     write_synthesized_questions(config.generation.output_path, rows)
     logging.info("Wrote %s synthesized questions to %s", len(rows), config.generation.output_path)
     return 0

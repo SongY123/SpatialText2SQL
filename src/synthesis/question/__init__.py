@@ -9,7 +9,10 @@ from .config import (
     load_question_generation_config,
     override_question_generation_config,
 )
-from .diversity_aware_question_generation import DiversityAwareQuestionGenerator
+from .synthesizer import (
+    DiversityAwareQuestionGenerator,
+    DiversityAwareQuestionSynthesizer,
+)
 from .features import SQLFeatureExtractor
 from .generator import (
     MockQuestionLLM,
@@ -41,6 +44,7 @@ __all__ = [
     "DEFAULT_QUESTION_GENERATION_CONFIG_PATH",
     "QUESTION_STYLES",
     "DiversityAwareQuestionGenerator",
+    "DiversityAwareQuestionSynthesizer",
     "MockQuestionLLM",
     "OllamaQuestionLLM",
     "OpenAICompatibleQuestionLLM",

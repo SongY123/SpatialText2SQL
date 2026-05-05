@@ -34,6 +34,27 @@ def load_nl_sql_samples(input_path: str) -> list[NLSQLSample]:
     return samples
 
 
+def load_sql_context_by_sql_id(input_path: str) -> dict[str, dict[str, object]]:
+    path = Path(input_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"SQL context file not found: {path}")
+    contexts: dict[str, dict[str, object]] = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON on line {line_number} of {path}: {exc}") from exc
+            sql_id = str(payload.get("sql_id") or "").strip()
+            if not sql_id:
+                raise ValueError(f"Missing sql_id on line {line_number} of {path}.")
+            contexts[sql_id] = payload
+    return contexts
+
+
 def write_nl_sql_samples(output_path: str, samples: list[NLSQLSample]) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +78,7 @@ def load_schema_registry_from_contexts(input_path: str) -> InMemorySchemaRegistr
     databases: list[SynthesizedSpatialDatabase] = load_synthesized_databases(str(path))
     for database in databases:
         tables: dict[str, TableSchema] = {}
-        representative_values_by_table: dict[str, Mapping[str, object]] = {}
+        representative_values_by_table: dict[str, object] = {}
         for table in database.selected_tables:
             representative_values_by_table[table.table_name] = table.representative_values
         for table_item in database.schema:
@@ -91,4 +112,3 @@ def load_schema_registry_from_contexts(input_path: str) -> InMemorySchemaRegistr
             )
         registry.set_schema(DatabaseSchema(database_id=database.database_id, tables=tables))
     return registry
-

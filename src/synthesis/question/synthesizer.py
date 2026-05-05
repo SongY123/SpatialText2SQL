@@ -1,4 +1,4 @@
-"""Diversity-aware natural-language question generation from executable spatial SQL."""
+"""Question synthesis entrypoint for executable spatial SQL."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from .validator import QuestionValidationResult, QuestionValidator
 LOGGER = logging.getLogger(__name__)
 
 
-class DiversityAwareQuestionGenerator:
+class DiversityAwareQuestionSynthesizer:
     def __init__(
         self,
         *,
@@ -48,7 +48,7 @@ class DiversityAwareQuestionGenerator:
         self.validator = validator or QuestionValidator()
         self.rng = np.random.default_rng(self.config.generation.random_seed)
 
-    def generate_all(
+    def run(
         self,
         sql_queries: Sequence[SQLQuestionSource],
         context_by_database_id: Mapping[str, QuestionGenerationContext],
@@ -63,10 +63,10 @@ class DiversityAwareQuestionGenerator:
                     sql_query.database_id,
                 )
                 continue
-            rows.extend(self.generate_for_sql(sql_query, context))
+            rows.extend(self.run_for_sql(sql_query, context))
         return rows
 
-    def generate_for_sql(
+    def run_for_sql(
         self,
         sql_query: SQLQuestionSource,
         context: QuestionGenerationContext,
@@ -80,7 +80,7 @@ class DiversityAwareQuestionGenerator:
             style_weights=self.config.generation.style_weights,
         )
         LOGGER.info(
-            "Question generation plan | sql_id=%s | database_id=%s | styles=%s",
+            "Question synthesis plan | sql_id=%s | database_id=%s | styles=%s",
             sql_query.sql_id,
             sql_query.database_id,
             style_plan,
@@ -91,7 +91,7 @@ class DiversityAwareQuestionGenerator:
                 features=features,
                 rng=self.rng,
             )
-            row = self._generate_single_question(
+            row = self._run_single_question(
                 sql_query=sql_query,
                 context=context,
                 question_index=question_index,
@@ -103,7 +103,7 @@ class DiversityAwareQuestionGenerator:
                 rows.append(row)
         return rows
 
-    def _generate_single_question(
+    def _run_single_question(
         self,
         *,
         sql_query: SQLQuestionSource,
@@ -139,120 +139,81 @@ class DiversityAwareQuestionGenerator:
         validation_result = QuestionValidationResult(is_valid=False, errors=["Question generation did not start."])
         current_prompt = prompt
 
-        for revision_round in range(self.config.generation.max_revision_rounds + 1):
-            LOGGER.info(
-                "Question LLM prompt | sample=%s | round=%s/%s\n%s",
+        LOGGER.info(
+            "Question LLM prompt | sample=%s | round=%s/%s\n%s",
+            sample_tag,
+            1,
+            1,
+            current_prompt,
+        )
+        LOGGER.info(
+            "Question LLM request start | sample=%s | round=%s/%s | style=%s | prompt_chars=%s",
+            sample_tag,
+            1,
+            1,
+            style,
+            len(current_prompt),
+        )
+        generation_start = time.perf_counter()
+        response = self.llm_client.generate(current_prompt)
+        generation_ms = (time.perf_counter() - generation_start) * 1000.0
+        LOGGER.info(
+            "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
+            sample_tag,
+            1,
+            1,
+            response.attempts,
+            len(response.text or ""),
+            generation_ms,
+        )
+        candidate = parse_question_generation_response(
+            response.text,
+            raw_response=response.raw_response,
+        )
+        generation_rounds.append(
+            {
+                "round": 0,
+                "prompt_type": "initial",
+                "raw_response_text": candidate.raw_response_text,
+                "parse_error": candidate.parse_error,
+                "usage": stable_jsonify(response.usage),
+                "attempts": response.attempts,
+            }
+        )
+        if candidate.parse_error:
+            LOGGER.warning(
+                "Question candidate parse failed | sample=%s | round=%s/%s | error=%s",
                 sample_tag,
-                revision_round + 1,
-                self.config.generation.max_revision_rounds + 1,
-                current_prompt,
+                1,
+                1,
+                candidate.parse_error,
+            )
+            validation_result = QuestionValidationResult(
+                is_valid=False,
+                errors=[candidate.parse_error],
+            )
+        else:
+            LOGGER.info(
+                "Generated question | sample=%s | round=%s/%s\n%s",
+                sample_tag,
+                1,
+                1,
+                candidate.question,
+            )
+            validation_result = self.validator.validate(
+                candidate=candidate,
+                requested_style=style,
+                sql_features=features,
+                spatial_constraints=spatial_constraints,
             )
             LOGGER.info(
-                "Question LLM request start | sample=%s | round=%s/%s | style=%s | prompt_chars=%s",
+                "Question validation done | sample=%s | round=%s/%s | is_valid=%s | errors=%s | warnings=%s",
                 sample_tag,
-                revision_round + 1,
-                self.config.generation.max_revision_rounds + 1,
-                style,
-                len(current_prompt),
-            )
-            generation_start = time.perf_counter()
-            response = self.llm_client.generate(current_prompt)
-            generation_ms = (time.perf_counter() - generation_start) * 1000.0
-            LOGGER.info(
-                "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
-                sample_tag,
-                revision_round + 1,
-                self.config.generation.max_revision_rounds + 1,
-                response.attempts,
-                len(response.text or ""),
-                generation_ms,
-            )
-            candidate = parse_question_generation_response(
-                response.text,
-                raw_response=response.raw_response,
-            )
-            generation_rounds.append(
-                {
-                    "round": revision_round,
-                    "prompt_type": "initial" if revision_round == 0 else "feedback",
-                    "raw_response_text": candidate.raw_response_text,
-                    "parse_error": candidate.parse_error,
-                    "usage": stable_jsonify(response.usage),
-                    "attempts": response.attempts,
-                }
-            )
-            if candidate.parse_error:
-                LOGGER.warning(
-                    "Question candidate parse failed | sample=%s | round=%s/%s | error=%s",
-                    sample_tag,
-                    revision_round + 1,
-                    self.config.generation.max_revision_rounds + 1,
-                    candidate.parse_error,
-                )
-                validation_result = QuestionValidationResult(
-                    is_valid=False,
-                    errors=[candidate.parse_error],
-                )
-            else:
-                LOGGER.info(
-                    "Generated question | sample=%s | round=%s/%s\n%s",
-                    sample_tag,
-                    revision_round + 1,
-                    self.config.generation.max_revision_rounds + 1,
-                    candidate.question,
-                )
-                validation_result = self.validator.validate(
-                    candidate=candidate,
-                    requested_style=style,
-                    sql_features=features,
-                    spatial_constraints=spatial_constraints,
-                )
-                LOGGER.info(
-                    "Question validation done | sample=%s | round=%s/%s | is_valid=%s | errors=%s | warnings=%s",
-                    sample_tag,
-                    revision_round + 1,
-                    self.config.generation.max_revision_rounds + 1,
-                    validation_result.is_valid,
-                    len(validation_result.errors),
-                    len(validation_result.warnings),
-                )
-                if validation_result.is_valid:
-                    break
-                LOGGER.warning(
-                    "Question validation failed | sample=%s | round=%s/%s | errors=%s",
-                    sample_tag,
-                    revision_round + 1,
-                    self.config.generation.max_revision_rounds + 1,
-                    " | ".join(validation_result.errors),
-                )
-            if revision_round >= self.config.generation.max_revision_rounds:
-                LOGGER.info(
-                    "Question sample exhausted revisions | sample=%s | final_round=%s/%s",
-                    sample_tag,
-                    revision_round + 1,
-                    self.config.generation.max_revision_rounds + 1,
-                )
-                break
-            feedback_prompt = self.prompt_builder.build_question_feedback_prompt(
-                sql_query=sql_query,
-                database_context=context.to_prompt_payload(),
-                sql_features=features.to_dict(),
-                style_constraint={
-                    "style": style,
-                    "description": STYLE_DESCRIPTIONS.get(style, ""),
-                },
-                spatial_relation_constraints=[item.to_dict() for item in spatial_constraints],
-                original_candidate=candidate.to_dict(),
-                validation_errors=list(validation_result.errors),
-            )
-            feedback_prompts.append(feedback_prompt)
-            current_prompt = feedback_prompt
-            LOGGER.info(
-                "Question feedback prompt built | sample=%s | next_round=%s/%s | prompt_chars=%s",
-                sample_tag,
-                revision_round + 2,
-                self.config.generation.max_revision_rounds + 1,
-                len(feedback_prompt),
+                1,
+                1,
+                validation_result.is_valid,
+                len(validation_result.errors),
+                len(validation_result.warnings),
             )
 
         synthesized = SynthesizedQuestion(
@@ -285,3 +246,13 @@ class DiversityAwareQuestionGenerator:
         if validation_result.is_valid or self.config.generation.keep_invalid:
             return synthesized
         return None
+
+    # Backward-compatible aliases
+    generate_all = run
+    generate_for_sql = run_for_sql
+    _generate_single_question = _run_single_question
+
+
+class DiversityAwareQuestionGenerator(DiversityAwareQuestionSynthesizer):
+    """Backward-compatible alias for the legacy question generator name."""
+

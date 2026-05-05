@@ -35,6 +35,7 @@ from .sql import (
 )
 from .question import (
     DiversityAwareQuestionGenerator,
+    DiversityAwareQuestionSynthesizer,
     MockQuestionLLM,
     QuestionGenerationConfig,
     QuestionValidator as GeneratedQuestionValidator,
@@ -68,6 +69,7 @@ __all__ = [
     "SynthesizedSpatialDatabase",
     "ConstraintGuidedSQLSynthesizer",
     "DiversityAwareQuestionGenerator",
+    "DiversityAwareQuestionSynthesizer",
     "MockSQLSynthesisGenerator",
     "MockQuestionLLM",
     "PostGISFunctionLibrary",
