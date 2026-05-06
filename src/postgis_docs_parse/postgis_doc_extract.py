@@ -3,6 +3,7 @@ import os
 import json
 import glob
 import time
+import hashlib
 # Keep OpenAI optional so parsing and tests can still run without LLM access.
 try:
     from openai import OpenAI
@@ -19,8 +20,34 @@ except ModuleNotFoundError:
 # Load API settings from .env when available.
 load_dotenv()
 
+
+def _load_function_filter(function_ids_file):
+    if not function_ids_file:
+        return None
+    if not os.path.exists(function_ids_file):
+        raise FileNotFoundError(f"Function ids file not found: {function_ids_file}")
+
+    with open(function_ids_file, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if isinstance(payload, dict):
+        function_ids = payload.get("function_ids")
+    else:
+        function_ids = payload
+
+    if not isinstance(function_ids, list):
+        raise ValueError("Function ids file must be a JSON list or an object containing 'function_ids'.")
+
+    normalized = []
+    for item in function_ids:
+        if isinstance(item, str):
+            name = item.strip()
+            if name and name not in normalized:
+                normalized.append(name)
+    return set(normalized)
+
 class PostGISFormalParser:
-    def __init__(self):
+    def __init__(self, function_filter=None):
         api_key = os.getenv("api_key") or os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("base_url") or os.getenv("OPENAI_BASE_URL")
         if OpenAI is None or not api_key:
@@ -31,6 +58,9 @@ class PostGISFormalParser:
                 api_key=api_key,
                 base_url=base_url,
             )
+        self.function_filter = set(function_filter) if function_filter else None
+        self.parse_failures = []
+        self._failure_keys = set()
         
         # XML structure regexes.
         # Match function entries (refentry).
@@ -61,7 +91,23 @@ class PostGISFormalParser:
             re.IGNORECASE
         )
 
-    def _parse_ex_to_pairs_via_llm(self, raw_ex_text, func_name):
+    def _record_parse_failure(self, func_name, source_file, raw_ex_text, error_message, retry_count):
+        excerpt = " ".join(raw_ex_text.split())
+        if len(excerpt) > 400:
+            excerpt = excerpt[:400] + "..."
+        key = (source_file or "", func_name, hashlib.sha1(raw_ex_text.encode("utf-8")).hexdigest())
+        if key in self._failure_keys:
+            return
+        self._failure_keys.add(key)
+        self.parse_failures.append({
+            "function_id": func_name,
+            "source_file": source_file,
+            "retry_count": retry_count,
+            "error": error_message,
+            "raw_example_excerpt": excerpt,
+        })
+
+    def _parse_ex_to_pairs_via_llm(self, raw_ex_text, func_name, source_file=None):
         """
         Parse raw PostGIS example blocks with an LLM.
 
@@ -76,6 +122,13 @@ class PostGISFormalParser:
         
         if self.client is None:
             print(f"      [LLM Error on {func_name}]: OpenAI client not available (missing 'openai' package).")
+            self._record_parse_failure(
+                func_name=func_name,
+                source_file=source_file,
+                raw_ex_text=raw_ex_text,
+                error_message="OpenAI client not available",
+                retry_count=0,
+            )
             return []
 
         # Core prompt with dependency typing and table-feature extraction.
@@ -219,6 +272,13 @@ class PostGISFormalParser:
                     time.sleep(2)
                     continue
                 print(f"      [LLM Error on {func_name}]: {e}")
+                self._record_parse_failure(
+                    func_name=func_name,
+                    source_file=source_file,
+                    raw_ex_text=raw_ex_text,
+                    error_message=str(e),
+                    retry_count=max_retries,
+                )
                 return []
 
     def _normalize_table_name(self, table_name):
@@ -405,6 +465,8 @@ class PostGISFormalParser:
 
         entries = self.re_entry.findall(content_all)
         for func_id, body in entries:
+            if self.function_filter and func_id not in self.function_filter:
+                continue
             print(f"  -> Parsing Function: {func_id} (Chapter: {chapter_info})")
 
             # 1. Extract function signatures.
@@ -438,7 +500,7 @@ class PostGISFormalParser:
             if full_raw_ex.strip():
                 # This returns a List[Example], not a flat List[Step].
                 parsed_examples = self._post_process_examples(
-                    self._parse_ex_to_pairs_via_llm(full_raw_ex, func_id),
+                    self._parse_ex_to_pairs_via_llm(full_raw_ex, func_id, source_file=file_name),
                     func_id
                 )
 
@@ -453,6 +515,35 @@ class PostGISFormalParser:
                 "examples": parsed_examples 
             })
         return results
+
+    def _write_failure_artifacts(self, output_file):
+        failure_file = output_file + ".llm_failures.json"
+        retry_file = output_file + ".retry_manifest.json"
+
+        if not self.parse_failures:
+            for path in (failure_file, retry_file):
+                if os.path.exists(path):
+                    os.remove(path)
+            return
+
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        failures = sorted(
+            self.parse_failures,
+            key=lambda item: (str(item.get("source_file") or ""), str(item.get("function_id") or "")),
+        )
+        with open(failure_file, "w", encoding="utf-8") as f:
+            json.dump(failures, f, indent=2, ensure_ascii=False)
+
+        retry_manifest = {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "failure_count": len(failures),
+            "function_ids": sorted({item["function_id"] for item in failures if item.get("function_id")}),
+            "source_files": sorted({item["source_file"] for item in failures if item.get("source_file")}),
+            "failures_file": failure_file,
+        }
+        with open(retry_file, "w", encoding="utf-8") as f:
+            json.dump(retry_manifest, f, indent=2, ensure_ascii=False)
 
     def batch_process(self, input_dir, output_file):
         """Batch-process all XML files in a directory."""
@@ -506,6 +597,7 @@ class PostGISFormalParser:
         # Write the result file.
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(valid_data, f, indent=2, ensure_ascii=False)
+        self._write_failure_artifacts(output_file)
         
         print(f"\n✅ Extraction Finished!")
         print(f"   Output File: {output_file}")
@@ -515,11 +607,19 @@ class PostGISFormalParser:
         print(f"   Total SQL Steps Extracted: {total_steps}")
         print(f"   Missing Tables (Total): {missing_total}")
         print(f"   Missing Tables by Type: external={missing_table_counts['external']}, intra_example={missing_table_counts['intra_example']}, cross_example={missing_table_counts['cross_example']}, unknown={missing_table_counts['unknown']}")
+        if self.parse_failures:
+            print(f"   LLM Failures After Retries: {len(self.parse_failures)}")
+            print(f"   Retry Manifest: {output_file}.retry_manifest.json")
 
 if __name__ == "__main__":
     # Default local paths for ad hoc runs.
-    INPUT_DIR = "./xml_data" 
+    INPUT_DIR = "./xml_data"
     OUTPUT_FILE = "extract_result/postgis_extracted2.json"
 
-    parser = PostGISFormalParser()
+    function_filter = None
+    function_ids_file = os.getenv("POSTGIS_DOC_FUNCTION_IDS_FILE")
+    if function_ids_file:
+        function_filter = _load_function_filter(function_ids_file)
+
+    parser = PostGISFormalParser(function_filter=function_filter)
     parser.batch_process(INPUT_DIR, OUTPUT_FILE)

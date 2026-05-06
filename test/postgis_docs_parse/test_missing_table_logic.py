@@ -1,5 +1,7 @@
 import unittest
 import os
+import json
+import tempfile
 
 from src.postgis_docs_parse.postgis_doc_extract import PostGISFormalParser
 from src.postgis_docs_parse.validate_postgis import PostGISValidator
@@ -81,6 +83,75 @@ class MissingTableLogicTests(unittest.TestCase):
         self.assertEqual(mt["dep_scope"], "cross_func_dep")
         self.assertEqual(mt["dep_function_id"], "FUNC_B")
         self.assertEqual(mt["dep_example_id"], 1)
+
+    def test_extract_records_llm_failures_for_retry(self):
+        parser = PostGISFormalParser()
+        parser.client = None
+        got = parser._parse_ex_to_pairs_via_llm("SELECT 1;", "FUNC_FAIL", source_file="sample.xml")
+        self.assertEqual(got, [])
+        self.assertEqual(len(parser.parse_failures), 1)
+        failure = parser.parse_failures[0]
+        self.assertEqual(failure["function_id"], "FUNC_FAIL")
+        self.assertEqual(failure["source_file"], "sample.xml")
+        self.assertIn("OpenAI client not available", failure["error"])
+
+    def test_extract_write_failure_artifacts(self):
+        parser = PostGISFormalParser()
+        parser.parse_failures = [
+            {
+                "function_id": "FUNC_FAIL",
+                "source_file": "sample.xml",
+                "retry_count": 3,
+                "error": "Connection error",
+                "raw_example_excerpt": "SELECT 1;",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            output_file = os.path.join(td, "postgis_extracted.json")
+            parser._write_failure_artifacts(output_file)
+            failure_file = output_file + ".llm_failures.json"
+            retry_file = output_file + ".retry_manifest.json"
+            self.assertTrue(os.path.exists(failure_file))
+            self.assertTrue(os.path.exists(retry_file))
+
+            with open(retry_file, "r", encoding="utf-8") as f:
+                retry_manifest = json.load(f)
+            self.assertEqual(retry_manifest["function_ids"], ["FUNC_FAIL"])
+            self.assertEqual(retry_manifest["source_files"], ["sample.xml"])
+
+    def test_extract_function_filter_skips_non_target_functions(self):
+        xml_text = """
+<refentry xml:id="FUNC_A">
+  <refnamediv><refname>FUNC_A</refname></refnamediv>
+  <refsynopsisdiv>
+    <funcsynopsis>
+      <funcprototype>
+        <funcdef>geometry <function>FUNC_A</function></funcdef>
+      </funcprototype>
+    </funcsynopsis>
+  </refsynopsisdiv>
+  <refsection><title>Description</title><para>A</para></refsection>
+</refentry>
+<refentry xml:id="FUNC_B">
+  <refnamediv><refname>FUNC_B</refname></refnamediv>
+  <refsynopsisdiv>
+    <funcsynopsis>
+      <funcprototype>
+        <funcdef>geometry <function>FUNC_B</function></funcdef>
+      </funcprototype>
+    </funcsynopsis>
+  </refsynopsisdiv>
+  <refsection><title>Description</title><para>B</para></refsection>
+</refentry>
+"""
+        parser = PostGISFormalParser(function_filter={"FUNC_B"})
+        with tempfile.TemporaryDirectory() as td:
+            xml_path = os.path.join(td, "sample.xml")
+            with open(xml_path, "w", encoding="utf-8") as f:
+                f.write(xml_text)
+            records = parser.parse_single_file(xml_path)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["function_id"], "FUNC_B")
 
     def test_validator_extract_missing_table_name(self):
         v = PostGISValidator(

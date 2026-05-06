@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser = subparsers.add_parser("extract", help="Extract structured examples from PostGIS XML docs.")
     extract_parser.add_argument("--input-dir", default="xml_data")
     extract_parser.add_argument("--output-file", default="extract_result/postgis_extracted.json")
+    extract_parser.add_argument(
+        "--function-ids-file",
+        default=None,
+        help="Optional JSON file listing function_ids to rerun. Compatible with *.retry_manifest.json.",
+    )
 
     validate_parser = subparsers.add_parser("validate", help="Validate extracted SQL examples against PostGIS.")
     validate_parser.add_argument("--mode", choices=["full", "external_only", "import_external"], default="full")
@@ -78,9 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "extract":
-        from .postgis_doc_extract import PostGISFormalParser
+        from .postgis_doc_extract import PostGISFormalParser, _load_function_filter
 
-        PostGISFormalParser().batch_process(args.input_dir, args.output_file)
+        function_filter = _load_function_filter(args.function_ids_file) if args.function_ids_file else None
+        PostGISFormalParser(function_filter=function_filter).batch_process(args.input_dir, args.output_file)
         return 0
 
     if args.command == "validate":
