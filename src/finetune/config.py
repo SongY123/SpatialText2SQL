@@ -32,7 +32,7 @@ class FinetuneDBConfig:
 
 @dataclass(frozen=True)
 class FinetuneDataConfig:
-    input_path: str = str(_project_root() / "data" / "processed" / "synthesized_questions.jsonl")
+    input_path: str = str(_project_root() / "data" / "processed" / "nl2sql.jsonl")
     prepared_output_path: str = str(_project_root() / "data" / "processed" / "finetune" / "spatial_text2sql_trl_train.jsonl")
     prompt_template_path: str = str(_project_root() / "prompts" / "train_prompt.txt")
     task_description: str = (

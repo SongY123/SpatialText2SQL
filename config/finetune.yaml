@@ -9,7 +9,7 @@ database:
   statement_timeout: 60000
 
 data:
-  input_path: data/processed/synthesized_questions.jsonl
+  input_path: data/processed/nl2sql.jsonl
   prepared_output_path: data/processed/finetune/spatial_text2sql_trl_train.jsonl
   prompt_template_path: prompts/train_prompt.txt
   task_description: Translate the spatial question into one executable PostgreSQL/PostGIS SQL query using the provided schema, spatial metadata, and representative values.

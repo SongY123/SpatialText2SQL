@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-DEFAULT_CONFIG="${REPO_ROOT}/config/trl_spatial_text2sql_finetune.yaml"
+DEFAULT_CONFIG="${REPO_ROOT}/config/finetune.yaml"
 
 if [[ $# -ge 1 && ( "${1}" == "--help" || "${1}" == "-h" ) ]]; then
   cat <<EOF
@@ -17,6 +17,7 @@ Usage: $(basename "$0") [extra python args...]
 Default config: ${DEFAULT_CONFIG}
 
 Optional environment overrides:
+  FINETUNE_CONFIG
   TRL_SPATIAL_TEXT2SQL_CONFIG
 
 Examples:
@@ -27,7 +28,7 @@ EOF
   exit 0
 fi
 
-CONFIG_PATH="${TRL_SPATIAL_TEXT2SQL_CONFIG:-${DEFAULT_CONFIG}}"
+CONFIG_PATH="${FINETUNE_CONFIG:-${TRL_SPATIAL_TEXT2SQL_CONFIG:-${DEFAULT_CONFIG}}}"
 
 PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
   python -m src.finetune.cli \

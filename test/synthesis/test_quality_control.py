@@ -27,6 +27,27 @@ from src.synthesis.quality.models import ColumnSchema
 from src.synthesis.sql.function_library import PostGISFunctionLibrary
 
 
+class _RejectingJudgeResult:
+    passed = False
+    warnings = ["judge_warning"]
+    reason_codes = ["wrong_entity"]
+
+    def to_dict(self):
+        return {
+            "passed": False,
+            "pass_votes": 0,
+            "fail_votes": 1,
+            "reason_codes": list(self.reason_codes),
+            "warnings": list(self.warnings),
+            "rounds": [],
+        }
+
+
+class _RejectingJudge:
+    def judge(self, **_kwargs):
+        return _RejectingJudgeResult()
+
+
 def _build_function_library():
     payload = [
         {
@@ -181,7 +202,7 @@ class QualityControlTests(unittest.TestCase):
         self.schema = _build_schema()
         self.schema_registry = InMemorySchemaRegistry({"nyc_0001": self.schema})
 
-    def test_reject_non_read_only_sql(self):
+    def test_non_read_only_sql_is_downgraded_to_warning_and_retained(self):
         sample = _sample(
             "s1",
             question="Which parks are within 100 units of the neighborhood?",
@@ -191,10 +212,12 @@ class QualityControlTests(unittest.TestCase):
         )
         registry = StaticDatabaseRegistry({"nyc_0001": MockDatabaseClient(self.schema)})
         retained, report = self.pipeline.run([sample], registry, self.schema_registry, _config())
-        self.assertEqual(retained, [])
-        self.assertGreater(report.failed_samples, 0)
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(report.passed_samples, 1)
+        warnings = retained[0].metadata["quality_control"]["warnings"]
+        self.assertTrue(any("non-read-only" in item for item in warnings))
 
-    def test_reject_unknown_tables_or_columns(self):
+    def test_unknown_tables_or_columns_are_downgraded_to_warning_and_retained(self):
         sample = _sample(
             "s1",
             question="Which parks are within 100 units of the neighborhood?",
@@ -204,9 +227,12 @@ class QualityControlTests(unittest.TestCase):
         )
         registry = StaticDatabaseRegistry({"nyc_0001": MockDatabaseClient(self.schema)})
         retained, _report = self.pipeline.run([sample], registry, self.schema_registry, _config())
-        self.assertEqual(retained, [])
+        self.assertEqual(len(retained), 1)
+        warnings = retained[0].metadata["quality_control"]["warnings"]
+        self.assertTrue(any("Unknown tables referenced" in item for item in warnings))
+        self.assertTrue(any("Unknown columns referenced" in item for item in warnings))
 
-    def test_reject_disallowed_postgis_function(self):
+    def test_disallowed_postgis_function_is_downgraded_to_warning_and_retained(self):
         sample = _sample(
             "s1",
             question="Which parks match the raster operation?",
@@ -215,7 +241,9 @@ class QualityControlTests(unittest.TestCase):
         )
         registry = StaticDatabaseRegistry({"nyc_0001": MockDatabaseClient(self.schema)})
         retained, _report = self.pipeline.run([sample], registry, self.schema_registry, _config())
-        self.assertEqual(retained, [])
+        self.assertEqual(len(retained), 1)
+        warnings = retained[0].metadata["quality_control"]["warnings"]
+        self.assertTrue(any("Disallowed or unknown PostGIS function" in item for item in warnings))
 
     def test_pass_executable_select_with_non_empty_results(self):
         sample = _sample(
@@ -229,7 +257,7 @@ class QualityControlTests(unittest.TestCase):
         self.assertEqual(len(retained), 1)
         self.assertEqual(report.passed_samples, 1)
 
-    def test_fail_empty_result_when_not_allowed(self):
+    def test_empty_result_is_downgraded_to_warning_and_retained(self):
         sample = _sample(
             "s1",
             question="Which parks are within 100 units of neighborhoods?",
@@ -238,8 +266,11 @@ class QualityControlTests(unittest.TestCase):
         )
         registry = StaticDatabaseRegistry({"nyc_0001": MockDatabaseClient(self.schema, row_count=0, preview=[])})
         retained, report = self.pipeline.run([sample], registry, self.schema_registry, _config(allow_empty_result=False))
-        self.assertEqual(retained, [])
-        self.assertGreater(report.failed_samples, 0)
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(report.passed_samples, 1)
+        quality_control = retained[0].metadata["quality_control"]
+        self.assertEqual(quality_control["execution_status"], "empty_result")
+        self.assertIn("SQL executed successfully but returned no rows.", quality_control["warnings"])
 
     def test_detect_exact_and_normalized_duplicate_sql(self):
         samples = [
@@ -305,6 +336,24 @@ class QualityControlTests(unittest.TestCase):
         warnings = retained[0].metadata["quality_control"]["warnings"]
         self.assertTrue(any("distance threshold 100" in item for item in warnings))
 
+    def test_self_consistency_judge_rejection_is_recorded_but_not_filtered(self):
+        sample = _sample(
+            "s1",
+            question="Which parks are within 100 units of neighborhoods?",
+            sql="SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)",
+            used_tables=["parks", "neighborhoods"],
+        )
+        pipeline = QualityControlPipeline(
+            function_library=self.function_library,
+            self_consistency_judge=_RejectingJudge(),
+        )
+        registry = StaticDatabaseRegistry({"nyc_0001": MockDatabaseClient(self.schema, row_count=1)})
+        retained, report = pipeline.run([sample], registry, self.schema_registry, _config())
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(report.passed_samples, 1)
+        self.assertIn("Self-consistency judge rejected the NL-SQL pair.", retained[0].metadata["quality_control"]["errors"])
+        self.assertIn("judge:wrong_entity", report.failure_reasons)
+
     def test_balance_retained_samples(self):
         samples = [
             _sample("s1", question="Which parks are within 100 units of neighborhoods?", sql="SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)", difficulty="easy", used_tables=["parks", "neighborhoods"], style="factual_lookup"),
@@ -356,6 +405,44 @@ class QualityControlTests(unittest.TestCase):
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].sample_id, "s1")
             self.assertIn("s1", out_path.read_text(encoding="utf-8"))
+
+    def test_writer_preserves_original_synthesized_question_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "synthesized_questions.jsonl"
+            output_path = root / "nl2sql.jsonl"
+            payload = {
+                "question_id": "nyc_0001_0001",
+                "sql_id": "nyc_0001_0001",
+                "database_id": "nyc_0001",
+                "city": "new york",
+                "style": "formal",
+                "question": "Which parks are within 100 units of neighborhoods?",
+                "sql": "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)",
+                "reasoning_summary": "Use the spatial join and return the park names.",
+                "spatial_phrases": ["within 100 units of"],
+                "source_difficulty_level": "medium",
+                "used_tables": ["parks", "neighborhoods"],
+                "used_columns": ["name", "geom"],
+                "used_spatial_functions": ["ST_DWithin"],
+                "spatial_relation_constraints": [{"function_name": "ST_DWithin"}],
+                "sql_features": {"tables": ["parks", "neighborhoods"]},
+                "prompt": "prompt text",
+                "feedback_prompts": [],
+                "validation_result": {"is_valid": True, "warnings": []},
+                "generation_metadata": {"generator": "question"},
+            }
+            input_path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+            samples = load_nl_sql_samples(str(input_path))
+            self.assertEqual(len(samples), 1)
+            samples[0].metadata = {"quality_control": {"passed": True, "warnings": []}}
+            write_nl_sql_samples(str(output_path), samples)
+            row = json.loads(output_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(row["question_id"], payload["question_id"])
+            self.assertEqual(row["prompt"], payload["prompt"])
+            self.assertEqual(row["generation_metadata"], payload["generation_metadata"])
+            self.assertEqual(row["sql_features"], payload["sql_features"])
+            self.assertEqual(row["metadata"]["quality_control"]["passed"], True)
 
 
 if __name__ == "__main__":

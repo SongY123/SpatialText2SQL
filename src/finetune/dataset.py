@@ -82,6 +82,10 @@ class SpatialText2SQLDatasetBuilder:
         return prepared_rows
 
     def _load_metadata(self, row: RawFinetuneSample) -> dict[str, Any] | None:
+        embedded_metadata = self._load_embedded_metadata(row)
+        if embedded_metadata is not None:
+            return embedded_metadata
+
         table_names = [to_text(name) for name in row.used_tables if to_text(name)]
         if not table_names:
             LOGGER.warning(
@@ -96,6 +100,20 @@ class SpatialText2SQLDatasetBuilder:
             selected_tables=[],
         )
         return self.metadata_provider.load_database_metadata(lookup)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _load_embedded_metadata(row: RawFinetuneSample) -> dict[str, Any] | None:
+        metadata = row.metadata if isinstance(row.metadata, Mapping) else {}
+        database_context = metadata.get("database_context")
+        if (
+            isinstance(database_context, Mapping)
+            and isinstance(database_context.get("tables"), Sequence)
+            and not isinstance(database_context.get("tables"), (str, bytes))
+        ):
+            return {str(key): stable_jsonify(value) for key, value in database_context.items()}
+        if isinstance(metadata.get("tables"), Sequence) and not isinstance(metadata.get("tables"), (str, bytes)):
+            return {str(key): stable_jsonify(value) for key, value in metadata.items()}
+        return None
 
     def _build_synthetic_cot(self, row: RawFinetuneSample) -> str:
         steps: list[str] = []

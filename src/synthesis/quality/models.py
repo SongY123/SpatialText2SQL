@@ -123,6 +123,7 @@ class NLSQLSample:
     used_spatial_functions: list[str] = field(default_factory=list)
     linguistic_style: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    original_payload: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "NLSQLSample":
@@ -155,9 +156,9 @@ class NLSQLSample:
             "metadata",
         }
         metadata = _as_mapping(payload.get("metadata"))
-        for key, value in payload.items():
-            if key not in consumed and key not in metadata:
-                metadata[str(key)] = stable_jsonify(value)
+        sql_context = payload.get("sql_context")
+        if "sql_context" not in metadata and isinstance(stable_jsonify(sql_context), Mapping):
+            metadata["sql_context"] = _as_mapping(sql_context)
         return cls(
             sample_id=sample_id,
             sql_id=to_text(payload.get("sql_id")) or sample_id,
@@ -170,6 +171,7 @@ class NLSQLSample:
             used_spatial_functions=_as_text_list(payload.get("used_spatial_functions")),
             linguistic_style=to_text(payload.get("linguistic_style") or payload.get("style")),
             metadata=metadata,
+            original_payload=_as_mapping(payload),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -186,6 +188,42 @@ class NLSQLSample:
             "linguistic_style": self.linguistic_style,
             "metadata": stable_jsonify(self.metadata),
         }
+
+    def to_output_dict(self) -> dict[str, Any]:
+        if not self.original_payload:
+            return self.to_dict()
+
+        row = dict(self.original_payload)
+        row["sql_id"] = self.sql_id or to_text(row.get("sql_id"))
+        row["database_id"] = self.database_id
+        row["question"] = self.question
+        row["sql"] = self.sql
+
+        if self.linguistic_style:
+            if "style" in row:
+                row["style"] = self.linguistic_style
+            else:
+                row["linguistic_style"] = self.linguistic_style
+
+        if self.difficulty_level:
+            if "source_difficulty_level" in row:
+                row["source_difficulty_level"] = self.difficulty_level
+            elif "difficulty_level" in row:
+                row["difficulty_level"] = self.difficulty_level
+
+        if self.used_tables and "used_tables" not in row:
+            row["used_tables"] = list(self.used_tables)
+        if self.used_columns and "used_columns" not in row:
+            row["used_columns"] = list(self.used_columns)
+        if self.used_spatial_functions and "used_spatial_functions" not in row:
+            row["used_spatial_functions"] = list(self.used_spatial_functions)
+
+        merged_metadata = _as_mapping(row.get("metadata"))
+        merged_metadata.update(_as_mapping(self.metadata))
+        if merged_metadata:
+            row["metadata"] = merged_metadata
+
+        return stable_jsonify(row)
 
 
 @dataclass

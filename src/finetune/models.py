@@ -54,6 +54,7 @@ class RawFinetuneSample:
     used_columns: list[str] = field(default_factory=list)
     used_spatial_functions: list[str] = field(default_factory=list)
     sql_features: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "RawFinetuneSample":
@@ -84,6 +85,7 @@ class RawFinetuneSample:
             used_columns=_as_text_list(payload.get("used_columns")),
             used_spatial_functions=_as_text_list(payload.get("used_spatial_functions")),
             sql_features=_as_mapping(payload.get("sql_features")),
+            metadata=_as_mapping(payload.get("metadata")),
         )
 
 

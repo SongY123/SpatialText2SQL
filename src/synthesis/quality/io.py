@@ -60,7 +60,7 @@ def write_nl_sql_samples(output_path: str, samples: list[NLSQLSample]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for sample in samples:
-            handle.write(json.dumps(sample.to_dict(), ensure_ascii=False))
+            handle.write(json.dumps(sample.to_output_dict(), ensure_ascii=False))
             handle.write("\n")
 
 

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from src.finetune.config import DEFAULT_TRL_FINETUNE_CONFIG_PATH
 from src.finetune.config import FinetuneDBConfig, FinetuneDataConfig
 from src.finetune.dataset import SpatialText2SQLDatasetBuilder
 from src.finetune.models import RawFinetuneSample
@@ -20,6 +21,31 @@ class FakeMetadataProvider:
 
 
 class TRLFinetuneTests(unittest.TestCase):
+    def test_default_finetune_config_path_matches_repo_config(self):
+        self.assertTrue(str(DEFAULT_TRL_FINETUNE_CONFIG_PATH).endswith("config/finetune.yaml"))
+
+    def test_raw_finetune_sample_accepts_nl2sql_metadata(self):
+        row = RawFinetuneSample.from_dict(
+            {
+                "question_id": "nyc_0001_0001",
+                "database_id": "nyc_0001",
+                "city": "new york",
+                "question": "Which parks intersect schools?",
+                "sql": "SELECT p.name FROM parks p JOIN schools s ON ST_Intersects(p.geom, s.geom)",
+                "source_difficulty_level": "medium",
+                "used_tables": ["parks", "schools"],
+                "used_columns": ["name", "geom"],
+                "used_spatial_functions": ["ST_Intersects"],
+                "sql_features": {"tables": ["parks", "schools"]},
+                "metadata": {
+                    "quality_control": {"passed": True},
+                    "database_context": {"tables": []},
+                },
+            }
+        )
+        self.assertEqual(row.difficulty, "medium")
+        self.assertIn("database_context", row.metadata)
+
     def test_prompt_renderer_includes_required_sections(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             template_path = Path(tmpdir) / "prompt.txt"
@@ -119,6 +145,69 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn("<sql>", prepared[0].completion)
         self.assertIn("## Schema", prepared[0].prompt)
         self.assertIn('"geom": "POINT"', prepared[0].prompt)
+
+    def test_dataset_builder_prefers_embedded_nl2sql_metadata_over_live_db(self):
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "parks",
+                    "columns": [
+                        {"column_name": "id", "column_type": "integer"},
+                        {"column_name": "name", "column_type": "text"},
+                        {"column_name": "geom", "column_type": "geometry(Point,4326)"},
+                    ],
+                    "spatial_fields": [
+                        {
+                            "column_name": "geom",
+                            "column_type": "geometry(Point,4326)",
+                            "spatial_type": "geometry",
+                            "geometry_type": "POINT",
+                            "srid": 4326,
+                        }
+                    ],
+                    "representative_values": [{"id": 1, "name": "alpha", "geom": "POINT (0 0)"}],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            template_path = Path(tmpdir) / "prompt.txt"
+            template_path.write_text(
+                "## Task Description\n{{task_description}}\n## Schema\n{{schema_block}}\n## Spatial Field Metadata\n{{spatial_field_block}}\n## Representative Values\n{{representative_values_block}}\n## Question\n{{question_block}}\n",
+                encoding="utf-8",
+            )
+            provider = FakeMetadataProvider({"tables": []})
+            builder = SpatialText2SQLDatasetBuilder(
+                db_config=FinetuneDBConfig(),
+                data_config=FinetuneDataConfig(
+                    input_path="",
+                    prepared_output_path="",
+                    prompt_template_path=str(template_path),
+                    task_description="Translate to SQL.",
+                    question_id_start=0,
+                    max_representative_rows=3,
+                ),
+                metadata_provider=provider,
+            )
+            raw = RawFinetuneSample.from_dict(
+                {
+                    "question_id": "nyc_0001_0001",
+                    "database_id": "nyc_0001",
+                    "city": "new york",
+                    "question": "Which park names should be returned?",
+                    "sql": "SELECT name FROM parks LIMIT 5",
+                    "source_difficulty_level": "easy",
+                    "used_tables": ["parks"],
+                    "used_columns": ["name"],
+                    "metadata": {
+                        "database_context": runtime_metadata,
+                        "quality_control": {"passed": True},
+                    },
+                }
+            )
+            prepared = builder.prepare_samples([raw])
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(provider.calls, [])
+        self.assertIn("- parks(id integer, name text, geom geometry(Point,4326))", prepared[0].prompt)
 
 
 if __name__ == "__main__":

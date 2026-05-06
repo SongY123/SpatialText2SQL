@@ -58,6 +58,12 @@ class SelfConsistencyJudgeConfig:
 
 
 @dataclass(frozen=True)
+class SemanticCheckConfig:
+    mode: str = "strict"
+    debug_mode: bool = False
+
+
+@dataclass(frozen=True)
 class DuplicateDetectionConfig:
     remove_exact_sql_duplicates: bool = True
     remove_normalized_sql_duplicates: bool = True
@@ -86,7 +92,7 @@ class QualityControlRunConfig:
     input_path: str = str(_project_root() / "data" / "processed" / "synthesized_questions.jsonl")
     sql_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
     schema_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
-    output_path: str = str(_project_root() / "data" / "processed" / "quality_controlled_nl_sql.jsonl")
+    output_path: str = str(_project_root() / "data" / "processed" / "nl2sql.jsonl")
     report_path: str = str(_project_root() / "data" / "processed" / "quality_control_report.json")
     allow_empty_result: bool = True
     max_result_rows: int = 5
@@ -106,6 +112,7 @@ class QualityControlConfig:
     llm: QualityControlLLMConfig = field(default_factory=QualityControlLLMConfig)
     judge: SelfConsistencyJudgeConfig = field(default_factory=SelfConsistencyJudgeConfig)
     run: QualityControlRunConfig = field(default_factory=QualityControlRunConfig)
+    semantic: SemanticCheckConfig = field(default_factory=SemanticCheckConfig)
     duplicates: DuplicateDetectionConfig = field(default_factory=DuplicateDetectionConfig)
     balancing: DiversityBalancingConfig = field(default_factory=DiversityBalancingConfig)
     logging: QualityControlLoggingConfig = field(default_factory=QualityControlLoggingConfig)
@@ -207,6 +214,7 @@ def _build_quality_control_config_from_payload(
     llm_section = payload.get("llm") or {}
     judge_section = payload.get("judge") or {}
     run_section = payload.get("run") or {}
+    semantic_section = payload.get("semantic") or {}
     duplicate_section = payload.get("duplicates") or {}
     balancing_section = payload.get("balancing") or {}
     logging_section = payload.get("logging") or {}
@@ -215,6 +223,7 @@ def _build_quality_control_config_from_payload(
     default_llm = QualityControlLLMConfig()
     default_judge = SelfConsistencyJudgeConfig()
     default_run = QualityControlRunConfig()
+    default_semantic = SemanticCheckConfig()
     default_duplicate = DuplicateDetectionConfig()
     default_balancing = DiversityBalancingConfig()
     default_logging = QualityControlLoggingConfig()
@@ -295,6 +304,10 @@ def _build_quality_control_config_from_payload(
             max_result_rows=_as_int(run_section.get("max_result_rows"), default_run.max_result_rows, minimum=1),
             prefer_live_schema=_as_bool(run_section.get("prefer_live_schema"), default_run.prefer_live_schema),
         ),
+        semantic=SemanticCheckConfig(
+            mode=_as_text(semantic_section.get("mode"), default_semantic.mode),
+            debug_mode=_as_bool(semantic_section.get("debug_mode"), default_semantic.debug_mode),
+        ),
         duplicates=DuplicateDetectionConfig(
             remove_exact_sql_duplicates=_as_bool(
                 duplicate_section.get("remove_exact_sql_duplicates"),
@@ -357,6 +370,7 @@ def override_quality_control_config(
     llm: Mapping[str, Any] | None = None,
     judge: Mapping[str, Any] | None = None,
     run: Mapping[str, Any] | None = None,
+    semantic: Mapping[str, Any] | None = None,
     duplicates: Mapping[str, Any] | None = None,
     balancing: Mapping[str, Any] | None = None,
     logging: Mapping[str, Any] | None = None,
@@ -367,6 +381,7 @@ def override_quality_control_config(
         "llm": {**base.llm.__dict__, **dict(llm or {})},
         "judge": {**base.judge.__dict__, **dict(judge or {})},
         "run": {**base.run.__dict__, **dict(run or {})},
+        "semantic": {**base.semantic.__dict__, **dict(semantic or {})},
         "duplicates": {**base.duplicates.__dict__, **dict(duplicates or {})},
         "balancing": {
             "enabled": base.balancing.enabled,

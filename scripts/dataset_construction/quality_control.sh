@@ -22,7 +22,7 @@ Optional environment overrides:
 Examples:
   $(basename "$0")
   $(basename "$0") --semantic-mode warning_only
-  $(basename "$0") --input data/processed/synthesized_questions.jsonl --output data/processed/quality_controlled_nl_sql.jsonl
+  $(basename "$0") --input data/processed/synthesized_questions.jsonl --output data/processed/nl2sql.jsonl
 EOF
   exit 0
 fi

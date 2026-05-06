@@ -87,6 +87,7 @@ class SampleValidationArtifact:
 class SQLSampleValidator:
     function_library: PostGISFunctionLibrary
     sql_analyzer: SQLAnalyzer = field(default_factory=DefaultSQLAnalyzer)
+    semantic_checker: "SemanticConsistencyChecker" = field(default_factory=lambda: SemanticConsistencyChecker())
 
     def validate(
         self,
@@ -153,6 +154,16 @@ class SQLSampleValidator:
             except Exception as exc:
                 execution_status = "execution_failed"
                 errors.append(f"Execution failed: {exc}")
+
+        if not errors:
+            semantic_errors, semantic_warnings = self.semantic_checker.check(
+                sample=sample,
+                parsed_sql=parsed_sql,
+                schema=schema,
+                config=config,
+            )
+            errors.extend(semantic_errors)
+            warnings.extend(semantic_warnings)
 
         validation_result = ValidationResult(
             passed=not errors,
@@ -392,4 +403,3 @@ def build_distribution(samples: Sequence[NLSQLSample], bucket_getter) -> dict[st
 
 def question_similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, _normalize_question_text(left), _normalize_question_text(right)).ratio()
-

@@ -7,6 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
+from src.prompting.prompt_builder import PromptBuilder
 from src.synthesis.sql.function_library import PostGISFunctionLibrary
 
 from .config import (
@@ -15,12 +16,14 @@ from .config import (
     override_quality_control_config,
 )
 from .database import PostgreSQLDatabaseRegistry
+from .generator import build_quality_control_llm
 from .io import (
     load_nl_sql_samples,
     load_schema_registry_from_contexts,
     write_nl_sql_samples,
     write_quality_control_report,
 )
+from .judge import SelfConsistencyQualityJudge
 from .pipeline import QualityControlPipeline
 
 
@@ -92,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
             "allow_empty_result": args.allow_empty_result if args.allow_empty_result else None,
             "max_result_rows": args.max_result_rows,
         }.items() if value is not None},
+        semantic={key: value for key, value in {
+            "mode": args.semantic_mode,
+            "debug_mode": args.debug_mode if args.debug_mode else None,
+        }.items() if value is not None},
         duplicates={key: value for key, value in {
             "question_similarity_threshold": args.question_similarity_threshold,
             "same_sql_similarity_threshold": args.same_sql_similarity_threshold,
@@ -127,7 +134,21 @@ def main(argv: list[str] | None = None) -> int:
         Path(config.functions.st_function_markdown_path),
         list(config.functions.exclude_categories),
     )
-    pipeline = QualityControlPipeline(function_library=function_library)
+    llm_client = build_quality_control_llm(config=config.llm)
+    prompt_builder = PromptBuilder(
+        {
+            "project_root": Path(__file__).resolve().parents[3],
+            "prompt_template_path": config.judge.prompt_template_path,
+        }
+    )
+    judge = SelfConsistencyQualityJudge(
+        llm_client=llm_client,
+        prompt_builder=prompt_builder,
+    )
+    pipeline = QualityControlPipeline(
+        function_library=function_library,
+        self_consistency_judge=judge,
+    )
     retained, report = pipeline.run(samples, database_registry, schema_registry, config)
     write_nl_sql_samples(config.run.output_path, retained)
     write_quality_control_report(config.run.report_path, report)

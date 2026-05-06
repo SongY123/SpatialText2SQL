@@ -239,10 +239,10 @@ Default settings:
 - `num_sql_per_database` supports per-city mapping, for example `nyc=8,sf=6` from CLI or a YAML mapping in `config/sql_synthesis.yaml`
 - `difficulty_weights` now control how many SQL samples are allocated to each difficulty bucket, and generation runs in fixed order: `easy -> medium -> hard -> extra-hard`
 - When compatible candidates exist, SQL synthesis samples PostGIS functions from `ST_Function.md` first, then falls back to other extracted PostGIS functions
-- SQL synthesis prompts now read `Schema`, `Spatial Field Metadata`, and `Representative Values` from the live synthesized PostGIS schema instead of file-side metadata, so prompt context matches the executable database exactly
+- SQL synthesis prompts now read live PostGIS `Schema` DDL and `Representative Values`, so prompt context matches the executable database exactly
 - Before each SQL sample is generated, SQL synthesis now selects a smaller difficulty-aware table subset outside the LLM and only injects that subset into the prompt, instead of passing every table from the synthesized database
 - SQL synthesis writes retained samples incrementally to the output JSONL file as each sample completes, instead of waiting for the whole run to finish
-- SQL synthesis prompt templates live in `prompts/sql_synthesis_prompt.txt` and `prompts/sql_feedback_prompt.txt`
+- SQL synthesis prompt templates live in `prompts/sql_synthesis_prompt.txt` and `prompts/sql_revision_prompt.txt`
 - The default config only enables `nyc: 8`; cities not listed will not emit SQL unless you add them or provide a `default` entry
 
 Edit persistent settings in `config/sql_synthesis.yaml`.
@@ -266,7 +266,7 @@ scripts/dataset_construction/synthesize_questions.sh \
 
 # Force a fixed linguistic style
 scripts/dataset_construction/synthesize_questions.sh \
-  --style ranking_inquiry
+  --style conversational
 ```
 
 Default settings:
@@ -276,7 +276,7 @@ Default settings:
 - Output: `data/processed/synthesized_questions.jsonl`
 - The only retained question-synthesis shell entrypoint is `scripts/dataset_construction/synthesize_questions.sh`
 - The canonical question-synthesis implementation is `src/synthesis/question/synthesizer.py`
-- Default styles: `factual_lookup`, `comparative_analysis`, `aggregation_inquiry`, `ranking_inquiry`, `exploratory_analysis`
+- Default styles: `conversational`, `formal`, `direct`, `concise`, `polite`, `analytical`
 - Default number of questions per SQL: `1`
 - Default random seed: `42`
 - The question-generation prompt preserves SQL semantics exactly and rewrites spatial relations into natural language without exposing raw PostGIS function names
@@ -294,22 +294,63 @@ scripts/dataset_construction/quality_control.sh
 ```
 
 The quality-control stage validates read-only SQL safety, schema references, live PostGIS execution, lightweight NL-SQL semantic consistency, duplicate removal, and optional diversity balancing.
-It is rule-based and does not rely on an LLM prompt.
+It also records an LLM self-consistency judgment, but the current default pipeline keeps samples even when that judge votes to reject them.
 
 Typical usage:
 
 ```bash
 scripts/dataset_construction/quality_control.sh \
   --input data/processed/synthesized_questions.jsonl \
-  --output data/processed/quality_controlled_nl_sql.jsonl
+  --output data/processed/nl2sql.jsonl
 ```
 
 Default outputs:
 
-- Filtered samples: `data/processed/quality_controlled_nl_sql.jsonl`
+- Filtered samples: `data/processed/nl2sql.jsonl`
 - Report: `data/processed/quality_control_report.json`
 
 Edit persistent settings in `config/quality_control.yaml`.
+
+## Fine-Tuning
+
+Prepare `nl2sql` training data and run TRL full-parameter fine-tuning:
+
+```bash
+scripts/finetune/train.sh
+```
+
+Typical usage:
+
+```bash
+# Prepare the training JSONL only
+scripts/finetune/train.sh --prepare-only
+
+# Train from the default nl2sql input with a different base model
+scripts/finetune/train.sh \
+  --model-name-or-path Qwen/Qwen2.5-7B-Instruct \
+  --output-dir outputs/finetune/qwen25_7b_full
+
+# Reuse an already prepared training file
+scripts/finetune/train.sh --train-only
+```
+
+Default settings:
+
+- Config file: `config/finetune.yaml`
+- Input NL2SQL file: `data/processed/nl2sql.jsonl`
+- Prepared training file: `data/processed/finetune/spatial_text2sql_trl_train.jsonl`
+- Shell entrypoint: `scripts/finetune/train.sh`
+- Python CLI: `src/finetune/cli.py`
+- Prompt template: `prompts/train_prompt.txt`
+
+Training data behavior:
+
+- The fine-tuning loader reads `question`, `sql`, `database_id`, `question_id`, `source_difficulty_level`, `used_tables`, `used_columns`, `used_spatial_functions`, and `sql_features` directly from `nl2sql.jsonl`.
+- If a row already includes `metadata.database_context`, fine-tuning uses that embedded schema context directly.
+- Otherwise, fine-tuning falls back to the configured PostgreSQL/PostGIS connection to fetch schema and representative values for the tables listed in `used_tables`.
+- Prepared samples are rendered as prompt/completion pairs where the completion format is `COT + final SQL`, wrapped in `<think>...</think>` and `<sql>...</sql>`.
+
+Edit persistent settings in `config/finetune.yaml`.
 
 ## PostGIS Docs Parse
 
