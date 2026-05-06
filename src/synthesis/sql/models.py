@@ -156,6 +156,7 @@ class SynthesizedSQLQuery:
     spatial_function_constraints: list[dict[str, Any]] = field(default_factory=list)
     prompt: str = ""
     feedback_prompts: list[str] = field(default_factory=list)
+    minor_revision_prompts: list[str] = field(default_factory=list)
     validation_result: dict[str, Any] = field(default_factory=dict)
     execution_result: dict[str, Any] = field(default_factory=dict)
     revision_rounds: int = 0
@@ -175,6 +176,7 @@ class SynthesizedSQLQuery:
             "spatial_function_constraints": stable_jsonify(self.spatial_function_constraints),
             "prompt": self.prompt,
             "feedback_prompts": list(self.feedback_prompts),
+            "minor_revision_prompts": list(self.minor_revision_prompts),
             "validation_result": stable_jsonify(self.validation_result),
             "execution_result": stable_jsonify(self.execution_result),
             "revision_rounds": self.revision_rounds,

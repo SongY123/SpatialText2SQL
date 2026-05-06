@@ -99,9 +99,7 @@ class SQLExecutionChecker:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             sample_rows = [dict(row) for row in rows] if rows else []
             empty_result = len(sample_rows) == 0
-            success = not (
-                empty_result and self.execution_config.require_non_empty_result and not self.execution_config.explain_only
-            )
+            success = True
             LOGGER.info(
                 "Execution query done | schema_id=%s | target=%s | success=%s | empty_result=%s | row_count=%s | time_ms=%.1f",
                 database.database_id,
@@ -114,7 +112,7 @@ class SQLExecutionChecker:
             return SQLExecutionResult(
                 executed=True,
                 success=success,
-                error_message="" if success else "SQL executed successfully but returned no rows.",
+                error_message="",
                 row_count=len(sample_rows),
                 empty_result=empty_result,
                 sample_rows=stable_jsonify(sample_rows),

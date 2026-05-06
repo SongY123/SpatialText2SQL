@@ -42,16 +42,6 @@ class PostGISPromptMetadataProvider:
         self,
         database: SynthesizedSpatialDatabase,
     ) -> dict[str, Any] | None:
-        cache_key = database.database_id
-        if cache_key in self._cache:
-            return stable_jsonify(self._cache[cache_key])
-        if psycopg2 is None or pg_sql is None or RealDictCursor is None:
-            LOGGER.warning("Prompt metadata provider unavailable because psycopg2 is not installed.")
-            self._cache[cache_key] = None
-            return None
-
-        schema_name = normalize_postgres_identifier(database.database_id, prefix="schema")
-        catalog_name = normalize_postgres_identifier(self.db_config.database, prefix="catalog") or self.db_config.database
         requested_tables = [
             to_text(name)
             for name in (getattr(database, "selected_table_names", None) or [])
@@ -63,6 +53,16 @@ class PostGISPromptMetadataProvider:
                 for table in getattr(database, "selected_tables", [])
                 if to_text(getattr(table, "table_name", ""))
             ]
+        cache_key = f"{database.database_id}|{'|'.join(requested_tables)}"
+        if cache_key in self._cache:
+            return stable_jsonify(self._cache[cache_key])
+        if psycopg2 is None or pg_sql is None or RealDictCursor is None:
+            LOGGER.warning("Prompt metadata provider unavailable because psycopg2 is not installed.")
+            self._cache[cache_key] = None
+            return None
+
+        schema_name = normalize_postgres_identifier(database.database_id, prefix="schema")
+        catalog_name = normalize_postgres_identifier(self.db_config.database, prefix="catalog") or self.db_config.database
         if not requested_tables:
             LOGGER.warning("Prompt metadata provider skipped %s because no table names were supplied.", database.database_id)
             self._cache[cache_key] = None

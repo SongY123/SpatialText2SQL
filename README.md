@@ -240,6 +240,8 @@ Default settings:
 - `difficulty_weights` now control how many SQL samples are allocated to each difficulty bucket, and generation runs in fixed order: `easy -> medium -> hard -> extra-hard`
 - When compatible candidates exist, SQL synthesis samples PostGIS functions from `ST_Function.md` first, then falls back to other extracted PostGIS functions
 - SQL synthesis prompts now read `Schema`, `Spatial Field Metadata`, and `Representative Values` from the live synthesized PostGIS schema instead of file-side metadata, so prompt context matches the executable database exactly
+- Before each SQL sample is generated, SQL synthesis now selects a smaller difficulty-aware table subset outside the LLM and only injects that subset into the prompt, instead of passing every table from the synthesized database
+- SQL synthesis writes retained samples incrementally to the output JSONL file as each sample completes, instead of waiting for the whole run to finish
 - SQL synthesis prompt templates live in `prompts/sql_synthesis_prompt.txt` and `prompts/sql_feedback_prompt.txt`
 - The default config only enables `nyc: 8`; cities not listed will not emit SQL unless you add them or provide a `default` entry
 

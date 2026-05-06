@@ -1,0 +1,37 @@
+Revise one PostgreSQL/PostGIS SQL query to fix a database execution error.
+Keep the same task intent and touched tables. Make the smallest possible SQL fix.
+
+## Database Context
+- database_id: {{database_id}}
+- city: {{city}}
+- involved_tables: {{involved_tables}}
+
+## Schema
+{{schema_block}}
+
+## Spatial Field Metadata
+{{spatial_field_block}}
+
+## Representative Values
+{{representative_values_block}}
+
+## Original SQL
+{{original_sql}}
+
+## Execution Error
+{{execution_error}}
+
+## Revision Requirements
+- Use only the listed tables and columns.
+- Keep result columns semantically meaningful; do not use `SELECT *`.
+- Fix syntax, alias, column, type, cast, or function-signature issues only.
+- Return one executable read-only SQL query.
+
+## Output Format
+Return a JSON object only, without Markdown code fences.
+The JSON object must contain:
+- sql
+- used_tables
+- used_columns
+- used_spatial_functions
+- reasoning_summary

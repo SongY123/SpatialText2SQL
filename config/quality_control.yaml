@@ -1,7 +1,7 @@
 database:
   host: localhost
   port: 5432
-  database: syntheized
+  database: synthesis
   user: postgres
   password: "123456"
   search_path: "{schema}, public"
@@ -20,7 +20,7 @@ run:
   schema_context_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/quality_controlled_nl_sql.jsonl
   report_path: data/processed/quality_control_report.json
-  allow_empty_result: false
+  allow_empty_result: true
   max_result_rows: 5
   prefer_live_schema: true
 

@@ -39,7 +39,7 @@ class PromptBuilder:
         )
         self.named_prompt_templates = {
             "sql_synthesis": self.project_root / "prompts" / "sql_synthesis_prompt.txt",
-            "sql_feedback": self.project_root / "prompts" / "sql_feedback_prompt.txt",
+            "sql_revision": self.project_root / "prompts" / "sql_revision_prompt.txt",
             "question_generation": self.project_root / "prompts" / "question_generation_prompt.txt",
             "quality_control": self.project_root / "prompts" / "quality_control_prompt.txt",
         }
@@ -136,8 +136,45 @@ class PromptBuilder:
                 "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
                 "representative_values_block": self._stable_json_text(representative_values),
                 "difficulty_level": self._stringify_value(difficulty_level),
-                "difficulty_constraint_block": self._stable_json_text(structural_constraints),
+                "difficulty_constraint_block": self._format_sql_difficulty_constraint(
+                    difficulty_level,
+                    structural_constraints,
+                ),
                 "required_function_block": self._stable_json_text(functions_payload),
+            },
+        )
+
+    def build_sql_revision_prompt(
+        self,
+        *,
+        database: Any,
+        original_sql: str,
+        execution_error: str,
+        used_tables: List[str],
+        database_runtime_metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        included_tables = {
+            str(table_name).strip()
+            for table_name in used_tables
+            if str(table_name).strip()
+        } or None
+        schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
+            database,
+            database_runtime_metadata=database_runtime_metadata,
+            included_tables=included_tables,
+        )
+        template_text = self._load_named_template_text("sql_revision")
+        return self._render_template(
+            template_text,
+            {
+                "database_id": self._stringify_value(getattr(database, "database_id", "")),
+                "city": self._stringify_value(getattr(database, "city", "")),
+                "involved_tables": ", ".join(sorted(included_tables)) if included_tables else "",
+                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
+                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
+                "representative_values_block": self._stable_json_text(representative_values),
+                "original_sql": self._stringify_value(original_sql),
+                "execution_error": self._stringify_value(execution_error or "unknown execution error"),
             },
         )
 
@@ -268,48 +305,12 @@ class PromptBuilder:
             return match.group(1).upper()
         return "GEOMETRY"
 
-    def build_sql_feedback_prompt(
-        self,
-        *,
-        database: Any,
-        difficulty_level: str,
-        structural_constraints: Dict[str, Any],
-        sampled_functions: List[Dict[str, Any]],
-        original_candidate: Dict[str, Any],
-        validation_errors: List[str],
-        execution_error: str = "",
-        empty_result: bool = False,
-        database_runtime_metadata: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
-            database,
-            database_runtime_metadata=database_runtime_metadata,
-        )
-
-        template_text = self._load_named_template_text("sql_feedback")
-        return self._render_template(
-            template_text,
-            {
-                "original_candidate_block": self._stable_json_text(original_candidate),
-                "database_id": self._stringify_value(getattr(database, "database_id", "")),
-                "city": self._stringify_value(getattr(database, "city", "")),
-                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
-                "representative_values_block": self._stable_json_text(representative_values),
-                "difficulty_level": self._stringify_value(difficulty_level),
-                "difficulty_constraint_block": self._stable_json_text(structural_constraints),
-                "required_function_block": self._stable_json_text(sampled_functions),
-                "validation_errors_block": self._stable_json_text(validation_errors),
-                "execution_error": execution_error or "none",
-                "empty_result": str(bool(empty_result)).lower(),
-            },
-        )
-
     def _build_sql_prompt_context(
         self,
         database: Any,
         *,
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
+        included_tables: Optional[set[str]] = None,
     ) -> Tuple[List[str], List[str], Dict[str, Any]]:
         if isinstance(database_runtime_metadata, dict) and database_runtime_metadata.get("tables"):
             schema_lines: List[str] = []
@@ -319,6 +320,8 @@ class PromptBuilder:
                 if not isinstance(table_meta, dict):
                     continue
                 table_name = str(table_meta.get("table_name") or "").strip()
+                if included_tables is not None and table_name not in included_tables:
+                    continue
                 columns = []
                 for column in table_meta.get("columns", []):
                     if not isinstance(column, dict):
@@ -361,6 +364,8 @@ class PromptBuilder:
         spatial_lines: List[str] = []
         for table in getattr(database, "selected_tables", []):
             table_name = str(getattr(table, "table_name", "")).strip()
+            if included_tables is not None and table_name not in included_tables:
+                continue
             geometry_columns = self._detect_geometry_columns(table)
             columns = []
             for column in getattr(table, "normalized_schema", []):
@@ -535,6 +540,57 @@ class PromptBuilder:
     @staticmethod
     def _stable_json_text(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+
+    def _format_sql_difficulty_constraint(
+        self,
+        difficulty_level: str,
+        structural_constraints: Dict[str, Any],
+    ) -> str:
+        min_tables = structural_constraints.get("min_tables")
+        max_tables = structural_constraints.get("max_tables")
+        lines = [f"Difficulty tier: {difficulty_level}"]
+        summary = str(structural_constraints.get("difficulty_summary") or "").strip()
+        if summary:
+            lines.append(f"- Summary: {summary}")
+
+        if difficulty_level == "easy":
+            lines.extend(
+                [
+                    "- Use exactly 1 table.",
+                    "- Keep the SQL as a single-table spatial filter, lookup, or ranking query.",
+                    "- Do not use joins, subqueries, or CTEs.",
+                ]
+            )
+        elif difficulty_level == "medium":
+            lines.extend(
+                [
+                    "- Use exactly 2 tables.",
+                    "- Include exactly 1 spatial join connecting those two tables.",
+                    "- Keep the query flat. Do not use subqueries or CTEs.",
+                ]
+            )
+        elif difficulty_level == "hard":
+            lines.extend(
+                [
+                    "- Use exactly 3 tables.",
+                    "- Include exactly 2 spatial joins connecting the three tables.",
+                    "- Keep the logic flat and direct. Do not use nested subqueries or CTEs.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"- Use between {min_tables} and {max_tables} tables.",
+                    "- Include at least 1 spatial join.",
+                    "- Count each spatial join and each nested query (subquery or CTE) as one advanced operation.",
+                    "- Keep the total number of spatial joins plus nested queries between 2 and 4.",
+                    "- Prefer the simplest executable SQL that satisfies the tier instead of making the query harder for its own sake.",
+                ]
+            )
+
+        lines.append("Structured constraints:")
+        lines.append(self._stable_json_text(structural_constraints))
+        return "\n".join(lines)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:
         rendered = template_text

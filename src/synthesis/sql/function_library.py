@@ -30,6 +30,14 @@ SPATIAL_FUNCTION_BLACKLIST = {
     "st_box2dfromgeohash",
 }
 
+STRUCTURAL_EXCLUDE_TOKENS = (
+    "reference_management",
+    "reference_version",
+    "extras_address_standardizer",
+    "extras_tigergeocoder",
+    "debug",
+)
+
 CATEGORY_BY_NAME_PATTERN: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^st_(contains|within|intersects|touches|crosses|overlaps|covers|coveredby|disjoint)$", re.I), "spatial_predicate"),
     (re.compile(r"^st_(dwithin|intersects|contains|within|touches|crosses|overlaps)$", re.I), "spatial_join"),
@@ -40,6 +48,58 @@ CATEGORY_BY_NAME_PATTERN: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^st_(transform|setsrid|srid)$", re.I), "coordinate_operation"),
     (re.compile(r"^st_(geometrytype|x|max|xmin|xmax|y|min|ymin|ymax|npoints|startpoint|endpoint|srid|isempty|isvalid)$", re.I), "geometry_accessor"),
     (re.compile(r"^st_(lineinterpolatepoint|linesubstring|locatealong|locatebetween)$", re.I), "linear_referencing"),
+]
+
+FIXED_SPATIAL_JOIN_FUNCTION_SPECS: list[dict[str, Any]] = [
+    {
+        "function_name": "ST_DWithin",
+        "signature": "ST_DWithin(geometry geom1, geometry geom2, double precision distance)",
+        "categories": ["spatial_join"],
+        "description": "True when two geometries are within a given distance.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Intersects",
+        "signature": "ST_Intersects(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when two geometries intersect.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Contains",
+        "signature": "ST_Contains(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when geometry A contains geometry B.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Within",
+        "signature": "ST_Within(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when geometry A is within geometry B.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Overlaps",
+        "signature": "ST_Overlaps(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when two geometries overlap.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Touches",
+        "signature": "ST_Touches(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when two geometries touch at the boundary.",
+        "example_usages": [],
+    },
+    {
+        "function_name": "ST_Crosses",
+        "signature": "ST_Crosses(geometry geomA, geometry geomB)",
+        "categories": ["spatial_join"],
+        "description": "True when two geometries cross.",
+        "example_usages": [],
+    },
 ]
 
 
@@ -56,6 +116,61 @@ def infer_function_categories(function_name: str, description: str = "", chapter
     if not categories:
         categories.append("geometry_transformation")
     return unique_preserve_order(categories)
+
+
+def fixed_spatial_join_function_names() -> list[str]:
+    return [
+        to_text(item.get("function_name"))
+        for item in FIXED_SPATIAL_JOIN_FUNCTION_SPECS
+        if to_text(item.get("function_name"))
+    ]
+
+
+def build_required_function_constraints(
+    sampled_functions: Sequence[Mapping[str, Any] | PostGISFunction],
+    difficulty_level: str,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    def _normalize_item(item: Mapping[str, Any] | PostGISFunction) -> dict[str, Any]:
+        if isinstance(item, PostGISFunction):
+            payload = item.to_dict()
+        else:
+            payload = {
+                "function_name": item.get("function_name"),
+                "signature": item.get("signature"),
+                "categories": item.get("categories"),
+                "description": item.get("description"),
+                "example_usages": item.get("example_usages"),
+            }
+        return {
+            "function_name": to_text(payload.get("function_name")),
+            "signature": to_text(payload.get("signature")),
+            "categories": stable_jsonify(payload.get("categories")) or [],
+            "description": to_text(payload.get("description")),
+            "example_usages": stable_jsonify(payload.get("example_usages")) or [],
+        }
+
+    def _add_item(item: Mapping[str, Any] | PostGISFunction) -> None:
+        normalized = _normalize_item(item)
+        function_name = normalized["function_name"]
+        if not function_name:
+            return
+        lowered = function_name.lower()
+        if lowered in seen_names:
+            return
+        seen_names.add(lowered)
+        merged.append(normalized)
+
+    for item in sampled_functions:
+        _add_item(item)
+
+    if difficulty_level in {"medium", "hard", "extra-hard"}:
+        for item in FIXED_SPATIAL_JOIN_FUNCTION_SPECS:
+            _add_item(item)
+
+    return merged
 
 
 def infer_compatible_difficulties(categories: Sequence[str]) -> list[str]:
@@ -78,6 +193,14 @@ def _truncate_text(value: str, max_chars: int) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
+def _normalize_function_id(value: Any) -> str:
+    text = to_text(value).strip().lower()
+    if not text:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "_", text)
+    return normalized.strip("_")
+
+
 def _normalize_signature(function_name: str, signature: str, input_args: Sequence[str]) -> str:
     text = to_text(signature)
     if text:
@@ -90,11 +213,13 @@ def _should_exclude_function(
     function_name: str,
     description: str,
     chapter_info: str,
+    source_file: str,
     categories: Sequence[str],
     exclude_categories: Sequence[str],
 ) -> bool:
     lowered_name = function_name.lower()
     lowered_text = f"{description} {chapter_info} {' '.join(categories)}".lower()
+    structural_text = f"{chapter_info} {source_file}".lower()
     if not lowered_name.startswith("st_"):
         return True
     if lowered_name in SPATIAL_FUNCTION_BLACKLIST:
@@ -103,7 +228,7 @@ def _should_exclude_function(
         return True
     if "raster" in lowered_text or "topology" in lowered_text:
         return True
-    if any(token in lowered_text for token in ("version", "management", "metadata", "debug", "extension", "address_standardizer")):
+    if any(token in structural_text for token in STRUCTURAL_EXCLUDE_TOKENS):
         return True
     return False
 
@@ -141,13 +266,20 @@ class PostGISFunctionLibrary:
     ) -> "PostGISFunctionLibrary":
         exclude_categories = [to_text(item).lower() for item in (exclude_categories or ["raster", "topology"]) if to_text(item)]
         merged: dict[tuple[str, str], PostGISFunction] = {}
+        keys_by_function_id: dict[str, list[tuple[str, str]]] = {}
 
         for item in cls._load_from_json(json_path, exclude_categories):
-            merged[(item.function_name.lower(), item.signature.lower())] = item
+            key = (item.function_name.lower(), item.signature.lower())
+            merged[key] = item
+            function_id = _normalize_function_id(item.metadata.get("function_id") or item.function_name)
+            if function_id:
+                keys_by_function_id.setdefault(function_id, []).append(key)
 
         markdown_functions = cls._load_from_markdown(markdown_path)
         for item in markdown_functions:
-            matched = [key for key in merged if key[0] == item.function_name.lower()]
+            matched = list(keys_by_function_id.get(_normalize_function_id(item.metadata.get("function_id")), []))
+            if not matched:
+                matched = [key for key in merged if key[0] == item.function_name.lower()]
             if matched:
                 for key in matched:
                     existing = merged[key]
@@ -157,7 +289,10 @@ class PostGISFunctionLibrary:
                         **stable_jsonify(item.metadata),
                     }
             else:
-                merged[(item.function_name.lower(), item.signature.lower())] = item
+                LOGGER.warning(
+                    "Skipping ST_Function-only function %s because no matching extracted PostGIS documentation was found.",
+                    item.function_name,
+                )
 
         functions = list(merged.values())
         if not functions:
@@ -198,7 +333,14 @@ class PostGISFunctionLibrary:
                     input_args,
                 )
                 categories = infer_function_categories(function_name, description, chapter_info)
-                if _should_exclude_function(function_name, description, chapter_info, categories, exclude_categories):
+                if _should_exclude_function(
+                    function_name,
+                    description,
+                    chapter_info,
+                    source_file,
+                    categories,
+                    exclude_categories,
+                ):
                     continue
                 items.append(
                     PostGISFunction(
@@ -213,7 +355,7 @@ class PostGISFunctionLibrary:
                         source=["postgis_extracted.json"],
                         metadata={
                             "chapter_info": chapter_info,
-                            "function_id": record.get("function_id"),
+                            "function_id": _normalize_function_id(record.get("function_id") or function_name),
                             "source_file": source_file,
                         },
                     )
@@ -247,12 +389,15 @@ class PostGISFunctionLibrary:
                     signature=f"{function_name}(...)",
                     input_args=[],
                     return_type="",
-                    description="Function referenced in ST_Function.md.",
+                    description="",
                     example_usages=[],
                     categories=categories,
                     compatible_difficulties=infer_compatible_difficulties(categories),
                     source=["ST_Function.md"],
-                    metadata={"datasets": sorted(datasets)},
+                    metadata={
+                        "datasets": sorted(datasets),
+                        "function_id": _normalize_function_id(function_name),
+                    },
                 )
             )
         return functions

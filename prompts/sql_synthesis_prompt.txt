@@ -1,8 +1,6 @@
-You are generating a single PostgreSQL/PostGIS SQL query for synthetic dataset construction.
-
-## Task Goal
-Generate exactly one executable PostgreSQL/PostGIS read-only SQL query for database "{{database_id}}".
-The query must be spatially meaningful, executable, and consistent with the requested difficulty level.
+Generate exactly one executable read-only PostgreSQL/PostGIS SQL query for synthetic dataset construction on database "{{database_id}}".
+The query must be spatially meaningful, semantically plausible, executable, and consistent with the requested difficulty level.
+Prefer the simplest coherent query that satisfies the difficulty requirement and returns a high-value spatial result.
 
 ## Database Context
 - database_id: {{database_id}}
@@ -21,24 +19,52 @@ The query must be spatially meaningful, executable, and consistent with the requ
 ## Difficulty Constraint
 {{difficulty_constraint_block}}
 
+Treat the difficulty block as authoritative.
+Interpret the difficulty tiers strictly:
+- easy = one-table spatial filter or lookup
+- medium = two tables with one spatial join
+- hard = three tables with two spatial joins
+- extra-hard = three to four tables, at least one spatial join, and total spatial joins plus nested queries between two and four
+
+When the difficulty requires an exact number of tables or spatial joins, do not underuse or overuse them.
+For extra-hard, use nested structure only when it is semantically necessary; do not add gratuitous joins or nesting.
+
 ## Required PostGIS Function Constraints
-Use at least one sampled PostGIS function. Prefer using all compatible sampled functions when possible.
 {{required_function_block}}
 
-## Composition Requirements
-- Use only the tables and columns listed in the schema section.
-- Do not invent any table names, column names, or PostGIS functions.
-- The SQL must satisfy the target difficulty level: {{difficulty_level}}.
+Use only PostGIS functions listed in the required function block.
+Use at least one compatible sampled function when possible.
+Select the minimum compatible subset needed for one coherent executable SQL query.
+A function is compatible only if its argument types, argument order, and spatial intent match the available schema.
+Do not introduce, substitute, recommend, or use any PostGIS function that is not explicitly provided.
+If no sampled function can be used naturally or safely, generate the simplest executable query supported by the schema without inventing additional PostGIS functions.
+
+## SQL Construction Requirements
+- Use only schema-listed tables and columns.
+- Spatial columns must come directly from the schema; do not assume a generic geom column.
 - Use table aliases for multi-table queries.
 - Use PostgreSQL/PostGIS syntax only.
-- Respect the exact PostGIS column types from the live database metadata. Geometry and geography are different types; do not assume they are interchangeable without an explicit cast.
-- Do not use raster or topology related functions.
 - Do not generate DDL, DML, transaction control, or administrative SQL.
 - Generate one SQL query only.
-- The query must return no more than 5 rows.
-- If the query's semantics already guarantee a single-row result (for example: an aggregate such as COUNT/MAX, a query that selects by primary key or otherwise clearly filters to one row), do NOT add a LIMIT clause.
-- Otherwise, to ensure the result set is bounded, include a trailing "LIMIT 5" clause on the generated SQL.
-- The SQL should be semantically plausible for the available tables and spatial columns.
+- Every JOIN must have a complete and executable ON condition.
+- Prefer direct base-table joins and inline expressions. Avoid unnecessary CTEs, derived tables, and intermediate aliases unless essential for the requested difficulty.
+- Return only semantically meaningful columns needed for the task; do not use `SELECT *` or dump every column.
+- If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
+- Return at most 5 rows. Add `LIMIT 5` unless the query is guaranteed to return a single row, such as a scalar aggregate or primary-key lookup.
+
+## PostGIS Semantics Requirements
+- Respect geometry/geography types and function signatures exactly.
+- Do not mix geometry and geography unless an explicit, semantically correct cast is used.
+- Preserve SRID consistency; do not invent SRIDs or projected CRSs.
+- For geometry columns in geographic CRSs such as EPSG:4326, do not interpret raw distance values as meters unless using a valid geography cast or a provided projected CRS.
+- For "within", "inside", or "located in", ensure predicate direction is correct: the smaller feature is the first argument of ST_Within(A, B), while the containing feature is the first argument of ST_Contains(A, B).
+- Use spatial predicates only when their semantics match the intended relation exactly; do not substitute ST_Overlaps, ST_Within, or ST_Intersects for each other.
+- For "near", "nearby", or "within distance", use ST_DWithin only when the threshold and units are valid for the column type and CRS. Do not fabricate arbitrary thresholds merely to make a join return rows.
+- For "closest" or "nearest", prefer ordering by ST_Distance instead of using an arbitrary ST_DWithin threshold.
+- For area, length, perimeter, centroid, buffer, bbox, or accessor functions, use them only when meaningful for the selected table and geometry type.
+- If the required function is a low-level accessor or bbox function, use it in a meaningful comparison, ranking, aggregation, or filter rather than a trivial geometry dump.
+
+Before finalizing, verify that all referenced tables, columns, function signatures, spatial predicate directions, and join conditions are valid and minimal.
 
 ## Output Format
 Return a JSON object only, without Markdown code fences.

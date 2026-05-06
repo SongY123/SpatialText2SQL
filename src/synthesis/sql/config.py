@@ -54,7 +54,7 @@ class SQLSynthesisFunctionConfig:
 @dataclass(frozen=True)
 class SQLExecutionCheckConfig:
     enable_execution_check: bool = True
-    require_non_empty_result: bool = True
+    require_non_empty_result: bool = False
     max_result_rows_for_check: int = 20
     execution_timeout: int = 60
     dry_run: bool = False

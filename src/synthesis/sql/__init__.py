@@ -21,7 +21,15 @@ from .generator import (
     SQLGeneratorResponse,
     build_sql_generator,
 )
-from .io import load_input_databases, write_sql_queries
+from .io import (
+    append_sql_queries,
+    append_sql_query,
+    ensure_sql_output,
+    initialize_sql_output,
+    load_input_databases,
+    load_existing_sql_id_offsets,
+    write_sql_queries,
+)
 from .models import (
     DIFFICULTY_LEVELS,
     PostGISFunction,
@@ -62,7 +70,12 @@ __all__ = [
     "contains_dangerous_sql",
     "build_sql_generator",
     "infer_function_categories",
+    "append_sql_queries",
+    "append_sql_query",
+    "ensure_sql_output",
+    "initialize_sql_output",
     "load_input_databases",
+    "load_existing_sql_id_offsets",
     "load_sql_synthesis_config",
     "override_sql_synthesis_config",
     "parse_sql_generation_response",

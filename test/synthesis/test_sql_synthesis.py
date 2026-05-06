@@ -22,6 +22,10 @@ from src.synthesis.sql import (
     SQLValidator,
     build_sql_generator,
     contains_dangerous_sql,
+    append_sql_query,
+    ensure_sql_output,
+    initialize_sql_output,
+    load_existing_sql_id_offsets,
     load_sql_synthesis_config,
     override_sql_synthesis_config,
     parse_sql_generation_response,
@@ -110,6 +114,21 @@ def _sample_function_json_payload():
             "examples": [{"steps": [{"sql": "SELECT ST_Union(a.geom, b.geom) FROM a JOIN b ON true;"}]}],
         },
         {
+            "function_id": "st_contains",
+            "chapter_info": "reference_relationship",
+            "source_file": "reference_relationship.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Contains",
+                    "return_type": "boolean",
+                    "arguments": ["geometry geomA", "geometry geomB"],
+                    "signature_str": "ST_Contains(geometry geomA, geometry geomB)",
+                }
+            ],
+            "description": "Returns true if geometry A contains geometry B.",
+            "examples": [{"steps": [{"sql": "SELECT ST_Contains(a.geom, b.geom) FROM a JOIN b ON true;"}]}],
+        },
+        {
             "function_id": "st_asraster",
             "chapter_info": "reference_raster",
             "source_file": "reference_raster.xml",
@@ -173,7 +192,7 @@ def _make_config(**kwargs) -> SQLSynthesisConfig:
             keep_failed_execution=False,
         ),
         functions=SQLSynthesisFunctionConfig(postgis_function_json_path="", st_function_markdown_path=""),
-        execution=SQLExecutionCheckConfig(enable_execution_check=True, require_non_empty_result=True),
+        execution=SQLExecutionCheckConfig(enable_execution_check=True, require_non_empty_result=False),
         logging=SQLSynthesisLoggingConfig(),
     )
     return override_sql_synthesis_config(
@@ -202,7 +221,9 @@ class FakePromptMetadataProvider:
         self.calls = []
 
     def load_database_metadata(self, database):
-        self.calls.append(database.database_id)
+        self.calls.append((database.database_id, list(database.selected_table_names)))
+        if callable(self.payload):
+            return self.payload(database)
         return self.payload
 
 
@@ -245,6 +266,72 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(overridden.llm.model, "override-model")
         self.assertTrue(overridden.synthesis.output_path.endswith("override.jsonl"))
         self.assertEqual(loaded.synthesis.num_sql_per_database, {"nyc": 8, "sf": 4})
+
+    def test_sql_output_is_appended_incrementally(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "sql.jsonl"
+            initialize_sql_output(str(output_path))
+            row1 = type(
+                "Row",
+                (),
+                {
+                    "to_dict": lambda self: {"sql_id": "a", "sql": "SELECT 1"},
+                },
+            )()
+            row2 = type(
+                "Row",
+                (),
+                {
+                    "to_dict": lambda self: {"sql_id": "b", "sql": "SELECT 2"},
+                },
+            )()
+            append_sql_query(str(output_path), row1)
+            lines_after_first = output_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines_after_first), 1)
+            append_sql_query(str(output_path), row2)
+            lines_after_second = output_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines_after_second), 2)
+            self.assertIn('"sql_id": "a"', lines_after_second[0])
+            self.assertIn('"sql_id": "b"', lines_after_second[1])
+
+    def test_ensure_sql_output_preserves_existing_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "sql.jsonl"
+            output_path.write_text('{"sql_id":"existing","sql":"SELECT 0"}\n', encoding="utf-8")
+            row = type(
+                "Row",
+                (),
+                {
+                    "to_dict": lambda self: {"sql_id": "new", "sql": "SELECT 1"},
+                },
+            )()
+
+            ensure_sql_output(str(output_path))
+            append_sql_query(str(output_path), row)
+
+            lines = output_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertIn('"sql_id":"existing"', lines[0])
+            self.assertIn('"sql_id": "new"', lines[1])
+
+    def test_load_existing_sql_id_offsets_tracks_max_suffix_per_database(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "sql.jsonl"
+            output_path.write_text(
+                "\n".join(
+                    [
+                        '{"sql_id":"nyc_0001_0002","database_id":"nyc_0001","sql":"SELECT 1"}',
+                        '{"sql_id":"nyc_0001_0005","database_id":"nyc_0001","sql":"SELECT 2"}',
+                        '{"sql_id":"sf_0001_0003","sql":"SELECT 3"}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            offsets = load_existing_sql_id_offsets(str(output_path))
+
+            self.assertEqual(offsets, {"nyc_0001": 5, "sf_0001": 3})
 
     def test_build_sql_generator_supports_ollama_provider(self):
         generator = build_sql_generator(
@@ -364,6 +451,21 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertNotIn("ST_AsRaster", names)
         self.assertNotIn("ST_TopologyThing", names)
 
+        buffer_items = [item for item in library.functions if item.function_name == "ST_Buffer"]
+        self.assertTrue(buffer_items)
+        self.assertIn("ST_Function.md", buffer_items[0].source)
+        self.assertEqual(
+            buffer_items[0].description,
+            "Returns a geometry covering points within the given radius.",
+        )
+        contains_items = [item for item in library.functions if item.function_name == "ST_Contains"]
+        self.assertTrue(contains_items)
+        self.assertIn("ST_Function.md", contains_items[0].source)
+        self.assertEqual(
+            contains_items[0].description,
+            "Returns true if geometry A contains geometry B.",
+        )
+
     def test_function_sampling_and_seed_reproducibility(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             json_path = Path(tmpdir) / "postgis.json"
@@ -399,6 +501,89 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(sampled[0].function_name, "ST_Buffer")
         self.assertIn("ST_Function.md", sampled[0].source)
 
+    def test_function_library_matches_markdown_entries_by_function_id(self):
+        payload = [
+            {
+                "function_id": "st_intersects",
+                "chapter_info": "reference_relationship",
+                "source_file": "reference_relationship.xml",
+                "function_definitions": [
+                    {
+                        "function_name": "ST_IntersectsGeometry",
+                        "return_type": "boolean",
+                        "arguments": ["geometry geom1", "geometry geom2"],
+                        "signature_str": "ST_IntersectsGeometry(geometry geom1, geometry geom2)",
+                    },
+                    {
+                        "function_name": "ST_IntersectsGeography",
+                        "return_type": "boolean",
+                        "arguments": ["geography geog1", "geography geog2"],
+                        "signature_str": "ST_IntersectsGeography(geography geog1, geography geog2)",
+                    },
+                ],
+                "description": "Returns true if two spatial objects intersect.",
+                "examples": [],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "postgis.json"
+            md_path = Path(tmpdir) / "ST_Function.md"
+            json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            md_path.write_text("## spatialsql_pg\nST_Intersects\n", encoding="utf-8")
+            library = PostGISFunctionLibrary.load(json_path, md_path, ["raster", "topology"])
+
+        intersect_items = [item for item in library.functions if item.metadata.get("function_id") == "st_intersects"]
+        self.assertEqual(len(intersect_items), 2)
+        for item in intersect_items:
+            self.assertIn("ST_Function.md", item.source)
+
+    def test_function_library_does_not_exclude_valid_functions_with_version_text_in_description(self):
+        payload = [
+            {
+                "function_id": "ST_IsValid",
+                "chapter_info": "reference_validation",
+                "source_file": "reference_validation.xml",
+                "function_definitions": [
+                    {
+                        "function_name": "ST_IsValid",
+                        "return_type": "boolean",
+                        "arguments": ["geometry g"],
+                        "signature_str": "ST_IsValid(geometry g)",
+                    }
+                ],
+                "description": "Tests geometry validity. The flag is a PostGIS extension. The version accepting flags is available starting with 2.0.0.",
+                "examples": [],
+            },
+            {
+                "function_id": "PostGIS_Extensions_Upgrade",
+                "chapter_info": "reference_version",
+                "source_file": "reference_version.xml",
+                "function_definitions": [
+                    {
+                        "function_name": "PostGIS_Extensions_Upgrade",
+                        "return_type": "text",
+                        "arguments": [],
+                        "signature_str": "PostGIS_Extensions_Upgrade()",
+                    }
+                ],
+                "description": "Upgrade helper.",
+                "examples": [],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "postgis.json"
+            md_path = Path(tmpdir) / "ST_Function.md"
+            json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            md_path.write_text("## spatialsql_pg\nST_IsValid\n", encoding="utf-8")
+            library = PostGISFunctionLibrary.load(json_path, md_path, ["raster", "topology"])
+
+        names = {item.function_name for item in library.functions}
+        self.assertIn("ST_IsValid", names)
+        self.assertNotIn("PostGIS_Extensions_Upgrade", names)
+        is_valid_items = [item for item in library.functions if item.function_name == "ST_IsValid"]
+        self.assertTrue(is_valid_items)
+        self.assertIn("ST_Function.md", is_valid_items[0].source)
+
     def test_prompt_builder_contains_required_sql_context(self):
         builder = PromptBuilder({"project_root": Path.cwd()})
         database = _make_database(table_count=2)
@@ -421,6 +606,100 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("ST_DWithin", prompt)
         self.assertIn("used_spatial_functions", prompt)
         self.assertIn("Return a JSON object only", prompt)
+        self.assertIn("do not use `SELECT *`", prompt)
+
+    def test_minor_revision_prompt_contains_error_and_involved_table_metadata(self):
+        builder = PromptBuilder({"project_root": Path.cwd()})
+        database = _make_database(table_count=2)
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "columns": [
+                        {"column_name": "id", "column_type": "integer"},
+                        {"column_name": "name", "column_type": "text"},
+                        {"column_name": "shape", "column_type": "geography(Point,4326)"},
+                    ],
+                    "spatial_fields": [
+                        {
+                            "column_name": "shape",
+                            "column_type": "geography(Point,4326)",
+                            "spatial_type": "geography",
+                            "geometry_type": "POINT",
+                            "srid": 4326,
+                        }
+                    ],
+                    "representative_values": {"name": ["hydrant", "valve"]},
+                },
+                {
+                    "table_name": "table_2",
+                    "columns": [
+                        {"column_name": "id", "column_type": "integer"},
+                    ],
+                    "spatial_fields": [],
+                    "representative_values": {"id": [1]},
+                },
+            ]
+        }
+        prompt = builder.build_sql_revision_prompt(
+            database=database,
+            original_sql="SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.shape, b.geom, 10)",
+            execution_error="operator does not exist",
+            used_tables=["table_1"],
+            database_runtime_metadata=runtime_metadata,
+        )
+        self.assertIn("operator does not exist", prompt)
+        self.assertIn("table_1(id integer, name text, shape geography(Point,4326))", prompt)
+        self.assertIn('"hydrant"', prompt)
+        self.assertNotIn("table_2(id integer)", prompt)
+
+    def test_prompt_builder_renders_explicit_difficulty_tier_guidance(self):
+        builder = PromptBuilder({"project_root": Path.cwd()})
+        database = _make_database(table_count=5)
+        prompt = builder.build_sql_synthesis_prompt(
+            database=database,
+            difficulty_level="extra-hard",
+            structural_constraints={
+                "difficulty_level": "extra-hard",
+                "difficulty_summary": "Three-to-four-table query with bounded advanced structure.",
+                "min_tables": 3,
+                "max_tables": 4,
+                "min_spatial_joins": 1,
+                "min_advanced_ops": 2,
+                "max_advanced_ops": 4,
+            },
+            sampled_functions=[],
+        )
+        self.assertIn("Use between 3 and 4 tables.", prompt)
+        self.assertIn("Include at least 1 spatial join.", prompt)
+        self.assertIn("Count each spatial join and each nested query", prompt)
+        self.assertIn("between 2 and 4", prompt)
+        self.assertIn("Prefer the simplest executable SQL that satisfies the tier", prompt)
+
+    def test_synthesizer_prompt_includes_fixed_spatial_join_functions_for_medium(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=2)
+        generator = MockSQLGenerator(
+            responses=[
+                '{"sql":"SELECT a.name FROM table_1 a JOIN table_2 b ON ST_Intersects(a.geom, b.geom) LIMIT 5","used_tables":["table_1","table_2"],"used_columns":["name","geom"],"used_spatial_functions":["ST_Intersects"],"reasoning_summary":"ok"}'
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(synthesis={"difficulty": "medium"}),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 1)
+        prompt = generator.prompts[0]
+        self.assertIn("ST_DWithin", prompt)
+        self.assertIn("ST_Intersects", prompt)
+        self.assertIn("ST_Contains", prompt)
 
     def test_prompt_builder_prefers_live_postgis_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})
@@ -462,73 +741,16 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn('"hydrant"', prompt)
         self.assertIn('"shape": "POINT"', prompt)
         self.assertIn("Geometry and geography are different types", prompt)
+        self.assertIn("complete externally supplied candidate set", prompt)
+        self.assertIn("Do not use any spatial function unless it appears explicitly", prompt)
         self.assertNotIn("geom spatial", prompt)
-
-    def test_feedback_prompt_contains_errors_and_empty_result(self):
-        builder = PromptBuilder({"project_root": Path.cwd()})
-        database = _make_database(table_count=1)
-        prompt = builder.build_sql_feedback_prompt(
-            database=database,
-            difficulty_level="easy",
-            structural_constraints={"min_tables": 1},
-            sampled_functions=[{"function_name": "ST_Buffer"}],
-            original_candidate={"sql": "SELECT * FROM missing_table"},
-            validation_errors=["Unknown tables referenced: missing_table"],
-            execution_error="relation does not exist",
-            empty_result=True,
-        )
-        self.assertIn("Unknown tables referenced", prompt)
-        self.assertIn("relation does not exist", prompt)
-        self.assertIn("empty_result: true", prompt)
-
-    def test_feedback_prompt_uses_live_postgis_metadata(self):
-        builder = PromptBuilder({"project_root": Path.cwd()})
-        database = _make_database(table_count=1)
-        runtime_metadata = {
-            "tables": [
-                {
-                    "table_name": "table_1",
-                    "columns": [
-                        {"column_name": "id", "column_type": "integer"},
-                        {"column_name": "footprint", "column_type": "geometry(MultiPolygon,3857)"},
-                    ],
-                    "spatial_fields": [
-                        {
-                            "column_name": "footprint",
-                            "column_type": "geometry(MultiPolygon,3857)",
-                            "spatial_type": "geometry",
-                            "geometry_type": "MULTIPOLYGON",
-                            "srid": 3857,
-                        }
-                    ],
-                    "representative_values": {
-                        "id": [1, 2, 3],
-                    },
-                }
-            ]
-        }
-        prompt = builder.build_sql_feedback_prompt(
-            database=database,
-            difficulty_level="easy",
-            structural_constraints={"min_tables": 1},
-            sampled_functions=[{"function_name": "ST_Buffer"}],
-            original_candidate={"sql": "SELECT * FROM t"},
-            validation_errors=["x"],
-            execution_error="boom",
-            empty_result=False,
-            database_runtime_metadata=runtime_metadata,
-        )
-        self.assertIn("footprint geometry(MultiPolygon,3857)", prompt)
-        self.assertIn("geometry_type=MULTIPOLYGON", prompt)
-        self.assertIn('"id": 1', prompt)
-        self.assertIn("geometry/geography signature mismatches", prompt)
 
     def test_response_parser_supports_json_and_markdown_json(self):
         plain = parse_sql_generation_response(
             '{"sql":"SELECT ST_Buffer(geom, 10) FROM table_1","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}'
         )
         fenced = parse_sql_generation_response(
-            "```json\n{\"sql\":\"SELECT ST_DWithin(a.geom,b.geom,10) FROM table_1 a JOIN table_2 b ON true\",\"used_tables\":[\"table_1\",\"table_2\"],\"used_columns\":[\"geom\"],\"used_spatial_functions\":[\"ST_DWithin\"],\"reasoning_summary\":\"ok\"}\n```"
+            "```json\n{\"sql\":\"SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom,b.geom,10) LIMIT 5\",\"used_tables\":[\"table_1\",\"table_2\"],\"used_columns\":[\"name\",\"geom\"],\"used_spatial_functions\":[\"ST_DWithin\"],\"reasoning_summary\":\"ok\"}\n```"
         )
         self.assertEqual(plain.used_spatial_functions, ["ST_Buffer"])
         self.assertEqual(fenced.used_tables, ["table_1", "table_2"])
@@ -559,6 +781,80 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         self.assertTrue(valid.is_valid)
         self.assertIn("ST_Buffer", valid.detected_spatial_functions)
+        extra_function = validator.validate(
+            sql="SELECT ST_Buffer(t.geom, 10), ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 5",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+        )
+        self.assertFalse(extra_function.is_valid)
+        self.assertTrue(
+            any("outside the externally provided candidate set" in item for item in extra_function.errors)
+        )
+
+    def test_validator_rejects_medium_query_without_spatial_join(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=2)
+        result = validator.validate(
+            sql="SELECT ST_Buffer(a.geom, 10) FROM table_1 a JOIN table_2 b ON a.id = b.id LIMIT 5",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="medium",
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("exactly one spatial join" in item for item in result.errors))
+
+    def test_validator_allows_fixed_spatial_join_functions_for_medium(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=2)
+        result = validator.validate(
+            sql="SELECT a.name FROM table_1 a JOIN table_2 b ON ST_Intersects(a.geom, b.geom) LIMIT 5",
+            database=database,
+            sampled_functions=["ST_DWithin"],
+            difficulty_level="medium",
+        )
+        self.assertTrue(result.is_valid)
+        self.assertFalse(
+            any("outside the externally provided candidate set" in item for item in result.errors)
+        )
+
+    def test_validator_rejects_hard_query_without_two_spatial_joins(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=3)
+        result = validator.validate(
+            sql=(
+                "SELECT a.name FROM table_1 a "
+                "JOIN table_2 b ON ST_Contains(a.geom, b.geom) "
+                "JOIN table_3 c ON b.id = c.id "
+                "LIMIT 5"
+            ),
+            database=database,
+            sampled_functions=["ST_Contains"],
+            difficulty_level="hard",
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("exactly two spatial joins" in item for item in result.errors))
+
+    def test_validator_rejects_extra_hard_query_below_minimum_advanced_ops(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=3)
+        result = validator.validate(
+            sql=(
+                "SELECT a.name FROM table_1 a "
+                "JOIN table_2 b ON ST_Contains(a.geom, b.geom) "
+                "JOIN table_3 c ON b.id = c.id "
+                "LIMIT 5"
+            ),
+            database=database,
+            sampled_functions=["ST_Contains"],
+            difficulty_level="extra-hard",
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("between two and four operations in total" in item for item in result.errors))
 
     def test_validator_prefers_live_postgis_schema_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -599,7 +895,7 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertFalse(result.executed)
 
-    def test_end_to_end_synthesizer_revises_after_execution_error(self):
+    def test_end_to_end_synthesizer_repairs_non_timeout_execution_error_once(self):
         library = _load_library([_sample_function_json_payload()[0]], "## spatialsql_pg\nST_DWithin\n")
         database = _make_database(table_count=2)
         config = _make_config()
@@ -607,7 +903,7 @@ class SQLSynthesisTests(unittest.TestCase):
             responses=[
                 json.dumps(
                     {
-                        "sql": "SELECT ST_DWithin(a.geom, b.geom, 10) FROM table_1 a JOIN table_2 b ON true WHERE a.name = 'x'",
+                        "sql": "SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom, b.geom, 10) WHERE a.name = 'x' LIMIT 5",
                         "used_tables": ["table_1", "table_2"],
                         "used_columns": ["geom", "name"],
                         "used_spatial_functions": ["ST_DWithin"],
@@ -616,11 +912,11 @@ class SQLSynthesisTests(unittest.TestCase):
                 ),
                 json.dumps(
                     {
-                        "sql": "SELECT ST_DWithin(a.geom, b.geom, 1000) FROM table_1 a JOIN table_2 b ON true LIMIT 5",
+                        "sql": "SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom, b.geom, 1000) LIMIT 5",
                         "used_tables": ["table_1", "table_2"],
-                        "used_columns": ["geom"],
+                        "used_columns": ["name", "geom"],
                         "used_spatial_functions": ["ST_DWithin"],
-                        "reasoning_summary": "second try",
+                        "reasoning_summary": "minor fix",
                     }
                 ),
             ]
@@ -630,7 +926,7 @@ class SQLSynthesisTests(unittest.TestCase):
         execution_checker = FakeExecutionChecker(
             [
                 SQLExecutionResult(executed=True, success=False, error_message="operator does not exist"),
-                SQLExecutionResult(executed=True, success=True, row_count=1, sample_rows=[{"st_dwithin": True}], execution_time_ms=10.0),
+                SQLExecutionResult(executed=True, success=True, row_count=1, sample_rows=[{"name": "ok"}], execution_time_ms=5.0),
             ]
         )
         synthesizer = ConstraintGuidedSQLSynthesizer(
@@ -644,8 +940,60 @@ class SQLSynthesisTests(unittest.TestCase):
         rows = synthesizer.synthesize_for_database(database)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].revision_rounds, 1)
-        self.assertIn("operator does not exist", rows[0].feedback_prompts[0])
+        self.assertEqual(rows[0].feedback_prompts, [])
+        self.assertEqual(len(rows[0].minor_revision_prompts), 1)
+        self.assertIn("operator does not exist", rows[0].minor_revision_prompts[0])
+        self.assertIn("table_1_sample", rows[0].minor_revision_prompts[0])
         self.assertIn("1000", rows[0].sql)
+        self.assertTrue(rows[0].execution_result["success"])
+        self.assertEqual(len(generator.prompts), 2)
+
+    def test_synthesizer_continues_sql_id_from_existing_offsets(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=1)
+        config = _make_config(synthesis={"num_sql_per_database": {"default": 2}, "difficulty": "easy"})
+        generator = MockSQLGenerator(
+            responses=[
+                json.dumps(
+                    {
+                        "sql": "SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 5",
+                        "used_tables": ["table_1"],
+                        "used_columns": ["geom"],
+                        "used_spatial_functions": ["ST_Buffer"],
+                        "reasoning_summary": "first",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "sql": "SELECT ST_Buffer(t.geom, 20) FROM table_1 t LIMIT 5",
+                        "used_tables": ["table_1"],
+                        "used_columns": ["geom"],
+                        "used_spatial_functions": ["ST_Buffer"],
+                        "reasoning_summary": "second",
+                    }
+                ),
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=config,
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [
+                    SQLExecutionResult(executed=True, success=True, row_count=1),
+                    SQLExecutionResult(executed=True, success=True, row_count=1),
+                ]
+            ),
+            existing_sql_id_offsets={"nyc_0001": 5},
+        )
+
+        rows = synthesizer.synthesize_for_database(database)
+
+        self.assertEqual([row.sql_id for row in rows], ["nyc_0001_0006", "nyc_0001_0007"])
 
     def test_synthesizer_logs_city_schema_function_and_progress(self):
         library = _load_library([_sample_function_json_payload()[0]], "## spatialsql_pg\nST_DWithin\n")
@@ -655,9 +1003,9 @@ class SQLSynthesisTests(unittest.TestCase):
             responses=[
                 json.dumps(
                     {
-                        "sql": "SELECT ST_DWithin(a.geom, b.geom, 10) FROM table_1 a JOIN table_2 b ON true",
+                        "sql": "SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom, b.geom, 10) LIMIT 5",
                         "used_tables": ["table_1", "table_2"],
-                        "used_columns": ["geom"],
+                        "used_columns": ["name", "geom"],
                         "used_spatial_functions": ["ST_DWithin"],
                         "reasoning_summary": "ok",
                     }
@@ -678,14 +1026,14 @@ class SQLSynthesisTests(unittest.TestCase):
             rows = synthesizer.synthesize_for_database(database)
         self.assertEqual(len(rows), 1)
         log_text = "\n".join(captured.output)
-        self.assertIn("LLM prompt | sample=nyc/nyc_0001/sql_0001 | round=1/2", log_text)
-        self.assertIn("## Task Goal", log_text)
+        self.assertIn("LLM prompt | sample=nyc/nyc_0001/sql_0001 | round=1/1", log_text)
+        self.assertIn("## Database Context", log_text)
         self.assertIn("SQL synthesis progress 1/1", log_text)
         self.assertIn("city=nyc", log_text)
         self.assertIn("schema_id=nyc_0001", log_text)
         self.assertIn("spatial_functions=ST_DWithin", log_text)
 
-    def test_empty_result_triggers_feedback_and_keep_controls(self):
+    def test_empty_result_is_kept_without_feedback_retry(self):
         library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
         database = _make_database(table_count=1)
         from src.synthesis.sql.models import SQLExecutionResult
@@ -701,21 +1049,11 @@ class SQLSynthesisTests(unittest.TestCase):
                         "reasoning_summary": "first try",
                     }
                 ),
-                json.dumps(
-                    {
-                        "sql": "SELECT ST_Buffer(t.geom, 100) FROM table_1 t LIMIT 5",
-                        "used_tables": ["table_1"],
-                        "used_columns": ["geom"],
-                        "used_spatial_functions": ["ST_Buffer"],
-                        "reasoning_summary": "second try",
-                    }
-                ),
             ]
         )
         execution_checker = FakeExecutionChecker(
             [
-                SQLExecutionResult(executed=True, success=False, empty_result=True, error_message="SQL executed successfully but returned no rows."),
-                SQLExecutionResult(executed=True, success=True, row_count=1, sample_rows=[{"geom": "x"}]),
+                SQLExecutionResult(executed=True, success=True, empty_result=True, row_count=0, sample_rows=[]),
             ]
         )
         synthesizer = ConstraintGuidedSQLSynthesizer(
@@ -728,8 +1066,10 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         rows = synthesizer.synthesize_for_database(database)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].revision_rounds, 1)
-        self.assertIn("empty_result", rows[0].feedback_prompts[0])
+        self.assertEqual(rows[0].revision_rounds, 0)
+        self.assertEqual(rows[0].feedback_prompts, [])
+        self.assertEqual(rows[0].minor_revision_prompts, [])
+        self.assertTrue(rows[0].execution_result["empty_result"])
 
     def test_synthesizer_uses_live_postgis_metadata_in_prompt(self):
         library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
@@ -773,18 +1113,79 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         rows = synthesizer.synthesize_for_database(database)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(provider.calls, ["nyc_0001"])
+        self.assertEqual(provider.calls, [("nyc_0001", ["table_1"])])
         self.assertIn("shape geography(Point,4326)", generator.prompts[0])
         self.assertIn('"hydrant"', generator.prompts[0])
         self.assertNotIn("geom spatial", generator.prompts[0])
+
+    def test_prompt_uses_difficulty_selected_table_subset(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=4, database_id="nyc_0001")
+        generator = MockSQLGenerator(
+            responses=[
+                '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}'
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        provider = FakePromptMetadataProvider(
+            lambda db: {
+                "tables": [
+                    {
+                        "table_name": table.table_name,
+                        "columns": [
+                            {"column_name": "id", "column_type": "integer"},
+                            {"column_name": "name", "column_type": "text"},
+                            {"column_name": "geom", "column_type": "geometry(Point,4326)"},
+                        ],
+                        "spatial_fields": [
+                            {
+                                "column_name": "geom",
+                                "column_type": "geometry(Point,4326)",
+                                "spatial_type": "geometry",
+                                "geometry_type": "POINT",
+                                "srid": 4326,
+                            }
+                        ],
+                        "representative_values": [{"name": f"{table.table_name}_sample", "geom": "POINT"}],
+                    }
+                    for table in db.selected_tables
+                ]
+            }
+        )
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(synthesis={"max_revision_rounds": 0}),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
+            prompt_metadata_provider=provider,
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(provider.calls, [("nyc_0001", ["table_1"])])
+        self.assertEqual(rows[0].generation_metadata["database_table_count"], 4)
+        self.assertEqual(rows[0].generation_metadata["prompt_table_count"], 1)
+        self.assertEqual(rows[0].generation_metadata["prompt_table_names"], ["table_1"])
+        self.assertIn("selected_tables: table_1", generator.prompts[0])
+        self.assertNotIn("table_2(id integer", generator.prompts[0])
+        self.assertNotIn("table_3(id integer", generator.prompts[0])
+        self.assertNotIn("table_4(id integer", generator.prompts[0])
+
+    def test_extra_hard_prompt_subset_allows_up_to_four_tables(self):
+        self.assertEqual(
+            ConstraintGuidedSQLSynthesizer._resolve_prompt_table_count("extra-hard", 7),
+            4,
+        )
 
     def test_random_seed_keeps_sampling_prompt_reproducible(self):
         library = _load_library([_sample_function_json_payload()[0]], "## spatialsql_pg\nST_DWithin\n")
         database = _make_database(table_count=2)
         prompt_builder_1 = PromptBuilder({"project_root": Path.cwd()})
         prompt_builder_2 = PromptBuilder({"project_root": Path.cwd()})
-        generator_1 = MockSQLGenerator(responses=['{"sql":"SELECT ST_DWithin(a.geom,b.geom,10) FROM table_1 a JOIN table_2 b ON true","used_tables":["table_1","table_2"],"used_columns":["geom"],"used_spatial_functions":["ST_DWithin"],"reasoning_summary":"ok"}'])
-        generator_2 = MockSQLGenerator(responses=['{"sql":"SELECT ST_DWithin(a.geom,b.geom,10) FROM table_1 a JOIN table_2 b ON true","used_tables":["table_1","table_2"],"used_columns":["geom"],"used_spatial_functions":["ST_DWithin"],"reasoning_summary":"ok"}'])
+        generator_1 = MockSQLGenerator(responses=['{"sql":"SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom,b.geom,10) LIMIT 5","used_tables":["table_1","table_2"],"used_columns":["name","geom"],"used_spatial_functions":["ST_DWithin"],"reasoning_summary":"ok"}'])
+        generator_2 = MockSQLGenerator(responses=['{"sql":"SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom,b.geom,10) LIMIT 5","used_tables":["table_1","table_2"],"used_columns":["name","geom"],"used_spatial_functions":["ST_DWithin"],"reasoning_summary":"ok"}'])
         config = _make_config()
         from src.synthesis.sql.models import SQLExecutionResult
 
@@ -798,37 +1199,132 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(rows1[0].spatial_function_constraints, rows2[0].spatial_function_constraints)
         self.assertEqual(generator_1.prompts[0], generator_2.prompts[0])
 
-    def test_keep_invalid_and_keep_failed_execution(self):
-        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+    def test_validation_mismatches_are_kept_but_unfixed_execution_errors_are_discarded(self):
+        library = _load_library(_sample_function_json_payload()[:3], "## spatialsql_pg\nST_Buffer\n")
         database = _make_database(table_count=1)
         invalid_generator = MockSQLGenerator(
-            responses=['{"sql":"SELECT * FROM missing_table","used_tables":["missing_table"],"used_columns":[],"used_spatial_functions":[],"reasoning_summary":"bad"}']
+            responses=['{"sql":"SELECT ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Union"],"reasoning_summary":"off-constraint but executable"}']
         )
-        synth_invalid = ConstraintGuidedSQLSynthesizer(
-            config=_make_config(synthesis={"keep_invalid": True, "max_revision_rounds": 0}),
+        from src.synthesis.sql.models import SQLExecutionResult
+        synth_warning = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(),
             function_library=library,
             sql_generator=invalid_generator,
             prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
             validator=SQLValidator(library),
-            execution_checker=FakeExecutionChecker([]),
+            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
         )
-        kept_invalid = synth_invalid.synthesize_for_database(database)
-        self.assertEqual(len(kept_invalid), 1)
+        kept_warning = synth_warning.synthesize_for_database(database)
+        self.assertEqual(len(kept_warning), 1)
+        self.assertFalse(kept_warning[0].validation_result["is_valid"])
+        self.assertTrue(kept_warning[0].generation_metadata["retained_with_warning"])
 
         failed_exec_generator = MockSQLGenerator(
-            responses=['{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}']
+            responses=[
+                '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}',
+                '{"sql":"SELECT ST_Buffer(t.bad_geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["bad_geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"broken fix"}',
+            ]
         )
-        from src.synthesis.sql.models import SQLExecutionResult
         synth_failed_exec = ConstraintGuidedSQLSynthesizer(
-            config=_make_config(synthesis={"keep_failed_execution": True, "max_revision_rounds": 0}),
+            config=_make_config(synthesis={"max_revision_rounds": 0}),
             function_library=library,
             sql_generator=failed_exec_generator,
             prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
             validator=SQLValidator(library),
-            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=False, error_message="execution failed")]),
+            execution_checker=FakeExecutionChecker(
+                [
+                    SQLExecutionResult(executed=True, success=False, error_message="execution failed"),
+                    SQLExecutionResult(executed=True, success=False, error_message="execution failed again"),
+                ]
+            ),
         )
         kept_failed = synth_failed_exec.synthesize_for_database(database)
-        self.assertEqual(len(kept_failed), 1)
+        self.assertEqual(len(kept_failed), 0)
+        self.assertEqual(len(failed_exec_generator.prompts), 2)
+
+    def test_execution_timeout_is_discarded_without_minor_revision(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=1)
+        generator = MockSQLGenerator(
+            responses=['{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}']
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [SQLExecutionResult(executed=True, success=False, error_message="canceling statement due to statement timeout")]
+            ),
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 0)
+        self.assertEqual(len(generator.prompts), 1)
+
+    def test_obvious_write_operations_are_discarded(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=1)
+        generator = MockSQLGenerator(
+            responses=['{"sql":"DELETE FROM table_1 WHERE id = 1","used_tables":["table_1"],"used_columns":["id"],"used_spatial_functions":[],"reasoning_summary":"bad write"}']
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [
+                    SQLExecutionResult(
+                        executed=False,
+                        success=False,
+                        error_message="Refused to execute non-read-only SQL.",
+                    )
+                ]
+            ),
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 0)
+        self.assertEqual(len(generator.prompts), 1)
+
+    def test_synthesizer_run_stats_track_generated_and_retained_counts(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database_1 = _make_database(table_count=1, database_id="nyc_0001")
+        database_2 = _make_database(table_count=1, database_id="nyc_0002")
+        generator = MockSQLGenerator(
+            responses=[
+                '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}',
+                '{"sql":"SELECT ST_Buffer(t.geom, 20) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"fails execution"}',
+                '{"sql":"SELECT ST_Buffer(t.bad_geom, 20) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["bad_geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"still broken"}',
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [
+                    SQLExecutionResult(executed=True, success=True, row_count=1),
+                    SQLExecutionResult(executed=True, success=False, error_message="execution failed"),
+                    SQLExecutionResult(executed=True, success=False, error_message="execution failed again"),
+                ]
+            ),
+        )
+        rows = synthesizer.synthesize_all([database_1, database_2])
+        stats = synthesizer.get_run_stats()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(stats["generated_total"], 2)
+        self.assertEqual(stats["retained_total"], 1)
+        self.assertEqual(stats["generated_by_difficulty"]["easy"], 2)
+        self.assertEqual(stats["retained_by_difficulty"]["easy"], 1)
 
     def test_num_sql_per_database_uses_city_mapping(self):
         library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")

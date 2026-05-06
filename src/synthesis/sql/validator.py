@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence
 from src.synthesis.database.models import SynthesizedSpatialDatabase
 from src.synthesis.database.utils import to_text
 
-from .function_library import PostGISFunctionLibrary
+from .function_library import PostGISFunctionLibrary, fixed_spatial_join_function_names
 from .models import SQLValidationResult
 
 try:  # pragma: no cover - optional dependency
@@ -172,50 +172,138 @@ def _function_call_arg_counts(sql: str) -> dict[str, list[int]]:
     return arg_counts
 
 
-def _detect_difficulty_features(sql: str, detected_tables: Sequence[str]) -> dict[str, object]:
+def _iter_spatial_function_calls(sql: str) -> Iterable[tuple[str, str]]:
+    cleaned = _strip_string_literals(sql)
+    for match in re.finditer(r"\b(ST_[A-Za-z0-9_]+)\s*\(", cleaned, re.I):
+        name = match.group(1)
+        start = match.end()
+        depth = 1
+        index = start
+        while index < len(cleaned) and depth > 0:
+            char = cleaned[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            index += 1
+        if depth != 0:
+            continue
+        yield name, cleaned[start : index - 1]
+
+
+def _extract_condition_segments(sql: str) -> list[str]:
+    cleaned = _strip_string_literals(sql)
+    segments: list[str] = []
+    join_pattern = re.compile(
+        r"\bjoin\b.*?\bon\b(?P<condition>.*?)(?=\bjoin\b|\bwhere\b|\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\blimit\b|\bunion\b|\bintersect\b|\bexcept\b|$)",
+        re.I | re.S,
+    )
+    where_pattern = re.compile(
+        r"\bwhere\b(?P<condition>.*?)(?=\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\blimit\b|\bunion\b|\bintersect\b|\bexcept\b|$)",
+        re.I | re.S,
+    )
+    for pattern in (join_pattern, where_pattern):
+        for match in pattern.finditer(cleaned):
+            condition = match.group("condition").strip()
+            if condition:
+                segments.append(condition)
+    return segments
+
+
+def _referenced_tables_in_expression(expression: str, aliases: Mapping[str, str]) -> set[str]:
+    referenced: set[str] = set()
+    for qualifier, _column in re.findall(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b", expression):
+        table_name = aliases.get(qualifier, qualifier)
+        referenced.add(table_name)
+    return referenced
+
+
+def _detect_spatial_join_count(
+    sql: str,
+    aliases: Mapping[str, str],
+) -> int:
+    count = 0
+    for segment in _extract_condition_segments(sql):
+        for _name, args in _iter_spatial_function_calls(segment):
+            if len(_referenced_tables_in_expression(args, aliases)) >= 2:
+                count += 1
+    return count
+
+
+def _detect_difficulty_features(
+    sql: str,
+    detected_tables: Sequence[str],
+    aliases: Mapping[str, str],
+) -> dict[str, object]:
     lowered = sql.lower()
+    subquery_count = len(re.findall(r"\(\s*select\b", lowered))
+    cte_count = 1 if lowered.lstrip().startswith("with ") else 0
+    select_count = len(re.findall(r"\bselect\b", lowered))
     return {
         "table_count": len(set(detected_tables)),
         "join_count": len(re.findall(r"\bjoin\b", lowered)),
+        "spatial_join_count": _detect_spatial_join_count(sql, aliases),
         "has_group_by": " group by " in f" {lowered} ",
         "has_order_by": " order by " in f" {lowered} ",
         "has_limit": " limit " in f" {lowered} ",
-        "has_cte": lowered.lstrip().startswith("with "),
-        "has_subquery": bool(re.search(r"\(\s*select\b", lowered)),
+        "has_cte": cte_count > 0,
+        "cte_count": cte_count,
+        "has_subquery": subquery_count > 0,
+        "subquery_count": subquery_count,
         "has_exists": " exists " in f" {lowered} ",
         "has_set_operation": bool(re.search(r"\b(union|intersect|except)\b", lowered)),
+        "select_count": select_count,
     }
 
 
 def _difficulty_matches(target: str, features: Mapping[str, object]) -> tuple[bool, str]:
     table_count = int(features.get("table_count", 0))
     join_count = int(features.get("join_count", 0))
+    spatial_join_count = int(features.get("spatial_join_count", 0))
     has_group_by = bool(features.get("has_group_by"))
     has_cte = bool(features.get("has_cte"))
+    cte_count = int(features.get("cte_count", 0))
     has_subquery = bool(features.get("has_subquery"))
-    has_exists = bool(features.get("has_exists"))
+    subquery_count = int(features.get("subquery_count", 0))
     has_set_operation = bool(features.get("has_set_operation"))
+    select_count = int(features.get("select_count", 0))
     if target == "easy":
-        if table_count > 1 or join_count > 0 or has_group_by or has_cte or has_subquery:
-            return False, "Easy queries must stay single-table without joins, GROUP BY, or subqueries."
+        if table_count != 1:
+            return False, "Easy queries must use exactly one table."
+        if join_count > 0 or spatial_join_count > 0 or has_group_by or has_cte or has_subquery:
+            return False, "Easy queries must stay a single-table spatial filter or lookup without joins, GROUP BY, CTEs, or subqueries."
         return True, ""
     if target == "medium":
         if table_count != 2:
             return False, "Medium queries must use exactly two tables."
-        if join_count < 1:
-            return False, "Medium queries must contain one join."
-        if has_cte or has_set_operation:
-            return False, "Medium queries should avoid CTEs and set operations."
+        if spatial_join_count != 1:
+            return False, "Medium queries must contain exactly one spatial join between the two tables."
+        if join_count > 1:
+            return False, "Medium queries should not contain more than one join."
+        if has_cte or has_subquery or has_set_operation:
+            return False, "Medium queries should stay flat and avoid subqueries, CTEs, and set operations."
         return True, ""
     if target == "hard":
-        if table_count < 3 or join_count < 2:
-            return False, "Hard queries must use at least three tables and multiple joins."
+        if table_count != 3:
+            return False, "Hard queries must use exactly three tables."
+        if spatial_join_count != 2:
+            return False, "Hard queries must contain exactly two spatial joins across the three tables."
+        if has_cte or has_subquery or has_set_operation:
+            return False, "Hard queries should stay flat and avoid nested subqueries, CTEs, and set operations."
         return True, ""
     if target == "extra-hard":
-        if table_count < 3:
-            return False, "Extra-hard queries must use at least three tables."
-        if not (has_cte or has_subquery or has_exists or has_set_operation):
-            return False, "Extra-hard queries must include a complex structure such as a CTE or subquery."
+        if table_count < 3 or table_count > 4:
+            return False, "Extra-hard queries must use between three and four tables."
+        if spatial_join_count < 1:
+            return False, "Extra-hard queries must include at least one spatial join."
+        nested_query_count = cte_count + subquery_count
+        advanced_op_count = spatial_join_count + nested_query_count
+        if advanced_op_count < 2 or advanced_op_count > 4:
+            return False, "Extra-hard queries must keep spatial joins plus nested queries between two and four operations in total."
+        if has_set_operation:
+            return False, "Extra-hard queries should avoid UNION/INTERSECT/EXCEPT so the SQL stays executable."
+        if select_count > 5:
+            return False, "Extra-hard queries should keep the structure bounded to avoid over-complex SQL."
         return True, ""
     return True, ""
 
@@ -270,8 +358,23 @@ class SQLValidator:
         if not detected_functions:
             errors.append("SQL does not use any PostGIS ST_* function.")
         sampled_lower = {name.lower() for name in sampled_functions}
+        if difficulty_level in {"medium", "hard", "extra-hard"}:
+            sampled_lower.update(name.lower() for name in fixed_spatial_join_function_names())
         if sampled_lower and not any(func.lower() in sampled_lower for func in detected_functions):
             errors.append("SQL does not use any of the sampled required spatial functions.")
+        if sampled_lower:
+            unexpected_functions = sorted(
+                {
+                    func
+                    for func in detected_functions
+                    if func.lower() not in sampled_lower
+                }
+            )
+            if unexpected_functions:
+                errors.append(
+                    "SQL uses PostGIS functions outside the externally provided candidate set: "
+                    + ", ".join(unexpected_functions)
+                )
 
         raster_topology = [
             func for func in detected_functions
@@ -296,7 +399,7 @@ class SQLValidator:
                     f"Function {function_name} appears to use an incompatible number of arguments."
                 )
 
-        difficulty_features = _detect_difficulty_features(sql_text, detected_tables)
+        difficulty_features = _detect_difficulty_features(sql_text, detected_tables, aliases)
         difficulty_ok, difficulty_message = _difficulty_matches(difficulty_level, difficulty_features)
         if not difficulty_ok:
             errors.append(difficulty_message)

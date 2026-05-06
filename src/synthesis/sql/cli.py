@@ -14,7 +14,7 @@ from .config import DEFAULT_SQL_SYNTHESIS_CONFIG_PATH, load_sql_synthesis_config
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary
 from .generator import build_sql_generator
-from .io import load_input_databases, write_sql_queries
+from .io import append_sql_query, ensure_sql_output, load_existing_sql_id_offsets, load_input_databases
 from .prompt_metadata import PostGISPromptMetadataProvider
 from .synthesizer import ConstraintGuidedSQLSynthesizer
 from .validator import SQLValidator
@@ -136,14 +136,13 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | execution_check=%s | dry_run=%s | max_revision_rounds=%s",
+        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | execution_check=%s | dry_run=%s",
         config.llm.provider,
         config.llm.model,
         config.synthesis.input_path,
         config.synthesis.output_path,
         config.execution.enable_execution_check,
         config.execution.dry_run,
-        config.synthesis.max_revision_rounds,
     )
 
     databases = load_input_databases(config.synthesis.input_path)
@@ -188,6 +187,16 @@ def main(argv: list[str] | None = None) -> int:
     validator = SQLValidator(function_library)
     execution_checker = SQLExecutionChecker(config.database, config.execution)
     prompt_metadata_provider = PostGISPromptMetadataProvider(config.database)
+    output_path = Path(config.synthesis.output_path)
+    had_existing_output = output_path.exists() and output_path.stat().st_size > 0
+    ensure_sql_output(config.synthesis.output_path)
+    existing_sql_id_offsets = load_existing_sql_id_offsets(config.synthesis.output_path)
+    logging.info(
+        "Prepared SQL output file | output=%s | mode=%s | existing_databases=%s",
+        config.synthesis.output_path,
+        "append" if had_existing_output else "create",
+        len(existing_sql_id_offsets),
+    )
     synthesizer = ConstraintGuidedSQLSynthesizer(
         config=config,
         function_library=function_library,
@@ -196,10 +205,34 @@ def main(argv: list[str] | None = None) -> int:
         validator=validator,
         execution_checker=execution_checker,
         prompt_metadata_provider=prompt_metadata_provider,
+        existing_sql_id_offsets=existing_sql_id_offsets,
     )
-    rows = synthesizer.synthesize_all(databases)
-    write_sql_queries(config.synthesis.output_path, rows)
-    logging.info("Wrote %s SQL samples to %s", len(rows), config.synthesis.output_path)
+    written_count = 0
+
+    def _append_row(row):
+        nonlocal written_count
+        append_sql_query(config.synthesis.output_path, row)
+        written_count += 1
+        logging.info(
+            "Appended SQL sample | output=%s | written_count=%s | sql_id=%s",
+            config.synthesis.output_path,
+            written_count,
+            row.sql_id,
+        )
+
+    synthesizer.synthesize_all(databases, on_row_generated=_append_row)
+    run_stats = synthesizer.get_run_stats()
+    logging.info(
+        "SQL synthesis difficulty stats | generated=%s | retained=%s",
+        run_stats["generated_by_difficulty"],
+        run_stats["retained_by_difficulty"],
+    )
+    logging.info(
+        "SQL synthesis totals | generated=%s | retained=%s",
+        run_stats["generated_total"],
+        run_stats["retained_total"],
+    )
+    logging.info("Appended %s SQL samples to %s", written_count, config.synthesis.output_path)
     return 0
 
 

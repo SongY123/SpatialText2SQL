@@ -89,7 +89,7 @@ class QualityControlRunConfig:
     schema_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
     output_path: str = str(_project_root() / "data" / "processed" / "quality_controlled_nl_sql.jsonl")
     report_path: str = str(_project_root() / "data" / "processed" / "quality_control_report.json")
-    allow_empty_result: bool = False
+    allow_empty_result: bool = True
     max_result_rows: int = 5
     prefer_live_schema: bool = True
 
