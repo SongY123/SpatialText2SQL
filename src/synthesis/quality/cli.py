@@ -35,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-mode")
     parser.add_argument("--debug-mode", action="store_true")
     parser.add_argument("--max-result-rows", type=int)
+    parser.add_argument("--provider")
+    parser.add_argument("--model")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key-env")
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--timeout", type=int)
+    parser.add_argument("--max-retries", type=int)
     parser.add_argument("--question-similarity-threshold", type=float)
     parser.add_argument("--same-sql-similarity-threshold", type=float)
     parser.add_argument("--host")
@@ -66,6 +74,16 @@ def main(argv: list[str] | None = None) -> int:
             "connect_timeout": args.connect_timeout,
             "statement_timeout": args.statement_timeout,
         }.items() if value is not None},
+        llm={key: value for key, value in {
+            "provider": args.provider,
+            "model": args.model,
+            "base_url": args.base_url,
+            "api_key_env": args.api_key_env,
+            "temperature": args.temperature,
+            "max_tokens": args.max_tokens,
+            "timeout": args.timeout,
+            "max_retries": args.max_retries,
+        }.items() if value is not None},
         run={key: value for key, value in {
             "input_path": args.input,
             "schema_context_path": args.schema_context_path,
@@ -73,10 +91,6 @@ def main(argv: list[str] | None = None) -> int:
             "report_path": args.report_path,
             "allow_empty_result": args.allow_empty_result if args.allow_empty_result else None,
             "max_result_rows": args.max_result_rows,
-        }.items() if value is not None},
-        semantic={key: value for key, value in {
-            "mode": args.semantic_mode,
-            "debug_mode": args.debug_mode if args.debug_mode else None,
         }.items() if value is not None},
         duplicates={key: value for key, value in {
             "question_similarity_threshold": args.question_similarity_threshold,
@@ -129,4 +143,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

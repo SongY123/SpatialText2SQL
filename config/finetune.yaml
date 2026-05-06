@@ -1,0 +1,57 @@
+database:
+  host: localhost
+  port: 5432
+  database: synthesis
+  user: postgres
+  password: "123456"
+  search_path: public
+  connect_timeout: 10
+  statement_timeout: 60000
+
+data:
+  input_path: data/processed/synthesized_questions.jsonl
+  prepared_output_path: data/processed/finetune/spatial_text2sql_trl_train.jsonl
+  prompt_template_path: prompts/train_prompt.txt
+  task_description: Translate the spatial question into one executable PostgreSQL/PostGIS SQL query using the provided schema, spatial metadata, and representative values.
+  eval_ratio: 0.02
+  question_id_start: 0
+  max_representative_rows: 3
+  shuffle_seed: 42
+
+model:
+  model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+  tokenizer_name_or_path: ""
+  trust_remote_code: false
+  torch_dtype: bfloat16
+  attn_implementation: ""
+
+training:
+  output_dir: outputs/finetune/trl_spatial_text2sql_full
+  overwrite_output_dir: false
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-5
+  num_train_epochs: 3.0
+  max_steps: -1
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  save_total_limit: 2
+  max_length: 4096
+  packing: false
+  completion_only_loss: true
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 42
+  resume_from_checkpoint: ""
+
+logging:
+  log_level: INFO
+  log_path: ""

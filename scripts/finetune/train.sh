@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-DEFAULT_CONFIG="${REPO_ROOT}/config/quality_control.yaml"
+DEFAULT_CONFIG="${REPO_ROOT}/config/trl_spatial_text2sql_finetune.yaml"
 
 if [[ $# -ge 1 && ( "${1}" == "--help" || "${1}" == "-h" ) ]]; then
   cat <<EOF
@@ -17,19 +17,19 @@ Usage: $(basename "$0") [extra python args...]
 Default config: ${DEFAULT_CONFIG}
 
 Optional environment overrides:
-  QUALITY_CONTROL_CONFIG
+  TRL_SPATIAL_TEXT2SQL_CONFIG
 
 Examples:
   $(basename "$0")
-  $(basename "$0") --semantic-mode warning_only
-  $(basename "$0") --input data/processed/synthesized_questions.jsonl --output data/processed/quality_controlled_nl_sql.jsonl
+  $(basename "$0") --prepare-only
+  $(basename "$0") --model-name-or-path Qwen/Qwen2.5-7B-Instruct --output-dir outputs/finetune/qwen25_7b_full
 EOF
   exit 0
 fi
 
-CONFIG_PATH="${QUALITY_CONTROL_CONFIG:-${DEFAULT_CONFIG}}"
+CONFIG_PATH="${TRL_SPATIAL_TEXT2SQL_CONFIG:-${DEFAULT_CONFIG}}"
 
 PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
-  python -m src.synthesis.quality.cli \
+  python -m src.finetune.cli \
     --config "${CONFIG_PATH}" \
     "$@"

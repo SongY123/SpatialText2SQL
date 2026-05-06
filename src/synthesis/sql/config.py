@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from src.synthesis.database.utils import stable_jsonify, to_text
+from src.synthesis.llm import SynthesisLLMConfig, build_llm_config_from_section
 
 from .models import DIFFICULTY_LEVELS
 
@@ -33,15 +34,8 @@ class SQLSynthesisDBConfig:
 
 
 @dataclass(frozen=True)
-class SQLSynthesisLLMConfig:
-    provider: str = "openai_compatible"
-    model: str = "gpt-4o-mini"
-    base_url: str = "http://localhost:8000/v1"
-    api_key_env: str = "OPENAI_API_KEY"
-    temperature: float = 0.2
-    max_tokens: int = 1200
-    timeout: int = 120
-    max_retries: int = 2
+class SQLSynthesisLLMConfig(SynthesisLLMConfig):
+    pass
 
 
 @dataclass(frozen=True)
@@ -283,15 +277,13 @@ def _build_sql_synthesis_config_from_payload(
             connect_timeout=_as_positive_int(db_section.get("connect_timeout"), default_db.connect_timeout),
             statement_timeout=_as_positive_int(db_section.get("statement_timeout"), default_db.statement_timeout),
         ),
-        llm=SQLSynthesisLLMConfig(
-            provider=_as_text(llm_section.get("provider"), default_llm.provider),
-            model=_as_text(llm_section.get("model"), default_llm.model),
-            base_url=_as_text(llm_section.get("base_url"), default_llm.base_url),
-            api_key_env=_as_text(llm_section.get("api_key_env"), default_llm.api_key_env),
-            temperature=_as_float(llm_section.get("temperature"), default_llm.temperature),
-            max_tokens=_as_positive_int(llm_section.get("max_tokens"), default_llm.max_tokens),
-            timeout=_as_positive_int(llm_section.get("timeout"), default_llm.timeout),
-            max_retries=_as_non_negative_int(llm_section.get("max_retries"), default_llm.max_retries),
+        llm=build_llm_config_from_section(
+            llm_section,
+            default_llm,
+            as_text=_as_text,
+            as_float=_as_float,
+            as_positive_int=_as_positive_int,
+            as_non_negative_int=_as_non_negative_int,
         ),
         synthesis=SQLSynthesisRunConfig(
             input_path=_resolve_path(synthesis_section.get("input_path"), path, default_syn.input_path),

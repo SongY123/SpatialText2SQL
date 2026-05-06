@@ -322,6 +322,7 @@ class PromptBuilder:
                 table_name = str(table_meta.get("table_name") or "").strip()
                 if included_tables is not None and table_name not in included_tables:
                     continue
+                create_table_ddl = str(table_meta.get("create_table_ddl") or "").strip()
                 columns = []
                 for column in table_meta.get("columns", []):
                     if not isinstance(column, dict):
@@ -330,8 +331,10 @@ class PromptBuilder:
                     column_type = str(column.get("column_type") or column.get("data_type") or "text").strip()
                     if column_name:
                         columns.append(f"{column_name} {column_type}")
-                if table_name:
-                    schema_lines.append(f"- {table_name}({', '.join(columns)})")
+                if create_table_ddl:
+                    schema_lines.append(create_table_ddl)
+                elif table_name:
+                    schema_lines.append(f"CREATE TABLE {table_name} ({', '.join(columns)});")
                 table_rep_values = table_meta.get("representative_values") or {}
                 geometry_columns = {
                     str(field.get("column_name") or field.get("canonical_name") or "").strip().lower()
@@ -402,8 +405,20 @@ class PromptBuilder:
         spatial_relation_constraints: List[Dict[str, Any]],
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
-        representative_values = self._build_question_representative_values(database_context)
-        spatial_lines = self._build_question_spatial_lines(database_context)
+        execution_results = getattr(sql_query, "execution_result", {}) or {}
+        function_docs = []
+        raw_constraints = getattr(sql_query, "spatial_function_constraints", None) or spatial_relation_constraints
+        for item in raw_constraints or []:
+            if not isinstance(item, dict):
+                continue
+            function_docs.append(
+                {
+                    "function_name": item.get("function_name"),
+                    "signature": item.get("signature"),
+                    "description": item.get("description"),
+                    "example_usages": item.get("example_usages"),
+                }
+            )
         template_text = self._load_named_template_text("question_generation")
         return self._render_template(
             template_text,
@@ -413,11 +428,9 @@ class PromptBuilder:
                 "city": self._stringify_value(database_context.get("city")),
                 "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),
                 "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
-                "representative_values_block": self._stable_json_text(representative_values),
-                "sql_feature_block": self._stable_json_text(sql_features),
+                "execution_results_block": self._stable_json_text(execution_results),
                 "style_constraint_block": self._stable_json_text(style_constraint),
-                "spatial_relation_block": self._stable_json_text(spatial_relation_constraints),
+                "spatial_relation_block": self._stable_json_text(function_docs),
                 "style_name": self._stringify_value(style_constraint.get("style")),
             },
         )
@@ -447,6 +460,22 @@ class PromptBuilder:
 
     @staticmethod
     def _build_question_schema_lines(database_context: Dict[str, Any]) -> List[str]:
+        schema_ddls = [
+            str(item).strip()
+            for item in (database_context.get("schema_ddls", []) or [])
+            if str(item).strip()
+        ]
+        if schema_ddls:
+            return schema_ddls
+
+        ddl_lines = [
+            str(item.get("create_table_ddl") or "").strip()
+            for item in (database_context.get("table_contexts", []) or [])
+            if isinstance(item, dict) and str(item.get("create_table_ddl") or "").strip()
+        ]
+        if ddl_lines:
+            return ddl_lines
+
         schema_lines: List[str] = []
         for table_item in database_context.get("schema", []) or []:
             if not isinstance(table_item, dict):

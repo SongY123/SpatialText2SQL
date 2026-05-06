@@ -1,4 +1,4 @@
-You are generating one natural-language question from an executable PostgreSQL/PostGIS SQL query.
+You are generating one natural-language question from an PostgreSQL/PostGIS SQL query.
 
 ## Task Goal
 Rewrite the SQL into exactly one English question that is semantically equivalent to the SQL.
@@ -15,19 +15,14 @@ The question must preserve the SQL meaning exactly while sounding natural and di
 ## Schema
 {{schema_block}}
 
-## Spatial Field Metadata
-{{spatial_field_block}}
-
-## Representative Values
-{{representative_values_block}}
-
-## SQL Feature Summary
-{{sql_feature_block}}
+## Execution Results
+{{execution_results_block}}
 
 ## Style Constraint
 {{style_constraint_block}}
 
 ## Spatial Relation Constraint
+Use the following PostGIS function descriptions as authoritative guidance for the spatial semantics used by the SQL.
 {{spatial_relation_block}}
 
 ## Semantic Preservation Rules
@@ -46,14 +41,6 @@ Return a JSON object with exactly these fields:
 - style
 - reasoning_summary
 - spatial_phrases
-
-Example shape:
-{
-  "question": "Natural-language question here",
-  "style": "{{style_name}}",
-  "reasoning_summary": "One short sentence.",
-  "spatial_phrases": ["phrase 1"]
-}
 
 Requirements:
 - question: one English question sentence or sentence-like utterance

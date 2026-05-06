@@ -10,6 +10,7 @@ from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpat
 from src.synthesis.question import (
     DiversityAwareQuestionSynthesizer,
     MockQuestionLLM,
+    OllamaQuestionLLM,
     QuestionGenerationConfig,
     QuestionGenerationContext,
     QuestionGenerationLLMConfig,
@@ -20,6 +21,11 @@ from src.synthesis.question import (
     SQLQuestionSource,
     SpatialPhraseSelector,
     StyleSelector,
+    append_synthesized_question,
+    build_question_generation_contexts_from_sql_sources,
+    build_question_llm,
+    ensure_question_output,
+    load_existing_question_id_offsets,
     load_question_generation_config,
     load_question_generation_contexts,
     load_sql_question_sources,
@@ -73,6 +79,71 @@ def _make_sql_source(sql: str) -> SQLQuestionSource:
             "used_tables": ["parks", "neighborhoods"],
             "used_columns": ["name", "geom"],
             "used_spatial_functions": ["ST_DWithin"],
+            "spatial_function_constraints": [
+                {
+                    "function_name": "ST_DWithin",
+                    "signature": "ST_DWithin(geometry geom1, geometry geom2, double precision distance)",
+                    "description": "True when two geometries are within a given distance.",
+                    "example_usages": ["SELECT ST_DWithin(a.geom, b.geom, 100)"],
+                }
+            ],
+            "metadata": {
+                "database_context": {
+                    "database_id": "nyc_0001",
+                    "city": "nyc",
+                    "selected_table_names": ["parks", "neighborhoods"],
+                    "schema_ddls": [
+                        "CREATE TABLE parks (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);",
+                        "CREATE TABLE neighborhoods (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);",
+                    ],
+                    "tables": [
+                        {
+                            "table_name": "parks",
+                            "create_table_ddl": "CREATE TABLE parks (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);",
+                            "columns": [
+                                {"column_name": "id", "column_type": "integer"},
+                                {"column_name": "name", "column_type": "text"},
+                                {"column_name": "geom", "column_type": "geometry(GEOMETRY,4326)"},
+                            ],
+                            "spatial_fields": [
+                                {
+                                    "column_name": "geom",
+                                    "column_type": "geometry(GEOMETRY,4326)",
+                                    "spatial_type": "geometry",
+                                    "geometry_type": "GEOMETRY",
+                                    "srid": 4326,
+                                }
+                            ],
+                            "representative_values": {"name": ["central park"]},
+                        },
+                        {
+                            "table_name": "neighborhoods",
+                            "create_table_ddl": "CREATE TABLE neighborhoods (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);",
+                            "columns": [
+                                {"column_name": "id", "column_type": "integer"},
+                                {"column_name": "name", "column_type": "text"},
+                                {"column_name": "geom", "column_type": "geometry(GEOMETRY,4326)"},
+                            ],
+                            "spatial_fields": [
+                                {
+                                    "column_name": "geom",
+                                    "column_type": "geometry(GEOMETRY,4326)",
+                                    "spatial_type": "geometry",
+                                    "geometry_type": "GEOMETRY",
+                                    "srid": 4326,
+                                }
+                            ],
+                            "representative_values": {"name": ["harlem"]},
+                        },
+                    ],
+                }
+            },
+            "execution_result": {
+                "status": "success",
+                "row_count": 2,
+                "columns": ["name"],
+                "rows": [{"name": "central park"}, {"name": "prospect park"}],
+            },
         }
     )
 
@@ -87,9 +158,7 @@ def _make_config(**generation_overrides) -> QuestionGenerationConfig:
         ),
         generation=QuestionGenerationRunConfig(
             num_questions_per_sql=1,
-            fixed_style="factual_lookup",
-            keep_invalid=False,
-            max_revision_rounds=1,
+            fixed_style="direct",
         ),
         logging=QuestionGenerationLoggingConfig(log_level="INFO"),
     )
@@ -104,7 +173,7 @@ class QuestionGenerationTests(unittest.TestCase):
     def test_config_loading_and_override(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            config_path = root / "question_generation.yaml"
+            config_path = root / "question_synthesis.yaml"
             config_path.write_text(
                 "\n".join(
                     [
@@ -116,11 +185,12 @@ class QuestionGenerationTests(unittest.TestCase):
                         "  output_path: data/out.jsonl",
                         "  num_questions_per_sql: 2",
                         "  style_weights:",
-                        "    factual_lookup: 2",
-                        "    comparative_analysis: 1",
-                        "    aggregation_inquiry: 0",
-                        "    ranking_inquiry: 0",
-                        "    exploratory_analysis: 0",
+                        "    conversational: 2",
+                        "    formal: 1",
+                        "    direct: 0",
+                        "    concise: 0",
+                        "    polite: 0",
+                        "    analytical: 0",
                     ]
                 ),
                 encoding="utf-8",
@@ -128,13 +198,28 @@ class QuestionGenerationTests(unittest.TestCase):
             loaded = load_question_generation_config(config_path)
             overridden = override_question_generation_config(
                 loaded,
-                generation={"output_path": str(root / "override.jsonl"), "style": "ranking_inquiry"},
+                generation={"output_path": str(root / "override.jsonl"), "style": "formal"},
             )
         self.assertEqual(loaded.llm.provider, "ollama")
         self.assertEqual(loaded.llm.model, "qwen2.5:7b")
         self.assertEqual(loaded.generation.num_questions_per_sql, 2)
         self.assertTrue(overridden.generation.output_path.endswith("override.jsonl"))
-        self.assertEqual(overridden.generation.fixed_style, "ranking_inquiry")
+        self.assertEqual(overridden.generation.fixed_style, "formal")
+
+    def test_build_question_llm_supports_config_object(self):
+        llm = build_question_llm(
+            config=QuestionGenerationLLMConfig(
+                provider="ollama",
+                model="qwen2.5:7b",
+                base_url="http://localhost:11434/v1",
+                api_key_env="IGNORED_FOR_OLLAMA",
+                temperature=0.1,
+                max_tokens=256,
+                timeout=30,
+                max_retries=1,
+            )
+        )
+        self.assertIsInstance(llm, OllamaQuestionLLM)
 
     def test_feature_extractor_parses_spatial_sql(self):
         sql = """
@@ -175,9 +260,8 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertIn("100", constraints_one[0].preferred_phrase)
 
     def test_prompt_builder_contains_required_sections(self):
-        database = _make_database()
-        context = _make_context(database)
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
+        context = build_question_generation_contexts_from_sql_sources([sql])["nyc_0001"]
         features = SQLFeatureExtractor().extract(sql.sql)
         constraints = SpatialPhraseSelector().build_constraints(features=features, rng=np.random.default_rng(11))
         prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[2]})
@@ -185,61 +269,47 @@ class QuestionGenerationTests(unittest.TestCase):
             sql_query=sql,
             database_context=context.to_prompt_payload(),
             sql_features=features.to_dict(),
-            style_constraint={"style": "factual_lookup", "description": "Ask directly."},
+            style_constraint={"style": "direct", "description": "Use a direct and minimal request."},
             spatial_relation_constraints=[item.to_dict() for item in constraints],
         )
         self.assertIn("## SQL Query", prompt)
         self.assertIn("## Database Context", prompt)
-        self.assertIn("## Representative Values", prompt)
+        self.assertIn("## Execution Results", prompt)
+        self.assertNotIn("## Representative Values", prompt)
+        self.assertNotIn("## Spatial Field Metadata", prompt)
+        self.assertNotIn("## SQL Feature Summary", prompt)
         self.assertIn("## Style Constraint", prompt)
         self.assertIn("## Spatial Relation Constraint", prompt)
         self.assertIn('"question"', prompt)
         self.assertIn('"style"', prompt)
-        self.assertIn('"name": "parks_sample"', prompt)
+        self.assertIn('"row_count": 2', prompt)
+        self.assertIn('"name": "central park"', prompt)
+        self.assertIn('"function_name": "ST_DWithin"', prompt)
+        self.assertIn('"description": "True when two geometries are within a given distance."', prompt)
+        self.assertIn("CREATE TABLE parks", prompt)
+        self.assertIn("geometry(GEOMETRY,4326)", prompt)
 
-    def test_question_prompt_uses_row_oriented_representative_values_with_nulls(self):
-        database = _make_database()
-        context = _make_context(database)
-        payload = context.to_prompt_payload()
-        payload["table_contexts"][0]["representative_values"] = {
-            "name": ["central park", None, "prospect park"],
-            "geom": ["POINT (1 2)", None, "POINT (3 4)"],
-        }
+    def test_build_question_generation_contexts_from_sql_metadata(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
-        features = SQLFeatureExtractor().extract(sql.sql)
-        constraints = SpatialPhraseSelector().build_constraints(features=features, rng=np.random.default_rng(11))
-        prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[2]})
-        prompt = prompt_builder.build_question_generation_prompt(
-            sql_query=sql,
-            database_context=payload,
-            sql_features=features.to_dict(),
-            style_constraint={"style": "factual_lookup", "description": "Ask directly."},
-            spatial_relation_constraints=[item.to_dict() for item in constraints],
-        )
-        representative_section = prompt.split("## Representative Values", 1)[1].split("## SQL Feature Summary", 1)[0].strip()
-        representative_values = json.loads(representative_section)
-        self.assertEqual(
-            representative_values["parks"],
-            [
-                {"geom": "POINT", "name": "central park"},
-                {"geom": None, "name": None},
-                {"geom": "POINT", "name": "prospect park"},
-            ],
-        )
+        contexts = build_question_generation_contexts_from_sql_sources([sql])
+        context = contexts["nyc_0001"]
+        self.assertEqual(context.selected_table_names, ["parks", "neighborhoods"])
+        self.assertEqual(len(context.schema_ddls), 2)
+        self.assertIn("CREATE TABLE parks", context.schema_ddls[0])
 
     def test_response_parser_handles_json_and_markdown(self):
         parsed = parse_question_generation_response(
-            '{"question":"Which parks are within 100 units of the neighborhood boundary?","style":"factual_lookup","reasoning_summary":"Preserved the threshold.","spatial_phrases":["within 100 units of"]}'
+            '{"question":"Which parks are within 100 units of the neighborhood boundary?","style":"direct","reasoning_summary":"Preserved the threshold.","spatial_phrases":["within 100 units of"]}'
         )
         self.assertEqual(parsed.question, "Which parks are within 100 units of the neighborhood boundary?")
-        self.assertEqual(parsed.style, "factual_lookup")
+        self.assertEqual(parsed.style, "direct")
 
         fenced = parse_question_generation_response(
             """```json
-            {"question":"How many parks are within 100 units of each neighborhood?","style":"aggregation_inquiry","reasoning_summary":"Kept the aggregation.","spatial_phrases":["within 100 units of"]}
+            {"question":"Please list how many parks are within 100 units of each neighborhood.","style":"polite","reasoning_summary":"Kept the aggregation.","spatial_phrases":["within 100 units of"]}
             ```"""
         )
-        self.assertEqual(fenced.style, "aggregation_inquiry")
+        self.assertEqual(fenced.style, "polite")
         self.assertFalse(fenced.parse_error)
 
     def test_validator_rejects_raw_postgis_names_and_missing_threshold(self):
@@ -249,8 +319,8 @@ class QuestionGenerationTests(unittest.TestCase):
         validator = QuestionValidator()
 
         raw_function = validator.validate(
-            candidate=QuestionGenerationCandidate(question="Which parks use ST_DWithin within 100 units?", style="factual_lookup"),
-            requested_style="factual_lookup",
+            candidate=QuestionGenerationCandidate(question="Which parks use ST_DWithin within 100 units?", style="direct"),
+            requested_style="direct",
             sql_features=features,
             spatial_constraints=constraints,
         )
@@ -258,15 +328,15 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertTrue(any("raw PostGIS function names" in item for item in raw_function.errors))
 
         missing_threshold = validator.validate(
-            candidate=QuestionGenerationCandidate(question="Which parks are near the neighborhood boundary?", style="factual_lookup"),
-            requested_style="factual_lookup",
+            candidate=QuestionGenerationCandidate(question="Find parks near the neighborhood boundary.", style="direct"),
+            requested_style="direct",
             sql_features=features,
             spatial_constraints=constraints,
         )
         self.assertFalse(missing_threshold.is_valid)
         self.assertTrue(any("100" in item for item in missing_threshold.errors))
 
-    def test_end_to_end_generation_single_shot_rejects_invalid_candidate(self):
+    def test_end_to_end_generation_keeps_invalid_candidate(self):
         sql = _make_sql_source(
             "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
         )
@@ -277,7 +347,7 @@ class QuestionGenerationTests(unittest.TestCase):
                 json.dumps(
                     {
                         "question": "Which parks are near neighborhoods?",
-                        "style": "factual_lookup",
+                        "style": "direct",
                         "reasoning_summary": "Initial attempt.",
                         "spatial_phrases": ["near"],
                     }
@@ -290,10 +360,12 @@ class QuestionGenerationTests(unittest.TestCase):
             prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
         )
         rows = generator.generate_for_sql(sql, context)
-        self.assertEqual(len(rows), 0)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].validation_result["is_valid"])
+        self.assertEqual(rows[0].question_id, "nyc_0001_0001")
         self.assertEqual(len(llm.prompts), 1)
 
-    def test_keep_invalid_preserves_failed_candidate(self):
+    def test_synthesizer_continues_question_id_from_existing_offsets(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
         database = _make_database()
         context = _make_context(database)
@@ -301,24 +373,24 @@ class QuestionGenerationTests(unittest.TestCase):
             responses=[
                 json.dumps(
                     {
-                        "question": "Which parks are nearby?",
-                        "style": "factual_lookup",
-                        "reasoning_summary": "Too vague.",
-                        "spatial_phrases": ["nearby"],
+                        "question": "Find parks within 100 units of themselves.",
+                        "style": "direct",
+                        "reasoning_summary": "Preserved the threshold.",
+                        "spatial_phrases": ["within 100 units of"],
                     }
                 )
             ]
         )
         generator = DiversityAwareQuestionSynthesizer(
-            config=_make_config(keep_invalid=True, max_revision_rounds=0),
+            config=_make_config(),
             llm_client=llm,
             prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+            existing_question_id_offsets={"nyc_0001": 7},
         )
         rows = generator.generate_for_sql(sql, context)
-        self.assertEqual(len(rows), 1)
-        self.assertFalse(rows[0].validation_result["is_valid"])
+        self.assertEqual(rows[0].question_id, "nyc_0001_0008")
 
-    def test_io_round_trip(self):
+    def test_io_round_trip_and_append(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
         database = _make_database()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -333,13 +405,13 @@ class QuestionGenerationTests(unittest.TestCase):
             loaded_contexts = load_question_generation_contexts(str(db_path))
 
             generator = DiversityAwareQuestionSynthesizer(
-                config=_make_config(max_revision_rounds=0),
+                config=_make_config(),
                 llm_client=MockQuestionLLM(
                     responses=[
                         json.dumps(
                             {
-                                "question": "Which parks are within 100 units of themselves?",
-                                "style": "factual_lookup",
+                                "question": "Find parks within 100 units of themselves.",
+                                "style": "direct",
                                 "reasoning_summary": "Preserved the threshold.",
                                 "spatial_phrases": ["within 100 units of"],
                             }
@@ -348,8 +420,13 @@ class QuestionGenerationTests(unittest.TestCase):
                 ),
                 prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
             )
-            rows = generator.generate_all(loaded_sql, loaded_contexts)
-            write_synthesized_questions(str(out_path), rows)
+            ensure_question_output(str(out_path))
+            rows = generator.generate_all(
+                loaded_sql,
+                loaded_contexts,
+                on_row_generated=lambda row: append_synthesized_question(str(out_path), row),
+            )
+            offsets = load_existing_question_id_offsets(str(out_path))
 
             written = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
         self.assertEqual(len(loaded_sql), 1)
@@ -357,6 +434,39 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(written), 1)
         self.assertEqual(written[0]["sql_id"], "sql_001")
+        self.assertEqual(written[0]["question_id"], "nyc_0001_0001")
+        self.assertEqual(offsets, {"nyc_0001": 1})
+
+    def test_write_synthesized_questions_overwrites_existing_file(self):
+        sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
+        database = _make_database()
+        context = _make_context(database)
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=MockQuestionLLM(
+                responses=[
+                    json.dumps(
+                        {
+                            "question": "Find parks within 100 units of themselves.",
+                            "style": "direct",
+                            "reasoning_summary": "Preserved the threshold.",
+                            "spatial_phrases": ["within 100 units of"],
+                        }
+                    )
+                ]
+            ),
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "questions.jsonl"
+            path.write_text('{"question_id":"nyc_0001_9999"}\n', encoding="utf-8")
+            write_synthesized_questions(str(path), rows)
+            written = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["question_id"], "nyc_0001_0001")
 
 
 if __name__ == "__main__":

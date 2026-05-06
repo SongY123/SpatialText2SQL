@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from src.synthesis.database.utils import stable_jsonify, to_text
+from src.synthesis.llm import SynthesisLLMConfig, build_llm_config_from_section
 
 
 def _project_root() -> Path:
@@ -38,12 +39,10 @@ class QualityControlFunctionConfig:
 
 
 @dataclass(frozen=True)
-class QualityControlLLMConfig:
+class QualityControlLLMConfig(SynthesisLLMConfig):
     provider: str = "ollama"
     model: str = "qwen2.5:7b"
     base_url: str = "http://localhost:11434/v1"
-    api_key_env: str = "OPENAI_API_KEY"
-    temperature: float = 0.2
     max_tokens: int = 80
     timeout: int = 60
     max_retries: int = 1
@@ -84,7 +83,7 @@ class DiversityBalancingConfig:
 
 @dataclass(frozen=True)
 class QualityControlRunConfig:
-    input_path: str = str(_project_root() / "data" / "processed" / "diversity_aware_questions.jsonl")
+    input_path: str = str(_project_root() / "data" / "processed" / "synthesized_questions.jsonl")
     sql_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
     schema_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
     output_path: str = str(_project_root() / "data" / "processed" / "quality_controlled_nl_sql.jsonl")
@@ -244,15 +243,13 @@ def _build_quality_control_config_from_payload(
             ),
             exclude_categories=[to_text(item).lower() for item in function_section.get("exclude_categories", default_function.exclude_categories)],
         ),
-        llm=QualityControlLLMConfig(
-            provider=_as_text(llm_section.get("provider"), default_llm.provider),
-            model=_as_text(llm_section.get("model"), default_llm.model),
-            base_url=_as_text(llm_section.get("base_url"), default_llm.base_url),
-            api_key_env=_as_text(llm_section.get("api_key_env"), default_llm.api_key_env),
-            temperature=_as_float(llm_section.get("temperature"), default_llm.temperature),
-            max_tokens=_as_int(llm_section.get("max_tokens"), default_llm.max_tokens, minimum=1),
-            timeout=_as_int(llm_section.get("timeout"), default_llm.timeout, minimum=1),
-            max_retries=_as_int(llm_section.get("max_retries"), default_llm.max_retries, minimum=0),
+        llm=build_llm_config_from_section(
+            llm_section,
+            default_llm,
+            as_text=_as_text,
+            as_float=_as_float,
+            as_positive_int=lambda value, default: _as_int(value, default, minimum=1),
+            as_non_negative_int=lambda value, default: _as_int(value, default, minimum=0),
         ),
         judge=SelfConsistencyJudgeConfig(
             prompt_template_path=_resolve_path(

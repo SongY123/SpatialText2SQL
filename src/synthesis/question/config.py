@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import yaml
 
 from src.synthesis.database.utils import stable_jsonify, to_text
+from src.synthesis.llm import SynthesisLLMConfig, build_llm_config_from_section
 
 from .models import QUESTION_STYLES
 
@@ -17,32 +18,23 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-DEFAULT_QUESTION_GENERATION_CONFIG_PATH = _project_root() / "config" / "question_generation.yaml"
+DEFAULT_QUESTION_GENERATION_CONFIG_PATH = _project_root() / "config" / "question_synthesis.yaml"
 
 
 @dataclass(frozen=True)
-class QuestionGenerationLLMConfig:
-    provider: str = "openai_compatible"
-    model: str = "gpt-4o-mini"
-    base_url: str = "http://localhost:8000/v1"
-    api_key_env: str = "OPENAI_API_KEY"
-    temperature: float = 0.2
+class QuestionGenerationLLMConfig(SynthesisLLMConfig):
     max_tokens: int = 800
-    timeout: int = 120
-    max_retries: int = 2
 
 
 @dataclass(frozen=True)
 class QuestionGenerationRunConfig:
     sql_input_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
     database_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
-    output_path: str = str(_project_root() / "data" / "processed" / "diversity_aware_questions.jsonl")
+    output_path: str = str(_project_root() / "data" / "processed" / "synthesized_questions.jsonl")
     num_questions_per_sql: int = 1
     fixed_style: str = ""
     style_weights: dict[str, float] = field(default_factory=lambda: {style: 1.0 for style in QUESTION_STYLES})
     random_seed: int = 42
-    keep_invalid: bool = False
-    max_revision_rounds: int = 1
 
 
 @dataclass(frozen=True)
@@ -89,19 +81,6 @@ def _as_non_negative_int(value: Any, default: int) -> int:
     if parsed < 0:
         raise ValueError(f"Expected a non-negative integer, got {value!r}")
     return parsed
-
-
-def _as_bool(value: Any, default: bool) -> bool:
-    if value in (None, ""):
-        return default
-    if isinstance(value, bool):
-        return value
-    lowered = str(value).strip().lower()
-    if lowered in {"1", "true", "yes", "y", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "n", "off"}:
-        return False
-    raise ValueError(f"Expected a boolean-like value, got {value!r}")
 
 
 def _as_float(value: Any, default: float) -> float:
@@ -169,15 +148,13 @@ def _build_question_generation_config_from_payload(
     default_logging = QuestionGenerationLoggingConfig()
 
     return QuestionGenerationConfig(
-        llm=QuestionGenerationLLMConfig(
-            provider=_as_text(llm_section.get("provider"), default_llm.provider),
-            model=_as_text(llm_section.get("model"), default_llm.model),
-            base_url=_as_text(llm_section.get("base_url"), default_llm.base_url),
-            api_key_env=_as_text(llm_section.get("api_key_env"), default_llm.api_key_env),
-            temperature=_as_float(llm_section.get("temperature"), default_llm.temperature),
-            max_tokens=_as_positive_int(llm_section.get("max_tokens"), default_llm.max_tokens),
-            timeout=_as_positive_int(llm_section.get("timeout"), default_llm.timeout),
-            max_retries=_as_non_negative_int(llm_section.get("max_retries"), default_llm.max_retries),
+        llm=build_llm_config_from_section(
+            llm_section,
+            default_llm,
+            as_text=_as_text,
+            as_float=_as_float,
+            as_positive_int=_as_positive_int,
+            as_non_negative_int=_as_non_negative_int,
         ),
         generation=QuestionGenerationRunConfig(
             sql_input_path=_resolve_path(generation_section.get("sql_input_path"), path, default_generation.sql_input_path),
@@ -196,11 +173,6 @@ def _build_question_generation_config_from_payload(
                 generation_section.get("style_weights", default_generation.style_weights)
             ),
             random_seed=int(generation_section.get("random_seed", default_generation.random_seed)),
-            keep_invalid=_as_bool(generation_section.get("keep_invalid"), default_generation.keep_invalid),
-            max_revision_rounds=_as_non_negative_int(
-                generation_section.get("max_revision_rounds"),
-                default_generation.max_revision_rounds,
-            ),
         ),
         logging=QuestionGenerationLoggingConfig(
             log_level=_as_text(logging_section.get("log_level"), default_logging.log_level),

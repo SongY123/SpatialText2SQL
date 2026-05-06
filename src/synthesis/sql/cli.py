@@ -166,16 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         config.functions.postgis_function_json_path,
         config.functions.st_function_markdown_path,
     )
-    generator = build_sql_generator(
-        provider=config.llm.provider,
-        model=config.llm.model,
-        base_url=config.llm.base_url,
-        api_key_env=config.llm.api_key_env,
-        temperature=config.llm.temperature,
-        max_tokens=config.llm.max_tokens,
-        timeout=config.llm.timeout,
-        max_retries=config.llm.max_retries,
-    )
+    generator = build_sql_generator(config=config.llm)
     logging.info(
         "Initialized SQL generator | provider=%s | model=%s | timeout=%ss | max_retries=%s",
         config.llm.provider,

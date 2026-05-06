@@ -23,6 +23,7 @@ from src.synthesis.database.models import SynthesizedSpatialDatabase
 from src.synthesis.database.utils import stable_jsonify, to_text
 
 from .config import SQLSynthesisDBConfig
+from .schema_utils import build_create_table_ddl_query
 
 LOGGER = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ class PostGISPromptMetadataProvider:
             spatial_by_table = self._fetch_spatial_fields(cur, schema_name, requested_tables)
             tables: list[dict[str, Any]] = []
             representative_values: dict[str, Any] = {}
+            schema_ddls: list[str] = []
             for table_name in requested_tables:
                 columns = columns_by_table.get(table_name, [])
                 spatial_fields = spatial_by_table.get(table_name, [])
@@ -122,10 +124,18 @@ class PostGISPromptMetadataProvider:
                     table_name=table_name,
                     columns=columns,
                 )
+                create_table_ddl = self._fetch_create_table_ddl(
+                    cur,
+                    schema_name=schema_name,
+                    table_name=table_name,
+                )
                 representative_values[table_name] = stable_jsonify(table_representative_values)
+                if create_table_ddl:
+                    schema_ddls.append(create_table_ddl)
                 tables.append(
                     {
                         "table_name": table_name,
+                        "create_table_ddl": create_table_ddl,
                         "columns": stable_jsonify(columns),
                         "spatial_fields": stable_jsonify(spatial_fields),
                         "representative_values": stable_jsonify(table_representative_values),
@@ -135,9 +145,19 @@ class PostGISPromptMetadataProvider:
             "database_id": database.database_id,
             "city": database.city,
             "schema_name": schema_name,
+            "schema_ddls": schema_ddls,
             "tables": tables,
             "representative_values": stable_jsonify(representative_values),
         }
+
+    @staticmethod
+    def _fetch_create_table_ddl(cursor, schema_name: str, table_name: str) -> str:
+        query, params = build_create_table_ddl_query(schema_name, table_name)
+        cursor.execute(query, params)
+        row = cursor.fetchone() or {}
+        if isinstance(row, Mapping):
+            return to_text(row.get("create_table_ddl"))
+        return ""
 
     def _apply_session_settings(self, cursor, schema_name: str) -> None:
         cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")

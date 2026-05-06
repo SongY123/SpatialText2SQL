@@ -40,6 +40,7 @@ from .models import (
 )
 from .parser import parse_sql_generation_response
 from .prompt_metadata import PostGISPromptMetadataProvider
+from .schema_utils import build_create_table_ddl_query
 from .synthesizer import ConstraintGuidedSQLSynthesizer
 from .validator import SQLValidator, contains_dangerous_sql
 
@@ -72,6 +73,7 @@ __all__ = [
     "infer_function_categories",
     "append_sql_queries",
     "append_sql_query",
+    "build_create_table_ddl_query",
     "ensure_sql_output",
     "initialize_sql_output",
     "load_input_databases",

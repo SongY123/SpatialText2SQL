@@ -11,11 +11,12 @@ from .models import QUESTION_STYLES, SQLFeatureSummary, SpatialRelationConstrain
 
 
 STYLE_DESCRIPTIONS: dict[str, str] = {
-    "factual_lookup": "Ask for a direct factual answer grounded in the SQL result.",
-    "comparative_analysis": "Frame the question as a comparison between entities, conditions, or locations.",
-    "aggregation_inquiry": "Emphasize totals, counts, averages, minima, maxima, or grouped summaries.",
-    "ranking_inquiry": "Emphasize ranking, ordering, top-k, nearest, farthest, highest, or lowest results.",
-    "exploratory_analysis": "Frame the question as an analytical exploration over multiple related constraints.",
+    "conversational": "Use natural spoken wording, like a user asking casually in plain English.",
+    "formal": "Use precise, formal wording with a polished and professional tone.",
+    "direct": "Use a straightforward task-oriented request with minimal extra phrasing.",
+    "concise": "Keep the wording compact while preserving the full SQL meaning.",
+    "polite": "Use courteous wording such as please, could you, or would you.",
+    "analytical": "Use wording that sounds analytical or investigative without changing the SQL semantics.",
 }
 
 
@@ -104,26 +105,6 @@ SPATIAL_PHRASE_VARIANTS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 
-
-def _compatible_style_weights(features: SQLFeatureSummary) -> dict[str, float]:
-    weights = {style: 0.0 for style in QUESTION_STYLES}
-    weights["factual_lookup"] = 1.0
-    weights["comparative_analysis"] = 0.8 if len(features.tables) >= 2 or len(features.filters) >= 1 else 0.2
-    if features.aggregates or features.group_by_columns:
-        weights["aggregation_inquiry"] = 1.2
-    if features.order_by or features.limit is not None:
-        weights["ranking_inquiry"] = 1.1
-    if len(features.tables) >= 3 or features.has_cte or features.has_subquery or len(features.postgis_functions) >= 2:
-        weights["exploratory_analysis"] = 1.0
-    if not features.aggregates and not features.group_by_columns:
-        weights["aggregation_inquiry"] = 0.0
-    if not features.order_by and features.limit is None:
-        weights["ranking_inquiry"] = 0.0
-    if len(features.tables) < 2 and not (features.has_cte or features.has_subquery):
-        weights["exploratory_analysis"] = max(weights["exploratory_analysis"], 0.0)
-    return weights
-
-
 @dataclass
 class StyleSelector:
     def build_style_plan(
@@ -140,13 +121,10 @@ class StyleSelector:
         if fixed_style:
             return [fixed_style] * total_questions
         configured = {style: max(float((style_weights or {}).get(style, 1.0)), 0.0) for style in QUESTION_STYLES}
-        compatible = _compatible_style_weights(features)
-        effective = {
-            style: configured[style] * compatible[style]
-            for style in QUESTION_STYLES
-        }
+        del features
+        effective = {style: configured[style] for style in QUESTION_STYLES}
         if sum(effective.values()) <= 0:
-            return ["factual_lookup"] * total_questions
+            return ["direct"] * total_questions
         if total_questions == 1:
             return [self._sample_one(effective, rng)]
 

@@ -10,9 +10,6 @@ Prefer the simplest coherent query that satisfies the difficulty requirement and
 ## Schema
 {{schema_block}}
 
-## Spatial Field Metadata
-{{spatial_field_block}}
-
 ## Representative Values
 {{representative_values_block}}
 

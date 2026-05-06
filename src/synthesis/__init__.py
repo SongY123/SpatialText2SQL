@@ -1,5 +1,14 @@
 """Synthesis modules for dataset construction."""
 
+from .llm import (
+    LLMClient,
+    LLMGenerationResponse,
+    MockLLMClient,
+    OllamaLLMClient,
+    OpenAICompatibleLLMClient,
+    SynthesisLLMConfig,
+    build_llm_client,
+)
 from .database import (
     CanonicalSpatialTable,
     EmbeddingProvider,
@@ -70,12 +79,18 @@ __all__ = [
     "ConstraintGuidedSQLSynthesizer",
     "DiversityAwareQuestionGenerator",
     "DiversityAwareQuestionSynthesizer",
+    "LLMClient",
+    "LLMGenerationResponse",
+    "MockLLMClient",
     "MockSQLSynthesisGenerator",
     "MockQuestionLLM",
+    "OllamaLLMClient",
+    "OpenAICompatibleLLMClient",
     "PostGISFunctionLibrary",
     "SQLExecutionChecker",
     "SQLSynthesisConfig",
     "SQLValidator",
+    "SynthesisLLMConfig",
     "SynthesizedSQLQuery",
     "GeneratedQuestionValidator",
     "InMemorySchemaRegistry",
@@ -99,6 +114,7 @@ __all__ = [
     "normalize_postgres_identifier",
     "parse_srid",
     "prepare_column_specs",
+    "build_llm_client",
     "write_nl_sql_samples",
     "write_quality_control_report",
     "write_synthesized_questions",

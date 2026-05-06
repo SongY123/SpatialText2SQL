@@ -262,7 +262,7 @@ Common options:
 scripts/dataset_construction/synthesize_questions.sh \
   --sql-input data/processed/synthesized_sql_queries.jsonl \
   --database-context-path data/processed/synthesized_spatial_databases.jsonl \
-  --output data/processed/diversity_aware_questions.jsonl
+  --output data/processed/synthesized_questions.jsonl
 
 # Force a fixed linguistic style
 scripts/dataset_construction/synthesize_questions.sh \
@@ -273,7 +273,7 @@ Default settings:
 
 - Input SQL JSONL: `data/processed/synthesized_sql_queries.jsonl`
 - Input database context JSONL: `data/processed/synthesized_spatial_databases.jsonl`
-- Output: `data/processed/diversity_aware_questions.jsonl`
+- Output: `data/processed/synthesized_questions.jsonl`
 - The only retained question-synthesis shell entrypoint is `scripts/dataset_construction/synthesize_questions.sh`
 - The canonical question-synthesis implementation is `src/synthesis/question/synthesizer.py`
 - Default styles: `factual_lookup`, `comparative_analysis`, `aggregation_inquiry`, `ranking_inquiry`, `exploratory_analysis`
@@ -283,7 +283,7 @@ Default settings:
 - Question generation is single-shot and does not use a feedback-revision prompt
 - The question-generation prompt template lives in `prompts/question_generation_prompt.txt`
 
-Edit persistent settings in `config/question_generation.yaml`.
+Edit persistent settings in `config/question_synthesis.yaml`.
 
 ## Quality Control
 
@@ -300,7 +300,7 @@ Typical usage:
 
 ```bash
 scripts/dataset_construction/quality_control.sh \
-  --input data/processed/diversity_aware_questions.jsonl \
+  --input data/processed/synthesized_questions.jsonl \
   --output data/processed/quality_controlled_nl_sql.jsonl
 ```
 

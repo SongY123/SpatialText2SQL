@@ -159,6 +159,7 @@ class SynthesizedSQLQuery:
     minor_revision_prompts: list[str] = field(default_factory=list)
     validation_result: dict[str, Any] = field(default_factory=dict)
     execution_result: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     revision_rounds: int = 0
     generation_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -179,6 +180,7 @@ class SynthesizedSQLQuery:
             "minor_revision_prompts": list(self.minor_revision_prompts),
             "validation_result": stable_jsonify(self.validation_result),
             "execution_result": stable_jsonify(self.execution_result),
+            "metadata": stable_jsonify(self.metadata),
             "revision_rounds": self.revision_rounds,
             "generation_metadata": stable_jsonify(self.generation_metadata),
         }

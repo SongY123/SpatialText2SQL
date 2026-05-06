@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 import logging
+import re
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -70,6 +71,101 @@ class ConstraintGuidedSQLSynthesizer:
         next_value = self.sql_id_offsets.get(database_id, 0) + 1
         self.sql_id_offsets[database_id] = next_value
         return f"{database_id}_{next_value:04d}"
+
+    @staticmethod
+    def _extract_srid(crs_value: Any) -> int | None:
+        match = re.search(r"(\d+)", to_text(crs_value))
+        return int(match.group(1)) if match else None
+
+    def _fallback_create_table_ddl(self, table: Any, schema_name: str) -> str:
+        spatial_field_by_name = {
+            to_text(field.get("canonical_name")).lower(): field
+            for field in (getattr(table, "spatial_fields", None) or [])
+            if isinstance(field, Mapping) and to_text(field.get("canonical_name"))
+        }
+        column_lines: list[str] = []
+        for column in getattr(table, "normalized_schema", []) or []:
+            if not isinstance(column, Mapping):
+                continue
+            column_name = to_text(column.get("canonical_name") or column.get("name"))
+            if not column_name:
+                continue
+            column_type = to_text(column.get("canonical_type") or column.get("type") or "text")
+            if column_type.lower() == "spatial":
+                field = spatial_field_by_name.get(column_name.lower(), {})
+                srid = self._extract_srid(field.get("crs"))
+                geometry_type = "GEOMETRY"
+                spatial_type = "geometry"
+                if srid is not None:
+                    column_type = f"{spatial_type}({geometry_type},{srid})"
+                else:
+                    column_type = spatial_type
+            column_lines.append(f"    {column_name} {column_type}")
+        body = ",\n".join(column_lines)
+        del schema_name
+        return f"CREATE TABLE {table.table_name} (\n{body}\n);"
+
+    def _build_row_metadata(
+        self,
+        *,
+        database: SynthesizedSpatialDatabase,
+        database_runtime_metadata: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if isinstance(database_runtime_metadata, Mapping) and database_runtime_metadata.get("tables"):
+            raw_tables = [
+                stable_jsonify(item)
+                for item in database_runtime_metadata.get("tables", [])
+                if isinstance(item, Mapping)
+            ]
+            schema_ddls = [
+                to_text(item.get("create_table_ddl"))
+                for item in raw_tables
+                if to_text(item.get("create_table_ddl"))
+            ]
+            schema_name = to_text(database_runtime_metadata.get("schema_name"))
+            return {
+                "database_context": {
+                    "database_id": database.database_id,
+                    "city": database.city,
+                    "schema_name": schema_name,
+                    "selected_table_names": list(database.selected_table_names),
+                    "schema_ddls": schema_ddls,
+                    "tables": raw_tables,
+                }
+            }
+
+        schema_name = database.database_id
+        fallback_tables = []
+        schema_ddls: list[str] = []
+        for table in database.selected_tables:
+            create_table_ddl = self._fallback_create_table_ddl(table, schema_name)
+            schema_ddls.append(create_table_ddl)
+            fallback_tables.append(
+                {
+                    "table_name": table.table_name,
+                    "create_table_ddl": create_table_ddl,
+                    "columns": [
+                        {
+                            "column_name": to_text(column.get("canonical_name") or column.get("name")),
+                            "column_type": to_text(column.get("canonical_type") or column.get("type") or "text"),
+                        }
+                        for column in (table.normalized_schema or [])
+                        if isinstance(column, Mapping) and to_text(column.get("canonical_name") or column.get("name"))
+                    ],
+                    "spatial_fields": stable_jsonify(table.spatial_fields),
+                    "representative_values": stable_jsonify(table.representative_values),
+                }
+            )
+        return {
+            "database_context": {
+                "database_id": database.database_id,
+                "city": database.city,
+                "schema_name": schema_name,
+                "selected_table_names": list(database.selected_table_names),
+                "schema_ddls": schema_ddls,
+                "tables": fallback_tables,
+            }
+        }
 
     @staticmethod
     def _format_function_names(sampled_functions: Sequence[Any]) -> str:
@@ -545,6 +641,10 @@ class ConstraintGuidedSQLSynthesizer:
             minor_revision_prompts=minor_revision_prompts,
             validation_result=validation_result.to_dict(),
             execution_result=execution_result.to_dict(),
+            metadata=self._build_row_metadata(
+                database=database,
+                database_runtime_metadata=database_runtime_metadata,
+            ),
             revision_rounds=len(minor_revision_prompts),
             generation_metadata={
                 "provider": self.config.llm.provider,

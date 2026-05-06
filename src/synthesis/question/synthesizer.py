@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -38,6 +38,7 @@ class DiversityAwareQuestionSynthesizer:
         style_selector: StyleSelector | None = None,
         spatial_phrase_selector: SpatialPhraseSelector | None = None,
         validator: QuestionValidator | None = None,
+        existing_question_id_offsets: Mapping[str, int] | None = None,
     ) -> None:
         self.config = config
         self.llm_client = llm_client
@@ -47,11 +48,13 @@ class DiversityAwareQuestionSynthesizer:
         self.spatial_phrase_selector = spatial_phrase_selector or SpatialPhraseSelector()
         self.validator = validator or QuestionValidator()
         self.rng = np.random.default_rng(self.config.generation.random_seed)
+        self._question_id_offsets: dict[str, int] = dict(existing_question_id_offsets or {})
 
     def run(
         self,
         sql_queries: Sequence[SQLQuestionSource],
         context_by_database_id: Mapping[str, QuestionGenerationContext],
+        on_row_generated: Callable[[SynthesizedQuestion], None] | None = None,
     ) -> list[SynthesizedQuestion]:
         rows: list[SynthesizedQuestion] = []
         for sql_query in sql_queries:
@@ -63,13 +66,14 @@ class DiversityAwareQuestionSynthesizer:
                     sql_query.database_id,
                 )
                 continue
-            rows.extend(self.run_for_sql(sql_query, context))
+            rows.extend(self.run_for_sql(sql_query, context, on_row_generated=on_row_generated))
         return rows
 
     def run_for_sql(
         self,
         sql_query: SQLQuestionSource,
         context: QuestionGenerationContext,
+        on_row_generated: Callable[[SynthesizedQuestion], None] | None = None,
     ) -> list[SynthesizedQuestion]:
         features = self.feature_extractor.extract(sql_query.sql)
         style_plan = self.style_selector.build_style_plan(
@@ -99,9 +103,15 @@ class DiversityAwareQuestionSynthesizer:
                 features=features,
                 spatial_constraints=spatial_constraints,
             )
-            if row is not None:
-                rows.append(row)
+            rows.append(row)
+            if on_row_generated is not None:
+                on_row_generated(row)
         return rows
+
+    def _next_question_id(self, database_id: str) -> str:
+        next_value = self._question_id_offsets.get(database_id, 0) + 1
+        self._question_id_offsets[database_id] = next_value
+        return f"{database_id}_{next_value:04d}"
 
     def _run_single_question(
         self,
@@ -112,7 +122,7 @@ class DiversityAwareQuestionSynthesizer:
         style: str,
         features,
         spatial_constraints,
-    ) -> SynthesizedQuestion | None:
+    ) -> SynthesizedQuestion:
         sample_tag = f"{sql_query.sql_id}/q_{question_index + 1:03d}"
         prompt_build_start = time.perf_counter()
         prompt = self.prompt_builder.build_question_generation_prompt(
@@ -217,7 +227,7 @@ class DiversityAwareQuestionSynthesizer:
             )
 
         synthesized = SynthesizedQuestion(
-            question_id=f"{sql_query.sql_id}_q_{question_index + 1:03d}",
+            question_id=self._next_question_id(sql_query.database_id),
             sql_id=sql_query.sql_id,
             database_id=sql_query.database_id,
             city=sql_query.city,
@@ -243,9 +253,7 @@ class DiversityAwareQuestionSynthesizer:
                 "success": validation_result.is_valid,
             },
         )
-        if validation_result.is_valid or self.config.generation.keep_invalid:
-            return synthesized
-        return None
+        return synthesized
 
     # Backward-compatible aliases
     generate_all = run
@@ -255,4 +263,3 @@ class DiversityAwareQuestionSynthesizer:
 
 class DiversityAwareQuestionGenerator(DiversityAwareQuestionSynthesizer):
     """Backward-compatible alias for the legacy question generator name."""
-

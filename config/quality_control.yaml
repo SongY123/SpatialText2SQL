@@ -16,7 +16,7 @@ functions:
     - topology
 
 run:
-  input_path: data/processed/diversity_aware_questions.jsonl
+  input_path: data/processed/synthesized_questions.jsonl
   schema_context_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/quality_controlled_nl_sql.jsonl
   report_path: data/processed/quality_control_report.json

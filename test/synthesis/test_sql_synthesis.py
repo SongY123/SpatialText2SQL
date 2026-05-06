@@ -21,6 +21,7 @@ from src.synthesis.sql import (
     SQLSynthesisRunConfig,
     SQLValidator,
     build_sql_generator,
+    build_create_table_ddl_query,
     contains_dangerous_sql,
     append_sql_query,
     ensure_sql_output,
@@ -346,6 +347,17 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         self.assertIsInstance(generator, OllamaSQLGenerator)
 
+    def test_build_sql_generator_supports_config_object_and_mock_provider(self):
+        generator = build_sql_generator(
+            config=SQLSynthesisLLMConfig(
+                provider="mock",
+                model="mock-model",
+                base_url="http://mock",
+                api_key_env="OPENAI_API_KEY",
+            )
+        )
+        self.assertIsInstance(generator, MockSQLGenerator)
+
     def test_sql_synthesis_prompt_limits_representative_values_and_masks_geometry(self):
         table = CanonicalSpatialTable.from_dict(
             {
@@ -602,6 +614,7 @@ class SQLSynthesisTests(unittest.TestCase):
             ],
         )
         self.assertIn("Representative Values", prompt)
+        self.assertNotIn("Spatial Field Metadata", prompt)
         self.assertIn("Difficulty Constraint", prompt)
         self.assertIn("ST_DWithin", prompt)
         self.assertIn("used_spatial_functions", prompt)
@@ -705,9 +718,11 @@ class SQLSynthesisTests(unittest.TestCase):
         builder = PromptBuilder({"project_root": Path.cwd()})
         database = _make_database(table_count=1)
         runtime_metadata = {
+            "schema_name": "nyc_0001",
             "tables": [
                 {
                     "table_name": "table_1",
+                    "create_table_ddl": "CREATE TABLE table_1 (\n    id integer,\n    name text,\n    shape geography(Point,4326)\n);",
                     "columns": [
                         {"column_name": "id", "column_type": "integer"},
                         {"column_name": "name", "column_type": "text"},
@@ -736,14 +751,80 @@ class SQLSynthesisTests(unittest.TestCase):
             sampled_functions=[{"function_name": "ST_DWithin"}],
             database_runtime_metadata=runtime_metadata,
         )
-        self.assertIn("table_1(id integer, name text, shape geography(Point,4326))", prompt)
-        self.assertIn("family=geography", prompt)
+        self.assertIn("CREATE TABLE table_1", prompt)
+        self.assertIn("shape geography(Point,4326)", prompt)
+        self.assertNotIn("Spatial Field Metadata", prompt)
         self.assertIn('"hydrant"', prompt)
         self.assertIn('"shape": "POINT"', prompt)
-        self.assertIn("Geometry and geography are different types", prompt)
-        self.assertIn("complete externally supplied candidate set", prompt)
-        self.assertIn("Do not use any spatial function unless it appears explicitly", prompt)
         self.assertNotIn("geom spatial", prompt)
+
+    def test_build_create_table_ddl_query_uses_regclass_placeholders(self):
+        query, params = build_create_table_ddl_query("nyc_0001", "biannual_pedestrian_counts_map")
+        self.assertIn("c.oid = %s::regclass", query)
+        self.assertIn("conrelid = %s::regclass", query)
+        self.assertIn("'    %%I %%s%%s%%s'", query)
+        self.assertIn("'    CONSTRAINT %%I %%s'", query)
+        self.assertIn("'CREATE TABLE %%I (%%s%%s%%s);'", query)
+        self.assertEqual(
+            params,
+            (
+                "nyc_0001.biannual_pedestrian_counts_map",
+                "nyc_0001.biannual_pedestrian_counts_map",
+            ),
+        )
+
+    def test_synthesized_sql_includes_metadata_for_question_step(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        generator = MockSQLGenerator(
+            responses=[
+                '{"sql":"SELECT t.name FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["name"],"used_spatial_functions":[],"reasoning_summary":"ok"}'
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        prompt_metadata = {
+            "database_id": "nyc_0001",
+            "city": "nyc",
+            "schema_name": "nyc_0001",
+            "schema_ddls": ["CREATE TABLE table_1 (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);"],
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "create_table_ddl": "CREATE TABLE table_1 (\n    id integer,\n    name text,\n    geom geometry(GEOMETRY,4326)\n);",
+                    "columns": [
+                        {"column_name": "id", "column_type": "integer"},
+                        {"column_name": "name", "column_type": "text"},
+                        {"column_name": "geom", "column_type": "geometry(GEOMETRY,4326)"},
+                    ],
+                    "spatial_fields": [
+                        {
+                            "column_name": "geom",
+                            "column_type": "geometry(GEOMETRY,4326)",
+                            "spatial_type": "geometry",
+                            "geometry_type": "GEOMETRY",
+                            "srid": 4326,
+                        }
+                    ],
+                    "representative_values": {"name": ["hydrant"]},
+                }
+            ],
+            "representative_values": {"table_1": {"name": ["hydrant"]}},
+        }
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(synthesis={"difficulty": "easy"}),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
+            prompt_metadata_provider=FakePromptMetadataProvider(prompt_metadata),
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("database_context", rows[0].metadata)
+        self.assertIn("schema_ddls", rows[0].metadata["database_context"])
+        self.assertIn("CREATE TABLE table_1", rows[0].metadata["database_context"]["schema_ddls"][0])
 
     def test_response_parser_supports_json_and_markdown_json(self):
         plain = parse_sql_generation_response(

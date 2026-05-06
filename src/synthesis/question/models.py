@@ -10,11 +10,12 @@ from src.synthesis.database.utils import stable_jsonify, to_text
 
 
 QUESTION_STYLES = (
-    "factual_lookup",
-    "comparative_analysis",
-    "aggregation_inquiry",
-    "ranking_inquiry",
-    "exploratory_analysis",
+    "conversational",
+    "formal",
+    "direct",
+    "concise",
+    "polite",
+    "analytical",
 )
 
 
@@ -66,6 +67,7 @@ class SQLQuestionSource:
     spatial_function_constraints: list[dict[str, Any]] = field(default_factory=list)
     validation_result: dict[str, Any] = field(default_factory=dict)
     execution_result: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     generation_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -96,6 +98,7 @@ class SQLQuestionSource:
             spatial_function_constraints=_as_list_of_mappings(payload.get("spatial_function_constraints")),
             validation_result=_as_mapping(payload.get("validation_result")),
             execution_result=_as_mapping(payload.get("execution_result")),
+            metadata=_as_mapping(payload.get("metadata")),
             generation_metadata=_as_mapping(payload.get("generation_metadata")),
         )
 
@@ -105,6 +108,7 @@ class QuestionGenerationContext:
     database_id: str
     city: str
     selected_table_names: list[str]
+    schema_ddls: list[str]
     schema: list[dict[str, Any]]
     representative_values: dict[str, Any]
     spatial_fields: list[dict[str, Any]]
@@ -132,9 +136,91 @@ class QuestionGenerationContext:
             database_id=database.database_id,
             city=database.city,
             selected_table_names=list(database.selected_table_names),
+            schema_ddls=[],
             schema=stable_jsonify(database.schema),
             representative_values=stable_jsonify(representative_values or database.representative_values),
             spatial_fields=stable_jsonify(database.spatial_fields),
+            table_contexts=table_contexts,
+        )
+
+    @classmethod
+    def from_sql_metadata(
+        cls,
+        metadata: Mapping[str, Any],
+        *,
+        database_id: str,
+        city: str,
+    ) -> "QuestionGenerationContext" | None:
+        raw_context = metadata.get("database_context") if isinstance(metadata.get("database_context"), Mapping) else metadata
+        if not isinstance(raw_context, Mapping):
+            return None
+        tables = [item for item in raw_context.get("tables", []) or [] if isinstance(item, Mapping)]
+        schema_ddls = [
+            to_text(item.get("create_table_ddl"))
+            for item in tables
+            if to_text(item.get("create_table_ddl"))
+        ]
+        selected_table_names = [
+            to_text(item)
+            for item in (raw_context.get("selected_table_names") or [])
+            if to_text(item)
+        ]
+        if not selected_table_names:
+            selected_table_names = [
+                to_text(item.get("table_name"))
+                for item in tables
+                if to_text(item.get("table_name"))
+            ]
+        if not schema_ddls and not tables:
+            return None
+        representative_values = {
+            to_text(item.get("table_name")): stable_jsonify(item.get("representative_values"))
+            for item in tables
+            if to_text(item.get("table_name"))
+        }
+        spatial_fields: list[dict[str, Any]] = []
+        schema_rows: list[dict[str, Any]] = []
+        table_contexts: list[dict[str, Any]] = []
+        for item in tables:
+            table_name = to_text(item.get("table_name"))
+            columns = stable_jsonify(item.get("columns", []))
+            fields = stable_jsonify(item.get("spatial_fields", []))
+            if table_name:
+                schema_rows.append(
+                    {
+                        "table_name": table_name,
+                        "normalized_schema": [
+                            {
+                                "canonical_name": to_text(column.get("column_name")),
+                                "type": to_text(column.get("column_type")),
+                            }
+                            for column in columns
+                            if isinstance(column, Mapping) and to_text(column.get("column_name"))
+                        ],
+                    }
+                )
+            for field in fields:
+                if isinstance(field, Mapping):
+                    enriched = {"table_name": table_name}
+                    enriched.update(stable_jsonify(field))
+                    spatial_fields.append(enriched)
+            table_contexts.append(
+                {
+                    "table_name": table_name,
+                    "create_table_ddl": to_text(item.get("create_table_ddl")),
+                    "columns": columns,
+                    "spatial_fields": fields,
+                    "representative_values": stable_jsonify(item.get("representative_values")),
+                }
+            )
+        return cls(
+            database_id=to_text(raw_context.get("database_id")) or database_id,
+            city=to_text(raw_context.get("city")) or city,
+            selected_table_names=selected_table_names,
+            schema_ddls=schema_ddls,
+            schema=schema_rows,
+            representative_values=representative_values,
+            spatial_fields=spatial_fields,
             table_contexts=table_contexts,
         )
 
@@ -143,6 +229,7 @@ class QuestionGenerationContext:
             "database_id": self.database_id,
             "city": self.city,
             "selected_table_names": list(self.selected_table_names),
+            "schema_ddls": list(self.schema_ddls),
             "schema": stable_jsonify(self.schema),
             "representative_values": stable_jsonify(self.representative_values),
             "spatial_fields": stable_jsonify(self.spatial_fields),

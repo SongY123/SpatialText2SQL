@@ -18,9 +18,12 @@ from .config import (
 from .synthesizer import DiversityAwareQuestionSynthesizer
 from .generator import build_question_llm
 from .io import (
+    append_synthesized_question,
+    build_question_generation_contexts_from_sql_sources,
+    ensure_question_output,
+    load_existing_question_id_offsets,
     load_question_generation_contexts,
     load_sql_question_sources,
-    write_synthesized_questions,
 )
 
 
@@ -42,8 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int)
     parser.add_argument("--max-retries", type=int)
     parser.add_argument("--random-seed", type=int)
-    parser.add_argument("--keep-invalid", action="store_true")
-    parser.add_argument("--max-revision-rounds", type=int)
     parser.add_argument("--log-level")
     parser.add_argument("--log-path")
     return parser
@@ -73,8 +74,6 @@ def main(argv: list[str] | None = None) -> int:
             "style": args.style,
             "style_weights": args.style_weights,
             "random_seed": args.random_seed,
-            "keep_invalid": args.keep_invalid if args.keep_invalid else None,
-            "max_revision_rounds": args.max_revision_rounds,
         }.items() if value is not None},
         logging={key: value for key, value in {
             "log_level": args.log_level,
@@ -111,28 +110,43 @@ def main(argv: list[str] | None = None) -> int:
         dict(query_city_counts),
     )
 
-    contexts = load_question_generation_contexts(config.generation.database_context_path)
-    logging.info("Loaded question generation contexts | count=%s", len(contexts))
-
-    llm_client = build_question_llm(
-        provider=config.llm.provider,
-        model=config.llm.model,
-        base_url=config.llm.base_url,
-        api_key_env=config.llm.api_key_env,
-        temperature=config.llm.temperature,
-        max_tokens=config.llm.max_tokens,
-        timeout=config.llm.timeout,
-        max_retries=config.llm.max_retries,
+    metadata_contexts = build_question_generation_contexts_from_sql_sources(sql_queries)
+    contexts = dict(metadata_contexts)
+    missing_database_ids = sorted({item.database_id for item in sql_queries if item.database_id not in contexts})
+    if missing_database_ids:
+        fallback_contexts = load_question_generation_contexts(config.generation.database_context_path)
+        for database_id in missing_database_ids:
+            if database_id in fallback_contexts:
+                contexts[database_id] = fallback_contexts[database_id]
+    logging.info(
+        "Loaded question generation contexts | count=%s | from_sql_metadata=%s | missing_after_merge=%s",
+        len(contexts),
+        len(metadata_contexts),
+        len([item.database_id for item in sql_queries if item.database_id not in contexts]),
     )
+
+    ensure_question_output(config.generation.output_path)
+    existing_question_id_offsets = load_existing_question_id_offsets(config.generation.output_path)
+    logging.info(
+        "Question output ready for append | path=%s | tracked_databases=%s",
+        config.generation.output_path,
+        len(existing_question_id_offsets),
+    )
+
+    llm_client = build_question_llm(config=config.llm)
     prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[3]})
     generator = DiversityAwareQuestionSynthesizer(
         config=config,
         llm_client=llm_client,
         prompt_builder=prompt_builder,
+        existing_question_id_offsets=existing_question_id_offsets,
     )
-    rows = generator.run(sql_queries, contexts)
-    write_synthesized_questions(config.generation.output_path, rows)
-    logging.info("Wrote %s synthesized questions to %s", len(rows), config.generation.output_path)
+    rows = generator.run(
+        sql_queries,
+        contexts,
+        on_row_generated=lambda row: append_synthesized_question(config.generation.output_path, row),
+    )
+    logging.info("Appended %s synthesized questions to %s", len(rows), config.generation.output_path)
     return 0
 
 

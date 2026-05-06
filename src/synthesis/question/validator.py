@@ -29,6 +29,14 @@ RANKING_MARKERS = ["top", "highest", "lowest", "largest", "smallest", "nearest",
 GROUPING_MARKERS = ["for each", "per", "by", "for every"]
 COMPARATIVE_MARKERS = ["compare", "difference", "more than", "less than", "higher than", "lower than", "versus"]
 EXPLORATORY_MARKERS = ["analyze", "explore", "pattern", "relationship", "distribution"]
+STYLE_MARKERS: dict[str, list[str]] = {
+    "conversational": ["can you", "could you", "which", "what", "where"],
+    "formal": ["identify", "determine", "list the", "which"],
+    "direct": ["show", "list", "find", "return"],
+    "concise": [],
+    "polite": ["please", "could you", "would you", "can you please"],
+    "analytical": EXPLORATORY_MARKERS + ["compare", "summary"],
+}
 
 
 def _normalize_numeric_token(value: str) -> set[str]:
@@ -104,15 +112,13 @@ class QuestionValidator:
                 if not any(variant in question for variant in limit_variants):
                     warnings.append(f"Question may be missing the LIMIT/top-k value {sql_features.limit}.")
 
-        if requested_style == "comparative_analysis" and not any(marker in lowered for marker in COMPARATIVE_MARKERS):
-            warnings.append("Comparative style question may be missing comparison wording.")
-        else:
-            detected_style_markers.extend(marker for marker in COMPARATIVE_MARKERS if marker in lowered)
-
-        if requested_style == "exploratory_analysis" and not any(marker in lowered for marker in EXPLORATORY_MARKERS):
-            warnings.append("Exploratory style question may be missing analytical wording.")
-        else:
-            detected_style_markers.extend(marker for marker in EXPLORATORY_MARKERS if marker in lowered)
+        style_markers = STYLE_MARKERS.get(requested_style, [])
+        if requested_style == "concise":
+            if len(question.split()) > 18:
+                warnings.append("Concise style question may be longer than expected.")
+        elif style_markers and not any(marker in lowered for marker in style_markers):
+            warnings.append(f"{requested_style.capitalize()} style question may be missing expected wording.")
+        detected_style_markers.extend(marker for marker in style_markers if marker in lowered)
 
         if spatial_constraints:
             matched_any = False
