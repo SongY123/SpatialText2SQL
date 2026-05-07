@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-path")
     parser.add_argument("--nvidia-gpu-indices")
     parser.add_argument("--distributed-backend", choices=["none", "accelerate"])
+    parser.add_argument("--dynamo-backend")
     parser.add_argument("--num-processes", type=int)
     parser.add_argument("--main-process-port", type=int)
     parser.add_argument("--deepspeed-config-path")
@@ -61,6 +62,14 @@ def _effective_num_processes(config) -> int:
         return configured
     gpu_indices = list(config.runtime.nvidia_gpu_indices or [])
     return max(len(gpu_indices), 1)
+
+
+def _resolve_accelerate_mixed_precision(config) -> str:
+    if config.training.bf16:
+        return "bf16"
+    if config.training.fp16:
+        return "fp16"
+    return "no"
 
 
 def _is_rank_zero_env() -> bool:
@@ -86,10 +95,15 @@ def _build_accelerate_command(config, args) -> list[str]:
         sys.executable,
         "-m",
         "accelerate.commands.launch",
+        "--multi_gpu",
+        "--mixed_precision",
+        _resolve_accelerate_mixed_precision(config),
         "--num_processes",
         str(_effective_num_processes(config)),
         "--num_machines",
         str(config.runtime.num_machines),
+        "--dynamo_backend",
+        config.runtime.dynamo_backend,
         "--machine_rank",
         str(config.runtime.machine_rank),
         "--main_process_port",
@@ -179,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime={key: value for key, value in {
             "nvidia_gpu_indices": args.nvidia_gpu_indices,
             "distributed_backend": args.distributed_backend,
+            "dynamo_backend": args.dynamo_backend,
             "num_processes": args.num_processes,
             "main_process_port": args.main_process_port,
         }.items() if value is not None},

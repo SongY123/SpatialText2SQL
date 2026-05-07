@@ -52,6 +52,7 @@ class FinetuneTrainingConfig:
     num_train_epochs: float = 3.0
     max_steps: int = -1
     weight_decay: float = 0.01
+    warmup_steps: int = 0
     warmup_ratio: float = 0.03
     lr_scheduler_type: str = "cosine"
     logging_steps: int = 10
@@ -81,6 +82,7 @@ class FinetuneLoggingConfig:
 class FinetuneRuntimeConfig:
     nvidia_gpu_indices: list[int] = field(default_factory=lambda: list(range(8)))
     distributed_backend: str = "accelerate"
+    dynamo_backend: str = "no"
     num_processes: int = 0
     num_machines: int = 1
     machine_rank: int = 0
@@ -171,6 +173,13 @@ def _as_runtime_backend(value: Any, default: str) -> str:
     return backend
 
 
+def _as_dynamo_backend(value: Any, default: str) -> str:
+    backend = _as_text(value, default).strip().lower()
+    if not backend:
+        return default
+    return backend
+
+
 def load_trl_finetune_config(config_path: str | Path | None = None) -> SpatialText2SQLFinetuneConfig:
     path = Path(config_path or DEFAULT_TRL_FINETUNE_CONFIG_PATH)
     if not path.is_file():
@@ -253,6 +262,10 @@ def _build_trl_finetune_config_from_payload(
             num_train_epochs=_as_float(training_section.get("num_train_epochs"), default_training.num_train_epochs),
             max_steps=int(training_section.get("max_steps", default_training.max_steps)),
             weight_decay=_as_float(training_section.get("weight_decay"), default_training.weight_decay),
+            warmup_steps=_as_non_negative_int(
+                training_section.get("warmup_steps"),
+                default_training.warmup_steps,
+            ),
             warmup_ratio=_as_float(training_section.get("warmup_ratio"), default_training.warmup_ratio),
             lr_scheduler_type=_as_text(training_section.get("lr_scheduler_type"), default_training.lr_scheduler_type),
             logging_steps=_as_positive_int(training_section.get("logging_steps"), default_training.logging_steps),
@@ -303,6 +316,10 @@ def _build_trl_finetune_config_from_payload(
             distributed_backend=_as_runtime_backend(
                 runtime_section.get("distributed_backend"),
                 default_runtime.distributed_backend,
+            ),
+            dynamo_backend=_as_dynamo_backend(
+                runtime_section.get("dynamo_backend"),
+                default_runtime.dynamo_backend,
             ),
             num_processes=_as_non_negative_int(
                 runtime_section.get("num_processes"),

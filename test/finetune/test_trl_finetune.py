@@ -64,6 +64,11 @@ class TRLFinetuneTests(unittest.TestCase):
         args = SimpleNamespace(config="config/finetune.yaml")
         command = _build_accelerate_command(config, args)
         self.assertIn("accelerate.commands.launch", command)
+        self.assertIn("--multi_gpu", command)
+        self.assertIn("--mixed_precision", command)
+        self.assertIn("bf16", command)
+        self.assertIn("--dynamo_backend", command)
+        self.assertIn(config.runtime.dynamo_backend, command)
         self.assertIn("--input", command)
         self.assertIn(config.data.input_path, command)
         self.assertIn("--alpaca-output", command)
@@ -258,6 +263,30 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertEqual(trainer.saved_state, 0)
         self.assertEqual(tokenizer.saved, 0)
         self.assertEqual(trainer.accelerator.calls, 2)
+
+    def test_resolve_warmup_steps_uses_ratio_when_explicit_steps_are_zero(self):
+        config = override_trl_finetune_config(
+            load_trl_finetune_config(),
+            training={
+                "per_device_train_batch_size": 2,
+                "gradient_accumulation_steps": 2,
+                "num_train_epochs": 3.0,
+                "max_steps": -1,
+                "warmup_steps": 0,
+                "warmup_ratio": 0.1,
+            },
+        )
+        finetuner = TRLFullFinetuner(config)
+        original_world_size = os.environ.get("WORLD_SIZE")
+        try:
+            os.environ["WORLD_SIZE"] = "2"
+            self.assertEqual(finetuner._estimate_total_training_steps(17), 9)
+            self.assertEqual(finetuner._resolve_warmup_steps(17), 1)
+        finally:
+            if original_world_size is None:
+                os.environ.pop("WORLD_SIZE", None)
+            else:
+                os.environ["WORLD_SIZE"] = original_world_size
 
     def test_dataset_builder_normalizes_question_id_and_difficulty(self):
         runtime_metadata = {

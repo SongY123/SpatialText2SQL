@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Sequence
@@ -77,7 +78,14 @@ class TRLFullFinetuner:
                 total_params,
             )
 
-        sft_config = self._build_sft_config(trl.SFTConfig, has_eval=bool(eval_rows))
+        resolved_warmup_steps = self._resolve_warmup_steps(len(train_rows))
+        if self._is_rank_zero_env():
+            LOGGER.info("Resolved warmup steps | warmup_steps=%s", resolved_warmup_steps)
+        sft_config = self._build_sft_config(
+            trl.SFTConfig,
+            has_eval=bool(eval_rows),
+            warmup_steps=resolved_warmup_steps,
+        )
         output_dir = Path(self.config.training.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,7 +266,7 @@ class TRLFullFinetuner:
         local_rank = os.environ.get("LOCAL_RANK")
         return rank in (None, "", "0") and local_rank in (None, "", "0")
 
-    def _build_sft_config(self, sft_config_cls, *, has_eval: bool):
+    def _build_sft_config(self, sft_config_cls, *, has_eval: bool, warmup_steps: int):
         signature = inspect.signature(sft_config_cls.__init__)
         kwargs: dict[str, Any] = {}
 
@@ -281,7 +289,7 @@ class TRLFullFinetuner:
         maybe_set("num_train_epochs", self.config.training.num_train_epochs)
         maybe_set("max_steps", self.config.training.max_steps)
         maybe_set("weight_decay", self.config.training.weight_decay)
-        maybe_set("warmup_ratio", self.config.training.warmup_ratio)
+        maybe_set("warmup_steps", warmup_steps)
         maybe_set("lr_scheduler_type", self.config.training.lr_scheduler_type)
         maybe_set("logging_steps", self.config.training.logging_steps)
         maybe_set("save_steps", self.config.training.save_steps)
@@ -326,3 +334,34 @@ class TRLFullFinetuner:
         if dtype_name not in mapping:
             raise ValueError(f"Unsupported torch_dtype: {self.config.model.torch_dtype}")
         return mapping[dtype_name]
+
+    def _resolve_warmup_steps(self, train_row_count: int) -> int:
+        explicit_steps = int(self.config.training.warmup_steps)
+        if explicit_steps > 0:
+            return explicit_steps
+        ratio = float(self.config.training.warmup_ratio)
+        if ratio <= 0:
+            return 0
+        total_steps = self._estimate_total_training_steps(train_row_count)
+        return max(0, int(round(total_steps * ratio)))
+
+    def _estimate_total_training_steps(self, train_row_count: int) -> int:
+        if self.config.training.max_steps > 0:
+            return int(self.config.training.max_steps)
+        world_size = self._distributed_world_size()
+        per_device_batch_size = max(int(self.config.training.per_device_train_batch_size), 1)
+        grad_accum = max(int(self.config.training.gradient_accumulation_steps), 1)
+        per_step_examples = per_device_batch_size * world_size
+        dataloader_steps = max(1, math.ceil(train_row_count / per_step_examples))
+        update_steps_per_epoch = max(1, math.ceil(dataloader_steps / grad_accum))
+        return max(1, math.ceil(update_steps_per_epoch * float(self.config.training.num_train_epochs)))
+
+    @staticmethod
+    def _distributed_world_size() -> int:
+        world_size = os.environ.get("WORLD_SIZE")
+        if not world_size:
+            return 1
+        try:
+            return max(int(world_size), 1)
+        except ValueError:
+            return 1
