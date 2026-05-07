@@ -19,6 +19,7 @@ from src.finetune.formatter import NL2SQLAlpacaFormatter
 from src.finetune.io import write_alpaca_finetune_samples
 from src.finetune.models import AlpacaFinetuneSample, RawFinetuneSample
 from src.finetune.prompting import FinetunePromptRenderer
+from src.finetune.trainer import TRLFullFinetuner
 
 
 class TRLFinetuneTests(unittest.TestCase):
@@ -114,6 +115,7 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn("## Question", input_text)
         self.assertNotIn("## Spatial Field Metadata", prompt)
         self.assertIn("Which parks intersect schools?", prompt)
+        self.assertTrue(prompt.endswith("## Response\n"))
 
     def test_alpaca_formatter_splits_instruction_input_and_output(self):
         runtime_metadata = {
@@ -186,6 +188,76 @@ class TRLFinetuneTests(unittest.TestCase):
             write_alpaca_finetune_samples(str(output_path), [row])
             payload = json.loads(output_path.read_text(encoding="utf-8").strip())
         self.assertEqual(payload, row.to_dict())
+
+    def test_completion_mask_is_built_from_single_tokenization_pass(self):
+        class FakeTokenizer:
+            is_fast = True
+
+            def __call__(self, text, add_special_tokens=True, return_offsets_mapping=False, return_special_tokens_mask=False):
+                input_ids = list(range(len(text)))
+                payload = {"input_ids": input_ids}
+                if return_offsets_mapping:
+                    payload["offset_mapping"] = [(index, index + 1) for index in range(len(text))]
+                if return_special_tokens_mask:
+                    payload["special_tokens_mask"] = [0] * len(text)
+                return payload
+
+        full_text = "PROMPT## Response\nSQL"
+        payload = TRLFullFinetuner._tokenize_with_completion_mask(
+            tokenizer=FakeTokenizer(),
+            full_text=full_text,
+            completion_start=len("PROMPT## Response\n"),
+        )
+        self.assertEqual(len(payload["input_ids"]), len(full_text))
+        self.assertEqual(payload["completion_mask"][-3:], [1, 1, 1])
+        self.assertEqual(payload["completion_mask"][: len("PROMPT## Response\n")], [0] * len("PROMPT## Response\n"))
+
+    def test_persist_training_artifacts_runs_only_on_main_process(self):
+        class FakeAccelerator:
+            def __init__(self):
+                self.calls = 0
+                self.is_main_process = False
+
+            def wait_for_everyone(self):
+                self.calls += 1
+
+        class FakeTrainer:
+            def __init__(self):
+                self.accelerator = FakeAccelerator()
+                self.saved_model = 0
+                self.saved_state = 0
+
+            def is_world_process_zero(self):
+                return False
+
+            def save_model(self, _):
+                self.saved_model += 1
+
+            def save_state(self):
+                self.saved_state += 1
+
+        class FakeTokenizer:
+            def __init__(self):
+                self.saved = 0
+
+            def save_pretrained(self, _):
+                self.saved += 1
+
+        finetuner = TRLFullFinetuner(load_trl_finetune_config())
+        trainer = FakeTrainer()
+        tokenizer = FakeTokenizer()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            finetuner._persist_training_artifacts(
+                trainer=trainer,
+                tokenizer=tokenizer,
+                output_dir=Path(temp_dir),
+                metrics={"train_loss": 1.0},
+            )
+            self.assertFalse((Path(temp_dir) / "train_metrics.json").exists())
+        self.assertEqual(trainer.saved_model, 0)
+        self.assertEqual(trainer.saved_state, 0)
+        self.assertEqual(tokenizer.saved, 0)
+        self.assertEqual(trainer.accelerator.calls, 2)
 
     def test_dataset_builder_normalizes_question_id_and_difficulty(self):
         runtime_metadata = {

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -16,6 +18,7 @@ import trl
 from .config import SpatialText2SQLFinetuneConfig
 from .models import AlpacaFinetuneSample
 from .prompting import FinetunePromptRenderer
+from .utils import stable_jsonify
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,21 +27,9 @@ class TRLFullFinetuner:
     def __init__(self, config: SpatialText2SQLFinetuneConfig) -> None:
         self.config = config
 
-    def train(self, rows: Sequence[AlpacaFinetuneSample]) -> dict[str, Any]:
+    def train(self, rows: Sequence[AlpacaFinetuneSample]) -> dict[str, Any] | None:
         if not rows:
             raise ValueError("No Alpaca fine-tune rows were provided.")
-
-        train_rows, eval_rows = self._split_rows(rows)
-        train_dataset = datasets.Dataset.from_list(
-            [{"prompt": self._prompt_from_row(row), "completion": self._completion_from_row(row)} for row in train_rows]
-        )
-        eval_dataset = (
-            datasets.Dataset.from_list(
-                [{"prompt": self._prompt_from_row(row), "completion": self._completion_from_row(row)} for row in eval_rows]
-            )
-            if eval_rows
-            else None
-        )
 
         tokenizer_name = self.config.model.tokenizer_name_or_path or self.config.model.model_name_or_path
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -50,12 +41,20 @@ class TRLFullFinetuner:
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
 
+        train_rows, eval_rows = self._split_rows(rows)
+        train_dataset = datasets.Dataset.from_list(self._build_tokenized_dataset_rows(train_rows, tokenizer))
+        eval_dataset = (
+            datasets.Dataset.from_list(self._build_tokenized_dataset_rows(eval_rows, tokenizer))
+            if eval_rows
+            else None
+        )
+
         model_kwargs = {
             "trust_remote_code": self.config.model.trust_remote_code,
         }
         torch_dtype = self._resolve_torch_dtype()
         if torch_dtype is not None:
-            model_kwargs["torch_dtype"] = torch_dtype
+            model_kwargs["dtype"] = torch_dtype
         if self.config.model.attn_implementation:
             model_kwargs["attn_implementation"] = self.config.model.attn_implementation
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -70,12 +69,13 @@ class TRLFullFinetuner:
 
         trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
         total_params = sum(param.numel() for param in model.parameters())
-        LOGGER.info(
-            "Loaded fine-tune model | name=%s | trainable_params=%s | total_params=%s",
-            self.config.model.model_name_or_path,
-            trainable_params,
-            total_params,
-        )
+        if self._is_rank_zero_env():
+            LOGGER.info(
+                "Loaded fine-tune model | name=%s | trainable_params=%s | total_params=%s",
+                self.config.model.model_name_or_path,
+                trainable_params,
+                total_params,
+            )
 
         sft_config = self._build_sft_config(trl.SFTConfig, has_eval=bool(eval_rows))
         output_dir = Path(self.config.training.output_dir)
@@ -92,14 +92,16 @@ class TRLFullFinetuner:
         train_result = trainer.train(
             resume_from_checkpoint=self.config.training.resume_from_checkpoint or None
         )
-        trainer.save_model(str(output_dir))
-        tokenizer.save_pretrained(str(output_dir))
-        trainer.save_state()
-
         metrics = dict(train_result.metrics or {})
         metrics["train_rows"] = len(train_rows)
         metrics["eval_rows"] = len(eval_rows)
-        return metrics
+        self._persist_training_artifacts(
+            trainer=trainer,
+            tokenizer=tokenizer,
+            output_dir=output_dir,
+            metrics=metrics,
+        )
+        return metrics if self._is_main_process(trainer) else None
 
     @staticmethod
     def _build_trainer(
@@ -151,6 +153,110 @@ class TRLFullFinetuner:
     @staticmethod
     def _completion_from_row(row: AlpacaFinetuneSample) -> str:
         return row.output_text
+
+    def _build_tokenized_dataset_rows(
+        self,
+        rows: Sequence[AlpacaFinetuneSample],
+        tokenizer,
+    ) -> list[dict[str, Any]]:
+        tokenized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            prompt = self._prompt_from_row(row)
+            completion = self._completion_from_row(row)
+            full_text = prompt + completion
+            tokenized_rows.append(
+                self._tokenize_with_completion_mask(
+                    tokenizer=tokenizer,
+                    full_text=full_text,
+                    completion_start=len(prompt),
+                )
+            )
+        return tokenized_rows
+
+    @staticmethod
+    def _tokenize_with_completion_mask(
+        *,
+        tokenizer,
+        full_text: str,
+        completion_start: int,
+    ) -> dict[str, Any]:
+        if not getattr(tokenizer, "is_fast", False):
+            raise ValueError(
+                "Completion-only SFT requires a fast tokenizer with offset mappings so completion masks can be built "
+                "from a single consistent tokenization pass."
+            )
+        tokenized = tokenizer(
+            full_text,
+            add_special_tokens=True,
+            return_offsets_mapping=True,
+            return_special_tokens_mask=True,
+        )
+        input_ids = list(tokenized["input_ids"])
+        offsets = list(tokenized["offset_mapping"])
+        special_tokens_mask = list(tokenized.get("special_tokens_mask", [0] * len(input_ids)))
+        completion_mask: list[int] = []
+        completion_started = False
+        for (start, end), is_special in zip(offsets, special_tokens_mask, strict=False):
+            if not is_special and end > completion_start:
+                completion_started = True
+            completion_mask.append(1 if completion_started else 0)
+        if not any(completion_mask):
+            raise ValueError(
+                "Failed to build a non-empty completion mask from the formatted Alpaca sample. "
+                "Check the prompt/completion boundary and tokenizer behavior."
+            )
+        return {
+            "input_ids": input_ids,
+            "completion_mask": completion_mask,
+        }
+
+    def _persist_training_artifacts(
+        self,
+        *,
+        trainer,
+        tokenizer,
+        output_dir: Path,
+        metrics: dict[str, Any],
+    ) -> None:
+        self._wait_for_everyone(trainer)
+        if self._is_main_process(trainer):
+            trainer.save_model(str(output_dir))
+            tokenizer.save_pretrained(str(output_dir))
+            trainer.save_state()
+            self._write_metrics_file(output_dir, metrics)
+        self._wait_for_everyone(trainer)
+
+    @staticmethod
+    def _write_metrics_file(output_dir: Path, metrics: dict[str, Any]) -> None:
+        metrics_path = output_dir / "train_metrics.json"
+        metrics_path.write_text(
+            json.dumps(stable_jsonify(metrics), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _wait_for_everyone(trainer) -> None:
+        accelerator = getattr(trainer, "accelerator", None)
+        if accelerator is not None and hasattr(accelerator, "wait_for_everyone"):
+            accelerator.wait_for_everyone()
+            return
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+    @staticmethod
+    def _is_main_process(trainer) -> bool:
+        if hasattr(trainer, "is_world_process_zero"):
+            return bool(trainer.is_world_process_zero())
+        accelerator = getattr(trainer, "accelerator", None)
+        if accelerator is not None and hasattr(accelerator, "is_main_process"):
+            return bool(accelerator.is_main_process)
+        return True
+
+    @staticmethod
+    def _is_rank_zero_env() -> bool:
+        rank = os.environ.get("RANK")
+        local_rank = os.environ.get("LOCAL_RANK")
+        return rank in (None, "", "0") and local_rank in (None, "", "0")
 
     def _build_sft_config(self, sft_config_cls, *, has_eval: bool):
         signature = inspect.signature(sft_config_cls.__init__)

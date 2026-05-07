@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import torch
+
 from .config import (
     DEFAULT_TRL_FINETUNE_CONFIG_PATH,
     load_trl_finetune_config,
@@ -59,6 +61,12 @@ def _effective_num_processes(config) -> int:
         return configured
     gpu_indices = list(config.runtime.nvidia_gpu_indices or [])
     return max(len(gpu_indices), 1)
+
+
+def _is_rank_zero_env() -> bool:
+    rank = os.environ.get("RANK")
+    local_rank = os.environ.get("LOCAL_RANK")
+    return rank in (None, "", "0") and local_rank in (None, "", "0")
 
 
 def _should_launch_with_accelerate(config, args) -> bool:
@@ -125,16 +133,23 @@ def _build_accelerate_command(config, args) -> list[str]:
 
 def _prepare_rows(config) -> list:
     raw_rows = load_raw_finetune_samples(config.data.input_path)
-    logging.info("Loaded raw fine-tune samples | count=%s | input=%s", len(raw_rows), config.data.input_path)
+    if _is_rank_zero_env():
+        logging.info("Loaded raw fine-tune samples | count=%s | input=%s", len(raw_rows), config.data.input_path)
     formatter = NL2SQLAlpacaFormatter(data_config=config.data)
     alpaca_rows = formatter.format_samples(raw_rows)
     write_alpaca_finetune_samples(config.data.alpaca_output_path, alpaca_rows)
-    logging.info(
-        "Formatted Alpaca fine-tune samples written | count=%s | output=%s",
-        len(alpaca_rows),
-        config.data.alpaca_output_path,
-    )
+    if _is_rank_zero_env():
+        logging.info(
+            "Formatted Alpaca fine-tune samples written | count=%s | output=%s",
+            len(alpaca_rows),
+            config.data.alpaca_output_path,
+        )
     return alpaca_rows
+
+
+def _cleanup_distributed() -> None:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -179,16 +194,17 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=log_handlers,
     )
-    logging.info(
-        "TRL fine-tune config loaded | input=%s | alpaca_output=%s | model=%s | output_dir=%s | distributed_backend=%s | nvidia_gpu_indices=%s | num_processes=%s",
-        config.data.input_path,
-        config.data.alpaca_output_path,
-        config.model.model_name_or_path,
-        config.training.output_dir,
-        config.runtime.distributed_backend,
-        config.runtime.nvidia_gpu_indices,
-        _effective_num_processes(config),
-    )
+    if _is_rank_zero_env():
+        logging.info(
+            "TRL fine-tune config loaded | input=%s | alpaca_output=%s | model=%s | output_dir=%s | distributed_backend=%s | nvidia_gpu_indices=%s | num_processes=%s",
+            config.data.input_path,
+            config.data.alpaca_output_path,
+            config.model.model_name_or_path,
+            config.training.output_dir,
+            config.runtime.distributed_backend,
+            config.runtime.nvidia_gpu_indices,
+            _effective_num_processes(config),
+        )
 
     if _should_launch_with_accelerate(config, args):
         _prepare_rows(config)
@@ -204,10 +220,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from .trainer import TRLFullFinetuner
 
-    finetuner = TRLFullFinetuner(config)
-    metrics = finetuner.train(alpaca_rows)
-    logging.info("TRL fine-tuning completed | metrics=%s", metrics)
-    return 0
+    try:
+        finetuner = TRLFullFinetuner(config)
+        metrics = finetuner.train(alpaca_rows)
+        if metrics is not None and _is_rank_zero_env():
+            logging.info("TRL fine-tuning completed | metrics=%s", metrics)
+        return 0
+    finally:
+        _cleanup_distributed()
 
 
 if __name__ == "__main__":

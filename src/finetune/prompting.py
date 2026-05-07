@@ -11,6 +11,7 @@ from .utils import stable_jsonify, to_text
 
 class FinetunePromptRenderer:
     INSTRUCTION_HEADER = "You are an expert spatial Text-to-SQL model."
+    RESPONSE_HEADER = "## Response"
     RESPONSE_REQUIREMENTS = (
         "Return a concise reasoning summary first.",
         "Then return one executable PostgreSQL/PostGIS SQL query inside a single ```sql``` code block.",
@@ -80,9 +81,12 @@ class FinetunePromptRenderer:
     def compose_prompt(instruction: str, input_text: str) -> str:
         instruction_text = to_text(instruction).strip()
         input_block = to_text(input_text).strip()
+        prompt_body = instruction_text or input_block
         if instruction_text and input_block:
-            return f"{instruction_text}\n\n{input_block}"
-        return instruction_text or input_block
+            prompt_body = f"{instruction_text}\n\n{input_block}"
+        if not prompt_body:
+            return FinetunePromptRenderer.RESPONSE_HEADER + "\n"
+        return f"{prompt_body}\n\n{FinetunePromptRenderer.RESPONSE_HEADER}\n"
 
     def render_output(self, reasoning_summary: str, sql: str) -> str:
         sql_text = to_text(sql).strip()
