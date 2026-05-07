@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -58,7 +59,7 @@ class DiversityAwareQuestionSynthesizer:
     ) -> list[SynthesizedQuestion]:
         rows: list[SynthesizedQuestion] = []
         for sql_query in sql_queries:
-            context = context_by_database_id.get(sql_query.database_id)
+            context = self._resolve_context_for_sql(sql_query, context_by_database_id)
             if context is None:
                 LOGGER.warning(
                     "Skipping sql_id=%s because database context %s is missing.",
@@ -103,6 +104,8 @@ class DiversityAwareQuestionSynthesizer:
                 features=features,
                 spatial_constraints=spatial_constraints,
             )
+            if row is None:
+                continue
             rows.append(row)
             if on_row_generated is not None:
                 on_row_generated(row)
@@ -122,7 +125,7 @@ class DiversityAwareQuestionSynthesizer:
         style: str,
         features,
         spatial_constraints,
-    ) -> SynthesizedQuestion:
+    ) -> SynthesizedQuestion | None:
         sample_tag = f"{sql_query.sql_id}/q_{question_index + 1:03d}"
         prompt_build_start = time.perf_counter()
         prompt = self.prompt_builder.build_question_generation_prompt(
@@ -180,6 +183,21 @@ class DiversityAwareQuestionSynthesizer:
             response.text,
             raw_response=response.raw_response,
         )
+        if self._should_force_reasoning_fallback(candidate, response):
+            LOGGER.warning(
+                "Question candidate appears truncated; forcing SQL reasoning fallback | sample=%s | parse_error=%s",
+                sample_tag,
+                candidate.parse_error,
+            )
+            candidate = QuestionGenerationCandidate(
+                question="",
+                style=candidate.style,
+                reasoning_summary=candidate.reasoning_summary,
+                spatial_phrases=list(candidate.spatial_phrases),
+                raw_response_text=candidate.raw_response_text,
+                raw_response=candidate.raw_response,
+                parse_error=candidate.parse_error or "Question-generation response appears truncated.",
+            )
         generation_rounds.append(
             {
                 "round": 0,
@@ -192,17 +210,14 @@ class DiversityAwareQuestionSynthesizer:
         )
         if candidate.parse_error:
             LOGGER.warning(
-                "Question candidate parse failed | sample=%s | round=%s/%s | error=%s",
+                "Question candidate parse degraded | sample=%s | round=%s/%s | error=%s | raw_preview=%s",
                 sample_tag,
                 1,
                 1,
                 candidate.parse_error,
+                (candidate.raw_response_text or "")[:400],
             )
-            validation_result = QuestionValidationResult(
-                is_valid=False,
-                errors=[candidate.parse_error],
-            )
-        else:
+        if candidate.question.strip():
             LOGGER.info(
                 "Generated question | sample=%s | round=%s/%s\n%s",
                 sample_tag,
@@ -216,6 +231,11 @@ class DiversityAwareQuestionSynthesizer:
                 sql_features=features,
                 spatial_constraints=spatial_constraints,
             )
+            if candidate.parse_error:
+                validation_result.warnings = [
+                    f"Recovered from non-standard model response: {candidate.parse_error}",
+                    *validation_result.warnings,
+                ]
             LOGGER.info(
                 "Question validation done | sample=%s | round=%s/%s | is_valid=%s | errors=%s | warnings=%s",
                 sample_tag,
@@ -225,6 +245,40 @@ class DiversityAwareQuestionSynthesizer:
                 len(validation_result.errors),
                 len(validation_result.warnings),
             )
+        else:
+            fallback_question = self._build_fallback_question(
+                sql_query=sql_query,
+                style=style,
+                sql_features=features.to_dict(),
+            )
+            if fallback_question:
+                candidate = QuestionGenerationCandidate(
+                    question=fallback_question,
+                    style=style,
+                    reasoning_summary="Recovered from SQL reasoning summary because the model response was empty or unreadable.",
+                    spatial_phrases=[],
+                    raw_response_text=candidate.raw_response_text,
+                    raw_response=candidate.raw_response,
+                    parse_error=candidate.parse_error or "Recovered from SQL reasoning summary fallback.",
+                )
+                LOGGER.warning(
+                    "Recovered question from SQL reasoning summary fallback | sample=%s | question=%s",
+                    sample_tag,
+                    fallback_question,
+                )
+            validation_result = QuestionValidationResult(
+                is_valid=bool(fallback_question),
+                errors=[] if fallback_question else [candidate.parse_error or "Question-generation response did not contain a recoverable question."],
+                warnings=[candidate.parse_error or "Recovered from SQL reasoning summary fallback."] if fallback_question else [],
+            )
+
+        if not candidate.question.strip():
+            LOGGER.warning(
+                "Discarding question sample with unrecoverable empty question | sample=%s | parse_error=%s",
+                sample_tag,
+                candidate.parse_error or "",
+            )
+            return None
 
         synthesized = SynthesizedQuestion(
             question_id=self._next_question_id(sql_query.database_id),
@@ -243,6 +297,7 @@ class DiversityAwareQuestionSynthesizer:
             used_spatial_functions=list(sql_query.used_spatial_functions or features.postgis_functions),
             spatial_relation_constraints=[item.to_dict() for item in spatial_constraints],
             sql_features=features.to_dict(),
+            metadata=self._build_question_metadata(sql_query, context),
             prompt=prompt,
             feedback_prompts=feedback_prompts,
             validation_result=validation_result.to_dict(),
@@ -255,6 +310,104 @@ class DiversityAwareQuestionSynthesizer:
             },
         )
         return synthesized
+
+    @staticmethod
+    def _resolve_context_for_sql(
+        sql_query: SQLQuestionSource,
+        context_by_database_id: Mapping[str, QuestionGenerationContext],
+    ) -> QuestionGenerationContext | None:
+        metadata_context = QuestionGenerationContext.from_sql_metadata(
+            sql_query.metadata,
+            database_id=sql_query.database_id,
+            city=sql_query.city,
+        )
+        if metadata_context is not None:
+            return metadata_context
+        return context_by_database_id.get(sql_query.database_id)
+
+    @staticmethod
+    def _context_to_database_context_payload(context: QuestionGenerationContext) -> dict[str, Any]:
+        return {
+            "database_id": context.database_id,
+            "city": context.city,
+            "selected_table_names": list(context.selected_table_names),
+            "schema_ddls": list(context.schema_ddls),
+            "tables": stable_jsonify(context.table_contexts),
+        }
+
+    def _build_question_metadata(
+        self,
+        sql_query: SQLQuestionSource,
+        context: QuestionGenerationContext,
+    ) -> dict[str, Any]:
+        metadata = dict(sql_query.metadata or {})
+        database_context = metadata.get("database_context")
+        if not isinstance(database_context, Mapping) or not database_context.get("tables"):
+            metadata["database_context"] = self._context_to_database_context_payload(context)
+        return stable_jsonify(metadata)
+
+    def _should_force_reasoning_fallback(
+        self,
+        candidate: QuestionGenerationCandidate,
+        response,
+    ) -> bool:
+        parse_error = str(candidate.parse_error or "")
+        if not parse_error:
+            return False
+        raw_text = str(candidate.raw_response_text or "").strip()
+        if "Unterminated string" in parse_error:
+            return True
+        usage = response.usage if isinstance(response.usage, Mapping) else {}
+        completion_tokens = usage.get("completion_tokens")
+        if (
+            isinstance(completion_tokens, int)
+            and completion_tokens >= int(self.config.llm.max_tokens)
+            and raw_text.startswith("{")
+            and not raw_text.rstrip().endswith("}")
+        ):
+            return True
+        question = str(candidate.question or "").strip()
+        if raw_text.startswith("{") and '"question"' in raw_text and question and not question.endswith(("?", ".")):
+            return True
+        return False
+
+    @staticmethod
+    def _build_fallback_question(
+        *,
+        sql_query: SQLQuestionSource,
+        style: str,
+        sql_features: Mapping[str, Any],
+    ) -> str:
+        summary = str(getattr(sql_query, "reasoning_summary", "") or "").strip()
+        if not summary:
+            return ""
+        first_sentence = re.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
+        if not first_sentence:
+            return ""
+        clause = re.sub(r"(?i)^(the query|this query)\s+", "", first_sentence).strip().rstrip(".?!")
+        if not clause:
+            return ""
+        remainder = clause
+        for verb in ("retrieves", "returns", "lists", "selects", "finds", "identifies"):
+            if clause.lower().startswith(f"{verb} "):
+                remainder = clause[len(verb) + 1 :].strip()
+                break
+        limit = sql_features.get("limit")
+        limit_phrase = ""
+        if isinstance(limit, int) and limit > 0 and str(limit) not in remainder:
+            limit_phrase = f" up to {limit}"
+        style_prefixes = {
+            "conversational": "Can you tell me ",
+            "formal": "Please provide ",
+            "direct": "List",
+            "concise": "List",
+            "polite": "Could you please provide ",
+            "analytical": "Identify",
+        }
+        prefix = style_prefixes.get(style, "List")
+        if prefix.endswith(" "):
+            return f"{prefix}{remainder}{limit_phrase}?".strip()
+        return f"{prefix}{limit_phrase} {remainder}".strip() + "."
 
     # Backward-compatible aliases
     generate_all = run

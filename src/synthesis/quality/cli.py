@@ -7,24 +7,18 @@ import logging
 import sys
 from pathlib import Path
 
-from src.prompting.prompt_builder import PromptBuilder
-from src.synthesis.sql.function_library import PostGISFunctionLibrary
-
 from .config import (
     DEFAULT_QUALITY_CONTROL_CONFIG_PATH,
     load_quality_control_config,
     override_quality_control_config,
 )
-from .database import PostgreSQLDatabaseRegistry
-from .generator import build_quality_control_llm
 from .io import (
     load_nl_sql_samples,
-    load_schema_registry_from_contexts,
+    load_sql_context_by_sql_id,
     write_nl_sql_samples,
     write_quality_control_report,
 )
-from .judge import SelfConsistencyQualityJudge
-from .pipeline import QualityControlPipeline
+from .pipeline import QualityControlPipeline, format_only_quality_control
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +53,102 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level")
     parser.add_argument("--log-path")
     return parser
+
+
+def _run_full_quality_control(samples, config):
+    from src.prompting.prompt_builder import PromptBuilder
+    from src.synthesis.sql.function_library import PostGISFunctionLibrary
+
+    from .database import PostgreSQLDatabaseRegistry
+    from .generator import build_quality_control_llm
+    from .io import load_schema_registry_from_contexts
+    from .judge import SelfConsistencyQualityJudge
+
+    schema_registry = load_schema_registry_from_contexts(config.run.schema_context_path)
+    database_registry = PostgreSQLDatabaseRegistry(config.database)
+    function_library = PostGISFunctionLibrary.load(
+        Path(config.functions.postgis_function_json_path),
+        Path(config.functions.st_function_markdown_path),
+        list(config.functions.exclude_categories),
+    )
+    llm_client = build_quality_control_llm(config=config.llm)
+    prompt_builder = PromptBuilder(
+        {
+            "project_root": Path(__file__).resolve().parents[3],
+            "prompt_template_path": config.judge.prompt_template_path,
+        }
+    )
+    judge = SelfConsistencyQualityJudge(
+        llm_client=llm_client,
+        prompt_builder=prompt_builder,
+    )
+    pipeline = QualityControlPipeline(
+        function_library=function_library,
+        self_consistency_judge=judge,
+    )
+    return pipeline.run(samples, database_registry, schema_registry, config)
+
+
+def _merge_database_context(existing, incoming):
+    if not isinstance(incoming, dict):
+        return existing if isinstance(existing, dict) else {}
+    if not isinstance(existing, dict):
+        return dict(incoming)
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key == "tables" and isinstance(value, list) and not merged.get("tables"):
+            merged["tables"] = value
+        elif key in {"selected_table_names", "schema_ddls"} and isinstance(value, list) and not merged.get(key):
+            merged[key] = value
+        elif key not in merged or merged.get(key) in (None, "", [], {}):
+            merged[key] = value
+    return merged
+
+
+def _enrich_samples_from_sql_context(samples, sql_context_by_id):
+    for sample in samples:
+        sql_context = sql_context_by_id.get(sample.sql_id or sample.sample_id)
+        if not isinstance(sql_context, dict):
+            continue
+        if not sample.sql_reasoning_summary:
+            sample.sql_reasoning_summary = str(sql_context.get("reasoning_summary") or "").strip()
+        if not sample.difficulty_level:
+            sample.difficulty_level = str(sql_context.get("difficulty_level") or "").strip()
+        if not sample.used_tables:
+            sample.used_tables = [str(item).strip() for item in (sql_context.get("used_tables") or []) if str(item).strip()]
+        if not sample.used_columns:
+            sample.used_columns = [str(item).strip() for item in (sql_context.get("used_columns") or []) if str(item).strip()]
+        if not sample.used_spatial_functions:
+            sample.used_spatial_functions = [
+                str(item).strip() for item in (sql_context.get("used_spatial_functions") or []) if str(item).strip()
+            ]
+
+        merged_metadata = dict(sample.metadata or {})
+        incoming_metadata = sql_context.get("metadata")
+        if isinstance(incoming_metadata, dict):
+            incoming_db_context = incoming_metadata.get("database_context")
+            if incoming_db_context or "database_context" not in merged_metadata:
+                merged_metadata["database_context"] = _merge_database_context(
+                    merged_metadata.get("database_context"),
+                    incoming_db_context if isinstance(incoming_db_context, dict) else {},
+                )
+            for key, value in incoming_metadata.items():
+                if key == "database_context":
+                    continue
+                if key not in merged_metadata or merged_metadata.get(key) in (None, "", [], {}):
+                    merged_metadata[key] = value
+        sample.metadata = merged_metadata
+        sample.original_payload["metadata"] = merged_metadata
+        if sample.sql_reasoning_summary:
+            sample.original_payload["sql_reasoning_summary"] = sample.sql_reasoning_summary
+        if sample.difficulty_level:
+            if "source_difficulty_level" in sample.original_payload:
+                sample.original_payload["source_difficulty_level"] = sample.difficulty_level
+            elif "difficulty_level" in sample.original_payload:
+                sample.original_payload["difficulty_level"] = sample.difficulty_level
+        for key in ("execution_result", "structural_constraints", "spatial_function_constraints"):
+            if key not in sample.original_payload and key in sql_context:
+                sample.original_payload[key] = sql_context.get(key)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,29 +217,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     samples = load_nl_sql_samples(config.run.input_path)
-    schema_registry = load_schema_registry_from_contexts(config.run.schema_context_path)
-    database_registry = PostgreSQLDatabaseRegistry(config.database)
-    function_library = PostGISFunctionLibrary.load(
-        Path(config.functions.postgis_function_json_path),
-        Path(config.functions.st_function_markdown_path),
-        list(config.functions.exclude_categories),
+    sql_context_by_id = load_sql_context_by_sql_id(config.run.sql_context_path)
+    _enrich_samples_from_sql_context(samples, sql_context_by_id)
+    logging.info(
+        "Quality control formatter-only mode enabled; skipping validator, database, judge, duplicate, and balancing logic."
     )
-    llm_client = build_quality_control_llm(config=config.llm)
-    prompt_builder = PromptBuilder(
-        {
-            "project_root": Path(__file__).resolve().parents[3],
-            "prompt_template_path": config.judge.prompt_template_path,
-        }
-    )
-    judge = SelfConsistencyQualityJudge(
-        llm_client=llm_client,
-        prompt_builder=prompt_builder,
-    )
-    pipeline = QualityControlPipeline(
-        function_library=function_library,
-        self_consistency_judge=judge,
-    )
-    retained, report = pipeline.run(samples, database_registry, schema_registry, config)
+    # retained, report = _run_full_quality_control(samples, config)
+    retained, report = format_only_quality_control(samples)
     write_nl_sql_samples(config.run.output_path, retained)
     write_quality_control_report(config.run.report_path, report)
     logging.info(

@@ -19,6 +19,7 @@ from src.synthesis.quality import (
     DatabaseSchema,
     TableSchema,
     StaticDatabaseRegistry,
+    format_only_quality_control,
     load_quality_control_config,
     load_nl_sql_samples,
     write_nl_sql_samples,
@@ -432,6 +433,25 @@ class QualityControlTests(unittest.TestCase):
                 "feedback_prompts": [],
                 "validation_result": {"is_valid": True, "warnings": []},
                 "generation_metadata": {"generator": "question"},
+                "metadata": {
+                    "database_context": {
+                        "selected_table_names": ["parks", "neighborhoods"],
+                        "schema_ddls": [
+                            "CREATE TABLE parks (\n    id integer,\n    name text\n);",
+                            "CREATE TABLE neighborhoods (\n    id integer,\n    name text\n);",
+                        ],
+                        "tables": [
+                            {
+                                "table_name": "parks",
+                                "representative_values": {"name": ["central park"]},
+                            },
+                            {
+                                "table_name": "neighborhoods",
+                                "representative_values": {"name": ["harlem"]},
+                            },
+                        ],
+                    }
+                },
             }
             input_path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
             samples = load_nl_sql_samples(str(input_path))
@@ -445,6 +465,38 @@ class QualityControlTests(unittest.TestCase):
             self.assertEqual(row["sql_features"], payload["sql_features"])
             self.assertEqual(row["sql_reasoning_summary"], payload["sql_reasoning_summary"])
             self.assertEqual(row["metadata"]["quality_control"]["passed"], True)
+            self.assertEqual(row["selected_table_names"], ["parks", "neighborhoods"])
+            self.assertIn("CREATE TABLE parks", row["schema_ddls"][0])
+            self.assertEqual(row["representative_values"]["parks"]["name"], ["central park"])
+
+    def test_formatter_only_quality_control_keeps_all_samples_for_finetune(self):
+        samples = [
+            _sample(
+                "s1",
+                question="Which parks are within 100 units of neighborhoods?",
+                sql="SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)",
+                difficulty="medium",
+                used_tables=["parks", "neighborhoods"],
+                style="formal",
+            ),
+            _sample(
+                "s2",
+                question="Count the parks that contain themselves.",
+                sql="SELECT COUNT(*) FROM parks p WHERE ST_Contains(p.geom, p.geom)",
+                difficulty="hard",
+                used_spatial_functions=["ST_Contains"],
+                used_columns=["geom"],
+                style="analytical",
+            ),
+        ]
+        retained, report = format_only_quality_control(samples)
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(report.total_samples, 2)
+        self.assertEqual(report.passed_samples, 2)
+        self.assertEqual(report.failed_samples, 0)
+        self.assertEqual(report.duplicate_count, 0)
+        self.assertEqual(report.distribution_by_difficulty["medium"], 1)
+        self.assertEqual(report.distribution_by_difficulty["hard"], 1)
 
 
 if __name__ == "__main__":

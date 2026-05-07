@@ -34,6 +34,8 @@ Use the following PostGIS function descriptions as authoritative guidance for th
 - If the SQL depends on geometry or geography columns, keep the wording consistent with the actual spatial meaning and do not confuse geometry with geography.
 - Do not mention SQL, PostGIS, databases, schemas, field names, aliases, CTE names, or implementation details.
 - Generate exactly one question, not a question set.
+- Do not show analysis, drafts, bullet points, self-checks, or alternative phrasings.
+- Keep the question concise and natural. Prefer one sentence and avoid long explanatory clauses.
 
 ## Output Format
 Return a JSON object with exactly these fields:
@@ -47,4 +49,12 @@ Requirements:
 - style: must equal "{{style_name}}"
 - reasoning_summary: one short sentence summarizing how semantics were preserved
 - spatial_phrases: list of natural-language spatial phrases used in the question
-- Do not return Markdown code fences.
+- Keep `reasoning_summary` very short, ideally under 18 words.
+- Keep `spatial_phrases` short and minimal.
+- Return only one JSON object. The first character must be `{` and the last character must be `}`.
+- Do not return Markdown code fences, explanations, notes, comments, prefixes, suffixes, or any extra text.
+- Use valid JSON with double-quoted keys and strings. Do not use trailing commas.
+- The `question` field must be non-empty.
+
+Valid response example:
+{"question":"Which parks are within 100 units of the neighborhood boundary?","style":"{{style_name}}","reasoning_summary":"Preserved the distance threshold and entity roles.","spatial_phrases":["within 100 units of"]}

@@ -226,8 +226,33 @@ class NLSQLSample:
 
         merged_metadata = _as_mapping(row.get("metadata"))
         merged_metadata.update(_as_mapping(self.metadata))
-        if merged_metadata:
-            row["metadata"] = merged_metadata
+        row["metadata"] = merged_metadata
+        database_context = merged_metadata.get("database_context")
+        if isinstance(database_context, Mapping):
+            selected_table_names = [
+                to_text(item)
+                for item in (database_context.get("selected_table_names") or [])
+                if to_text(item)
+            ]
+            schema_ddls = [
+                to_text(item)
+                for item in (database_context.get("schema_ddls") or [])
+                if to_text(item)
+            ]
+            representative_values: dict[str, Any] = {}
+            for table_item in (database_context.get("tables") or []):
+                if not isinstance(table_item, Mapping):
+                    continue
+                table_name = to_text(table_item.get("table_name"))
+                if not table_name:
+                    continue
+                representative_values[table_name] = stable_jsonify(table_item.get("representative_values"))
+            if selected_table_names and "selected_table_names" not in row:
+                row["selected_table_names"] = selected_table_names
+            if schema_ddls and "schema_ddls" not in row:
+                row["schema_ddls"] = schema_ddls
+            if representative_values and "representative_values" not in row:
+                row["representative_values"] = representative_values
 
         return stable_jsonify(row)
 

@@ -405,18 +405,36 @@ class PromptBuilder:
         spatial_relation_constraints: List[Dict[str, Any]],
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
-        execution_results = getattr(sql_query, "execution_result", {}) or {}
+        execution_results = self._prepare_question_execution_results(
+            getattr(sql_query, "execution_result", {}) or {}
+        )
+        used_function_names = {
+            str(name).strip().upper()
+            for name in (
+                getattr(sql_query, "used_spatial_functions", None)
+                or sql_features.get("postgis_functions", [])
+                or []
+            )
+            if str(name).strip()
+        }
         function_docs = []
         raw_constraints = getattr(sql_query, "spatial_function_constraints", None) or spatial_relation_constraints
         for item in raw_constraints or []:
             if not isinstance(item, dict):
                 continue
+            function_name = self._stringify_value(item.get("function_name")).upper()
+            if used_function_names and function_name and function_name not in used_function_names:
+                continue
             function_docs.append(
                 {
                     "function_name": item.get("function_name"),
                     "signature": item.get("signature"),
-                    "description": item.get("description"),
-                    "example_usages": item.get("example_usages"),
+                    "description": self._truncate_text(item.get("description"), 320),
+                    "example_usages": [
+                        self._truncate_text(example, 180)
+                        for example in (item.get("example_usages") or [])[:1]
+                        if self._truncate_text(example, 180)
+                    ],
                 }
             )
         template_text = self._load_named_template_text("question_generation")
@@ -434,6 +452,52 @@ class PromptBuilder:
                 "style_name": self._stringify_value(style_constraint.get("style")),
             },
         )
+
+    @staticmethod
+    def _truncate_text(value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(limit - 3, 0)].rstrip() + "..."
+
+    def _prepare_question_execution_results(self, execution_results: Any) -> Dict[str, Any]:
+        normalized = execution_results if isinstance(execution_results, dict) else {}
+        summary: Dict[str, Any] = {
+            "success": bool(normalized.get("success")),
+            "empty_result": bool(normalized.get("empty_result")),
+            "row_count": normalized.get("row_count"),
+        }
+        columns = normalized.get("columns")
+        if isinstance(columns, list) and columns:
+            summary["columns"] = [str(item) for item in columns if str(item).strip()]
+        sample_rows = normalized.get("sample_rows") or normalized.get("rows") or []
+        prepared_rows: List[Dict[str, Any]] = []
+        for row in sample_rows[:3]:
+            if not isinstance(row, dict):
+                continue
+            prepared_row: Dict[str, Any] = {}
+            for key, value in row.items():
+                column_name = str(key).strip()
+                if not column_name:
+                    continue
+                lowered = column_name.lower()
+                if any(token in lowered for token in ("geom", "geometry", "geography", "shape")):
+                    prepared_row[column_name] = "[spatial value omitted]"
+                    continue
+                if isinstance(value, str):
+                    prepared_row[column_name] = self._truncate_text(value, 120)
+                else:
+                    prepared_row[column_name] = value
+            if prepared_row:
+                prepared_rows.append(prepared_row)
+        if prepared_rows:
+            summary["sample_rows"] = prepared_rows
+            if "columns" not in summary:
+                summary["columns"] = list(prepared_rows[0].keys())
+        error_message = self._stringify_value(normalized.get("error_message"))
+        if error_message:
+            summary["error_message"] = self._truncate_text(error_message, 200)
+        return summary
 
     def build_quality_control_prompt(
         self,

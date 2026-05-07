@@ -43,7 +43,7 @@ from .models import (
     TableSchema,
     ValidationResult,
 )
-from .pipeline import QualityControlPipeline
+from .pipeline import QualityControlPipeline, format_only_quality_control
 from .registry import DatabaseClient, DatabaseRegistry, InMemorySchemaRegistry, SchemaRegistry, StaticDatabaseRegistry
 from .validation import SQLSampleValidator
 
@@ -85,6 +85,7 @@ __all__ = [
     "TableSchema",
     "ValidationResult",
     "build_quality_control_llm",
+    "format_only_quality_control",
     "load_nl_sql_samples",
     "load_quality_control_config",
     "load_sql_context_by_sql_id",

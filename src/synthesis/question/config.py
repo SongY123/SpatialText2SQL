@@ -23,7 +23,7 @@ DEFAULT_QUESTION_GENERATION_CONFIG_PATH = _project_root() / "config" / "question
 
 @dataclass(frozen=True)
 class QuestionGenerationLLMConfig(SynthesisLLMConfig):
-    max_tokens: int = 800
+    max_tokens: int = 1400
 
 
 @dataclass(frozen=True)

@@ -74,6 +74,53 @@ class OpenAICompatibleLLMClient:
             max_retries=0,
         )
 
+    @staticmethod
+    def _coerce_text_content(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                text = OpenAICompatibleLLMClient._coerce_text_content(item)
+                if text:
+                    parts.append(text)
+            return "\n".join(parts).strip()
+        if isinstance(value, Mapping):
+            for key in ("text", "content", "output_text", "reasoning_content", "reasoning", "value"):
+                text = OpenAICompatibleLLMClient._coerce_text_content(value.get(key))
+                if text:
+                    return text
+            return ""
+        return str(value).strip()
+
+    def _extract_response_text(self, choice: Any, raw_response: Any) -> str:
+        message = getattr(choice, "message", None)
+        for candidate in (
+            getattr(message, "content", None),
+            getattr(message, "reasoning_content", None),
+            getattr(message, "reasoning", None),
+            getattr(choice, "text", None),
+        ):
+            text = self._coerce_text_content(candidate)
+            if text:
+                return text
+        if isinstance(raw_response, Mapping):
+            choices = raw_response.get("choices")
+            if isinstance(choices, list) and choices:
+                raw_choice = choices[0]
+                if isinstance(raw_choice, Mapping):
+                    for candidate in (
+                        raw_choice.get("text"),
+                        raw_choice.get("message"),
+                        raw_choice.get("delta"),
+                    ):
+                        text = self._coerce_text_content(candidate)
+                        if text:
+                            return text
+        return ""
+
     def generate(self, prompt: str) -> LLMGenerationResponse:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 2):
@@ -85,7 +132,8 @@ class OpenAICompatibleLLMClient:
                     max_tokens=self.max_tokens,
                 )
                 choice = response.choices[0]
-                content = getattr(choice.message, "content", "") or ""
+                raw_response = response.model_dump() if hasattr(response, "model_dump") else response
+                content = self._extract_response_text(choice, raw_response)
                 usage = getattr(response, "usage", None)
                 usage_dict = None
                 if usage is not None:
@@ -96,7 +144,7 @@ class OpenAICompatibleLLMClient:
                     }
                 return LLMGenerationResponse(
                     text=content,
-                    raw_response=response.model_dump() if hasattr(response, "model_dump") else response,
+                    raw_response=raw_response,
                     usage=usage_dict,
                     attempts=attempt,
                 )

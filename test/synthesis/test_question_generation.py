@@ -281,14 +281,70 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertNotIn("## SQL Feature Summary", prompt)
         self.assertIn("## Style Constraint", prompt)
         self.assertIn("## Spatial Relation Constraint", prompt)
-        self.assertIn('"question"', prompt)
-        self.assertIn('"style"', prompt)
+        self.assertIn("Return a JSON object with exactly these fields:", prompt)
+        self.assertIn("- question", prompt)
+        self.assertIn("- style", prompt)
+        self.assertIn("- reasoning_summary", prompt)
+        self.assertIn("- spatial_phrases", prompt)
+        self.assertIn("The first character must be `{` and the last character must be `}`.", prompt)
+        self.assertIn("Do not return Markdown code fences, explanations, notes, comments, prefixes, suffixes, or any extra text.", prompt)
+        self.assertIn("Use valid JSON with double-quoted keys and strings. Do not use trailing commas.", prompt)
+        self.assertIn("The `question` field must be non-empty.", prompt)
+        self.assertIn("Do not show analysis, drafts, bullet points, self-checks, or alternative phrasings.", prompt)
+        self.assertIn("Keep `reasoning_summary` very short, ideally under 18 words.", prompt)
+        self.assertIn("Valid response example:", prompt)
         self.assertIn('"row_count": 2', prompt)
         self.assertIn('"name": "central park"', prompt)
         self.assertIn('"function_name": "ST_DWithin"', prompt)
         self.assertIn('"description": "True when two geometries are within a given distance."', prompt)
         self.assertIn("CREATE TABLE parks", prompt)
         self.assertIn("geometry(GEOMETRY,4326)", prompt)
+
+    def test_prompt_builder_filters_unused_function_docs_and_masks_spatial_values(self):
+        sql = SQLQuestionSource.from_dict(
+            {
+                **_make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)").__dict__,
+                "execution_result": {
+                    "success": True,
+                    "empty_result": False,
+                    "row_count": 1,
+                    "sample_rows": [
+                        {
+                            "name": "central park",
+                            "geom_web_mercator": "0101000020110F000069B7CAD3C6695FC120A7B54596FE5241",
+                        }
+                    ],
+                },
+                "spatial_function_constraints": [
+                    {
+                        "function_name": "ST_DWithin",
+                        "signature": "ST_DWithin(geometry geom1, geometry geom2, double precision distance)",
+                        "description": "True when two geometries are within a given distance.",
+                        "example_usages": ["SELECT ST_DWithin(a.geom, b.geom, 100)"],
+                    },
+                    {
+                        "function_name": "ST_Contains",
+                        "signature": "ST_Contains(geometry geomA, geometry geomB)",
+                        "description": "True when geometry A contains geometry B.",
+                        "example_usages": ["SELECT ST_Contains(a.geom, b.geom)"],
+                    },
+                ],
+            }
+        )
+        context = build_question_generation_contexts_from_sql_sources([sql])["nyc_0001"]
+        features = SQLFeatureExtractor().extract(sql.sql)
+        prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[2]})
+        prompt = prompt_builder.build_question_generation_prompt(
+            sql_query=sql,
+            database_context=context.to_prompt_payload(),
+            sql_features=features.to_dict(),
+            style_constraint={"style": "direct", "description": "Use a direct and minimal request."},
+            spatial_relation_constraints=[],
+        )
+        self.assertIn('"function_name": "ST_DWithin"', prompt)
+        self.assertNotIn('"function_name": "ST_Contains"', prompt)
+        self.assertIn('"geom_web_mercator": "[spatial value omitted]"', prompt)
+        self.assertNotIn("0101000020110F000069B7CAD3C6695FC120A7B54596FE5241", prompt)
 
     def test_build_question_generation_contexts_from_sql_metadata(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
@@ -297,6 +353,33 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertEqual(context.selected_table_names, ["parks", "neighborhoods"])
         self.assertEqual(len(context.schema_ddls), 2)
         self.assertIn("CREATE TABLE parks", context.schema_ddls[0])
+
+    def test_synthesized_question_keeps_sql_metadata_for_downstream_finetune(self):
+        sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "question": "Which parks are within 100 units of neighborhoods?",
+                        "style": "direct",
+                        "reasoning_summary": "Preserved the threshold.",
+                        "spatial_phrases": ["within 100 units of"],
+                    }
+                )
+            ]
+        )
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        row = generator.generate_for_sql(sql, context)[0]
+        self.assertIn("database_context", row.metadata)
+        self.assertEqual(
+            row.metadata["database_context"]["selected_table_names"],
+            ["parks", "neighborhoods"],
+        )
 
     def test_response_parser_handles_json_and_markdown(self):
         parsed = parse_question_generation_response(
@@ -312,6 +395,54 @@ class QuestionGenerationTests(unittest.TestCase):
         )
         self.assertEqual(fenced.style, "polite")
         self.assertFalse(fenced.parse_error)
+
+    def test_response_parser_recovers_question_from_non_json_text(self):
+        recovered = parse_question_generation_response(
+            """Question: Which squirrels are within 0.001 units of a truck route?
+Style: direct
+Reasoning Summary: Preserved the distance threshold and entity roles.
+Spatial Phrases: within 0.001 units of"""
+        )
+        self.assertEqual(recovered.question, "Which squirrels are within 0.001 units of a truck route?")
+        self.assertEqual(recovered.style, "direct")
+        self.assertTrue(recovered.parse_error)
+        self.assertIn("within 0.001 units of", recovered.spatial_phrases)
+
+    def test_response_parser_recovers_question_from_malformed_json(self):
+        recovered = parse_question_generation_response(
+            """{
+  "question": "Could you identify five squirrels, along with the corresponding truck route street and city map honor name, that are located within 0.001 units of both?",
+  "style": "analytical",
+  "reasoning_summary": "Preserved the distance threshold of 0.001, the limit of 5, and the spatial joins between squirrels, truck routes, and city map features.",
+  "spatial_phrases": ["within 0.001 units of",]
+"""
+        )
+        self.assertEqual(
+            recovered.question,
+            "Could you identify five squirrels, along with the corresponding truck route street and city map honor name, that are located within 0.001 units of both?",
+        )
+        self.assertEqual(recovered.style, "analytical")
+        self.assertTrue(recovered.parse_error)
+
+    def test_response_parser_cleans_draft_and_fenced_json_prefixes(self):
+        recovered = parse_question_generation_response(
+            """*   *Draft 1 (Basic):* Which 5 squirrels are within 0.001 units of both a truck route street and a city map honor name?"""
+        )
+        self.assertEqual(
+            recovered.question,
+            "Which 5 squirrels are within 0.001 units of both a truck route street and a city map honor name?",
+        )
+
+        recovered_jsonish = parse_question_generation_response(
+            """```json
+{
+  "question": "Could you please list 5 squirrel IDs along with the names of the pedestrian streets and truck route streets, where the squirrels are within 0.001 units of a pedestrian street that had more than 4000 pedestrians in oct25_pm?",
+"""
+        )
+        self.assertEqual(
+            recovered_jsonish.question,
+            "Could you please list 5 squirrel IDs along with the names of the pedestrian streets and truck route streets, where the squirrels are within 0.001 units of a pedestrian street that had more than 4000 pedestrians in oct25_pm?",
+        )
 
     def test_validator_rejects_raw_postgis_names_and_missing_threshold(self):
         sql = "SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)"
@@ -365,6 +496,98 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertFalse(rows[0].validation_result["is_valid"])
         self.assertEqual(rows[0].question_id, "nyc_0001_0001")
         self.assertEqual(len(llm.prompts), 1)
+
+    def test_generation_uses_sql_reasoning_summary_fallback_for_empty_response(self):
+        sql = _make_sql_source(
+            "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+        )
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(
+            responses=[
+                "",
+            ]
+        )
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].question)
+        self.assertTrue(
+            any("Failed to parse question-generation JSON response" in item for item in rows[0].validation_result["warnings"])
+        )
+        self.assertEqual(len(llm.prompts), 1)
+
+    def test_generation_uses_sql_reasoning_summary_fallback_for_truncated_json_response(self):
+        sql = _make_sql_source(
+            "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+        )
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "question": "Could you please list five parks within 100 units of neighborhoods",
+                    }
+                )[:-2]
+            ]
+        )
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(
+            rows[0].question,
+            "Could you please list five parks within 100 units of neighborhoods",
+        )
+        self.assertTrue(rows[0].question)
+        self.assertTrue(rows[0].validation_result["warnings"])
+
+    def test_generation_discards_empty_response_when_no_reasoning_fallback_exists(self):
+        sql = SQLQuestionSource.from_dict(
+            {
+                **_make_sql_source(
+                    "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+                ).__dict__,
+                "reasoning_summary": "",
+            }
+        )
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(responses=[""])
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(rows, [])
+
+    def test_generation_keeps_recovered_non_json_question(self):
+        sql = _make_sql_source(
+            "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+        )
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(
+            responses=[
+                "Question: Which parks are within 100 units of a neighborhood?\nStyle: direct\nReasoning Summary: Preserved the threshold.",
+            ]
+        )
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].question, "Which parks are within 100 units of a neighborhood?")
+        self.assertTrue(
+            any("Recovered from non-standard model response" in item for item in rows[0].validation_result["warnings"])
+        )
 
     def test_synthesizer_continues_question_id_from_existing_offsets(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")

@@ -351,6 +351,7 @@ class SynthesizedQuestion:
     used_spatial_functions: list[str] = field(default_factory=list)
     spatial_relation_constraints: list[dict[str, Any]] = field(default_factory=list)
     sql_features: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     prompt: str = ""
     feedback_prompts: list[str] = field(default_factory=list)
     validation_result: dict[str, Any] = field(default_factory=dict)
@@ -374,6 +375,7 @@ class SynthesizedQuestion:
             "used_spatial_functions": list(self.used_spatial_functions),
             "spatial_relation_constraints": stable_jsonify(self.spatial_relation_constraints),
             "sql_features": stable_jsonify(self.sql_features),
+            "metadata": stable_jsonify(self.metadata),
             "prompt": self.prompt,
             "feedback_prompts": list(self.feedback_prompts),
             "validation_result": stable_jsonify(self.validation_result),

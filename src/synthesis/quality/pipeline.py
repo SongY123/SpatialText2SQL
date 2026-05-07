@@ -22,6 +22,32 @@ from .validation import (
 LOGGER = logging.getLogger(__name__)
 
 
+def format_only_quality_control(
+    samples: list[NLSQLSample],
+) -> tuple[list[NLSQLSample], QualityControlReport]:
+    retained = list(samples)
+    report = QualityControlReport(
+        total_samples=len(samples),
+        passed_samples=len(retained),
+        failed_samples=0,
+        failure_reasons={},
+        duplicate_count=0,
+        distribution_by_difficulty=build_distribution(
+            retained,
+            lambda sample: [sample.difficulty_level],
+        ),
+        distribution_by_spatial_function=build_distribution(
+            retained,
+            lambda sample: sample.used_spatial_functions,
+        ),
+        distribution_by_linguistic_style=build_distribution(
+            retained,
+            lambda sample: [sample.linguistic_style],
+        ),
+    )
+    return retained, report
+
+
 @dataclass
 class QualityControlPipeline:
     function_library: PostGISFunctionLibrary

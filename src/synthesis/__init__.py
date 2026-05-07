@@ -1,69 +1,9 @@
-"""Synthesis modules for dataset construction."""
+"""Synthesis package exports."""
 
-from .llm import (
-    LLMClient,
-    LLMGenerationResponse,
-    MockLLMClient,
-    OllamaLLMClient,
-    OpenAICompatibleLLMClient,
-    SynthesisLLMConfig,
-    build_llm_client,
-)
-from .database import (
-    CanonicalSpatialTable,
-    EmbeddingProvider,
-    MockEmbeddingProvider,
-    PostGISConnectionSettings,
-    PostGISSynthesizedDatabaseMigrator,
-    RelationAwareDatabaseSampler,
-    RelationGraphBuilder,
-    SentenceTransformerEmbeddingProvider,
-    SpatialDatabaseSynthesizer,
-    SynthesizedSpatialDatabase,
-    build_table_text,
-    build_feature_row,
-    canonical_type_to_postgres_type,
-    load_canonical_tables,
-    load_geojson_features,
-    load_synthesized_databases,
-    normalize_postgres_identifier,
-    parse_srid,
-    prepare_column_specs,
-    write_synthesized_databases,
-)
-from .sql import (
-    ConstraintGuidedSQLSynthesizer,
-    MockSQLGenerator as MockSQLSynthesisGenerator,
-    PostGISFunctionLibrary,
-    SQLExecutionChecker,
-    SQLSynthesisConfig,
-    SQLValidator,
-    SynthesizedSQLQuery,
-    load_sql_synthesis_config,
-    write_sql_queries,
-)
-from .question import (
-    DiversityAwareQuestionGenerator,
-    DiversityAwareQuestionSynthesizer,
-    MockQuestionLLM,
-    QuestionGenerationConfig,
-    QuestionValidator as GeneratedQuestionValidator,
-    SynthesizedQuestion,
-    load_question_generation_config,
-    write_synthesized_questions,
-)
-from .quality import (
-    InMemorySchemaRegistry,
-    NLSQLSample,
-    PostgreSQLDatabaseRegistry,
-    QualityControlConfig,
-    QualityControlPipeline,
-    QualityControlReport,
-    ValidationResult as QualityValidationResult,
-    load_quality_control_config,
-    write_nl_sql_samples,
-    write_quality_control_report,
-)
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "CanonicalSpatialTable",
@@ -121,3 +61,68 @@ __all__ = [
     "write_sql_queries",
     "write_synthesized_databases",
 ]
+
+_EXPORT_MAP = {
+    "LLMClient": (".llm", "LLMClient"),
+    "LLMGenerationResponse": (".llm", "LLMGenerationResponse"),
+    "MockLLMClient": (".llm", "MockLLMClient"),
+    "OllamaLLMClient": (".llm", "OllamaLLMClient"),
+    "OpenAICompatibleLLMClient": (".llm", "OpenAICompatibleLLMClient"),
+    "SynthesisLLMConfig": (".llm", "SynthesisLLMConfig"),
+    "build_llm_client": (".llm", "build_llm_client"),
+    "CanonicalSpatialTable": (".database", "CanonicalSpatialTable"),
+    "EmbeddingProvider": (".database", "EmbeddingProvider"),
+    "MockEmbeddingProvider": (".database", "MockEmbeddingProvider"),
+    "PostGISConnectionSettings": (".database", "PostGISConnectionSettings"),
+    "PostGISSynthesizedDatabaseMigrator": (".database", "PostGISSynthesizedDatabaseMigrator"),
+    "RelationAwareDatabaseSampler": (".database", "RelationAwareDatabaseSampler"),
+    "RelationGraphBuilder": (".database", "RelationGraphBuilder"),
+    "SentenceTransformerEmbeddingProvider": (".database", "SentenceTransformerEmbeddingProvider"),
+    "SpatialDatabaseSynthesizer": (".database", "SpatialDatabaseSynthesizer"),
+    "SynthesizedSpatialDatabase": (".database", "SynthesizedSpatialDatabase"),
+    "build_table_text": (".database", "build_table_text"),
+    "build_feature_row": (".database", "build_feature_row"),
+    "canonical_type_to_postgres_type": (".database", "canonical_type_to_postgres_type"),
+    "load_canonical_tables": (".database", "load_canonical_tables"),
+    "load_geojson_features": (".database", "load_geojson_features"),
+    "load_synthesized_databases": (".database", "load_synthesized_databases"),
+    "normalize_postgres_identifier": (".database", "normalize_postgres_identifier"),
+    "parse_srid": (".database", "parse_srid"),
+    "prepare_column_specs": (".database", "prepare_column_specs"),
+    "write_synthesized_databases": (".database", "write_synthesized_databases"),
+    "ConstraintGuidedSQLSynthesizer": (".sql", "ConstraintGuidedSQLSynthesizer"),
+    "MockSQLSynthesisGenerator": (".sql", "MockSQLGenerator"),
+    "PostGISFunctionLibrary": (".sql", "PostGISFunctionLibrary"),
+    "SQLExecutionChecker": (".sql", "SQLExecutionChecker"),
+    "SQLSynthesisConfig": (".sql", "SQLSynthesisConfig"),
+    "SQLValidator": (".sql", "SQLValidator"),
+    "SynthesizedSQLQuery": (".sql", "SynthesizedSQLQuery"),
+    "load_sql_synthesis_config": (".sql", "load_sql_synthesis_config"),
+    "write_sql_queries": (".sql", "write_sql_queries"),
+    "DiversityAwareQuestionGenerator": (".question", "DiversityAwareQuestionGenerator"),
+    "DiversityAwareQuestionSynthesizer": (".question", "DiversityAwareQuestionSynthesizer"),
+    "MockQuestionLLM": (".question", "MockQuestionLLM"),
+    "QuestionGenerationConfig": (".question", "QuestionGenerationConfig"),
+    "GeneratedQuestionValidator": (".question", "QuestionValidator"),
+    "SynthesizedQuestion": (".question", "SynthesizedQuestion"),
+    "load_question_generation_config": (".question", "load_question_generation_config"),
+    "write_synthesized_questions": (".question", "write_synthesized_questions"),
+    "InMemorySchemaRegistry": (".quality", "InMemorySchemaRegistry"),
+    "NLSQLSample": (".quality", "NLSQLSample"),
+    "PostgreSQLDatabaseRegistry": (".quality", "PostgreSQLDatabaseRegistry"),
+    "QualityControlConfig": (".quality", "QualityControlConfig"),
+    "QualityControlPipeline": (".quality", "QualityControlPipeline"),
+    "QualityControlReport": (".quality", "QualityControlReport"),
+    "QualityValidationResult": (".quality", "ValidationResult"),
+    "load_quality_control_config": (".quality", "load_quality_control_config"),
+    "write_nl_sql_samples": (".quality", "write_nl_sql_samples"),
+    "write_quality_control_report": (".quality", "write_quality_control_report"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_MAP:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = _EXPORT_MAP[name]
+    module = import_module(module_name, __name__)
+    return getattr(module, attr_name)
