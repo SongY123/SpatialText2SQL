@@ -20,7 +20,7 @@ Examples:
 
 City selection follows crawl_open_data_maps.sh:
   --cities all
-  --cities nyc,lacity,chicago,seattle,sf,boston,phoenix
+  --cities nyc,lacity,chicago,seattle,sf,austin,phoenix
 EOF
   exit 0
 fi
