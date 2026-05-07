@@ -4,20 +4,10 @@ import unittest
 from pathlib import Path
 
 from src.finetune.config import DEFAULT_TRL_FINETUNE_CONFIG_PATH
-from src.finetune.config import FinetuneDBConfig, FinetuneDataConfig, FinetuneModelConfig
+from src.finetune.config import FinetuneDataConfig, FinetuneModelConfig
 from src.finetune.dataset import SpatialText2SQLDatasetBuilder
 from src.finetune.models import RawFinetuneSample
 from src.finetune.prompting import FinetunePromptRenderer
-
-
-class FakeMetadataProvider:
-    def __init__(self, payload):
-        self.payload = payload
-        self.calls = []
-
-    def load_database_metadata(self, request):
-        self.calls.append((request.database_id, list(request.selected_table_names)))
-        return self.payload
 
 
 class TRLFinetuneTests(unittest.TestCase):
@@ -117,7 +107,6 @@ class TRLFinetuneTests(unittest.TestCase):
                 encoding="utf-8",
             )
             builder = SpatialText2SQLDatasetBuilder(
-                db_config=FinetuneDBConfig(),
                 data_config=FinetuneDataConfig(
                     input_path="",
                     prepared_output_path="",
@@ -126,7 +115,6 @@ class TRLFinetuneTests(unittest.TestCase):
                     question_id_start=0,
                     max_representative_rows=3,
                 ),
-                metadata_provider=FakeMetadataProvider(runtime_metadata),
             )
             raw = RawFinetuneSample(
                 question_id="nyc_0001_q_001",
@@ -139,6 +127,7 @@ class TRLFinetuneTests(unittest.TestCase):
                 used_columns=["name"],
                 used_spatial_functions=["ST_Buffer"],
                 sql_features={"limit": 5},
+                metadata={"database_context": runtime_metadata},
             )
             prepared = builder.prepare_samples([raw])
         self.assertEqual(len(prepared), 1)
@@ -148,7 +137,7 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn("## Schema", prepared[0].prompt)
         self.assertIn('"geom": "POINT"', prepared[0].prompt)
 
-    def test_dataset_builder_prefers_embedded_nl2sql_metadata_over_live_db(self):
+    def test_dataset_builder_uses_embedded_nl2sql_metadata_only(self):
         runtime_metadata = {
             "tables": [
                 {
@@ -177,9 +166,7 @@ class TRLFinetuneTests(unittest.TestCase):
                 "## Task Description\n{{task_description}}\n## Schema\n{{schema_block}}\n## Spatial Field Metadata\n{{spatial_field_block}}\n## Representative Values\n{{representative_values_block}}\n## Question\n{{question_block}}\n",
                 encoding="utf-8",
             )
-            provider = FakeMetadataProvider({"tables": []})
             builder = SpatialText2SQLDatasetBuilder(
-                db_config=FinetuneDBConfig(),
                 data_config=FinetuneDataConfig(
                     input_path="",
                     prepared_output_path="",
@@ -188,7 +175,6 @@ class TRLFinetuneTests(unittest.TestCase):
                     question_id_start=0,
                     max_representative_rows=3,
                 ),
-                metadata_provider=provider,
             )
             raw = RawFinetuneSample.from_dict(
                 {
@@ -208,8 +194,41 @@ class TRLFinetuneTests(unittest.TestCase):
             )
             prepared = builder.prepare_samples([raw])
         self.assertEqual(len(prepared), 1)
-        self.assertEqual(provider.calls, [])
         self.assertIn("- parks(id integer, name text, geom geometry(Point,4326))", prepared[0].prompt)
+
+    def test_dataset_builder_does_not_fallback_to_database_when_metadata_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            template_path = Path(tmpdir) / "prompt.txt"
+            template_path.write_text(
+                "## Task Description\n{{task_description}}\n## Schema\n{{schema_block}}\n## Spatial Field Metadata\n{{spatial_field_block}}\n## Representative Values\n{{representative_values_block}}\n## Question\n{{question_block}}\n",
+                encoding="utf-8",
+            )
+            builder = SpatialText2SQLDatasetBuilder(
+                data_config=FinetuneDataConfig(
+                    input_path="",
+                    prepared_output_path="",
+                    prompt_template_path=str(template_path),
+                    task_description="Translate to SQL.",
+                    question_id_start=0,
+                    max_representative_rows=3,
+                ),
+            )
+            raw = RawFinetuneSample.from_dict(
+                {
+                    "question_id": "nyc_0001_0002",
+                    "database_id": "nyc_0001",
+                    "question": "Which park names should be returned?",
+                    "sql": "SELECT name FROM parks LIMIT 5",
+                    "source_difficulty_level": "easy",
+                    "used_tables": ["parks"],
+                    "used_columns": ["name"],
+                    "metadata": {"quality_control": {"passed": True}},
+                }
+            )
+            prepared = builder.prepare_samples([raw])
+        self.assertEqual(len(prepared), 1)
+        self.assertIn("No schema available.", prepared[0].prompt)
+        self.assertIn("{}", prepared[0].prompt)
 
 
 if __name__ == "__main__":

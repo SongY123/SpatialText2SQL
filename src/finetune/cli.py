@@ -87,7 +87,6 @@ def main(argv: list[str] | None = None) -> int:
         raw_rows = load_raw_finetune_samples(config.data.input_path)
         logging.info("Loaded raw fine-tune samples | count=%s", len(raw_rows))
         builder = SpatialText2SQLDatasetBuilder(
-            db_config=config.database,
             data_config=config.data,
         )
         prepared_rows = builder.prepare_samples(raw_rows)

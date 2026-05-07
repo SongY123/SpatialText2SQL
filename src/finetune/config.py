@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from src.synthesis.database.utils import stable_jsonify, to_text
+from .utils import stable_jsonify, to_text
 
 
 def _project_root() -> Path:
@@ -16,18 +16,6 @@ def _project_root() -> Path:
 
 
 DEFAULT_TRL_FINETUNE_CONFIG_PATH = _project_root() / "config" / "finetune.yaml"
-
-
-@dataclass(frozen=True)
-class FinetuneDBConfig:
-    host: str = "localhost"
-    port: int = 5432
-    database: str = "postgres"
-    user: str = "postgres"
-    password: str = "123456"
-    search_path: str = "public"
-    connect_timeout: int = 10
-    statement_timeout: int = 60000
 
 
 @dataclass(frozen=True)
@@ -91,7 +79,6 @@ class FinetuneLoggingConfig:
 
 @dataclass(frozen=True)
 class SpatialText2SQLFinetuneConfig:
-    database: FinetuneDBConfig = field(default_factory=FinetuneDBConfig)
     data: FinetuneDataConfig = field(default_factory=FinetuneDataConfig)
     model: FinetuneModelConfig = field(default_factory=FinetuneModelConfig)
     training: FinetuneTrainingConfig = field(default_factory=FinetuneTrainingConfig)
@@ -165,13 +152,11 @@ def _build_trl_finetune_config_from_payload(
     if not isinstance(payload, Mapping):
         raise ValueError(f"Invalid TRL fine-tune config in {path}: top level must be a mapping.")
 
-    db_section = payload.get("database") or {}
     data_section = payload.get("data") or {}
     model_section = payload.get("model") or {}
     training_section = payload.get("training") or {}
     logging_section = payload.get("logging") or {}
     for section_name, section in (
-        ("database", db_section),
         ("data", data_section),
         ("model", model_section),
         ("training", training_section),
@@ -180,23 +165,12 @@ def _build_trl_finetune_config_from_payload(
         if section and not isinstance(section, Mapping):
             raise ValueError(f"Invalid TRL fine-tune config: '{section_name}' must be a mapping.")
 
-    default_db = FinetuneDBConfig()
     default_data = FinetuneDataConfig()
     default_model = FinetuneModelConfig()
     default_training = FinetuneTrainingConfig()
     default_logging = FinetuneLoggingConfig()
 
     return SpatialText2SQLFinetuneConfig(
-        database=FinetuneDBConfig(
-            host=_as_text(db_section.get("host"), default_db.host),
-            port=_as_positive_int(db_section.get("port"), default_db.port),
-            database=_as_text(db_section.get("database"), default_db.database),
-            user=_as_text(db_section.get("user"), default_db.user),
-            password=_as_text(db_section.get("password"), default_db.password),
-            search_path=_as_text(db_section.get("search_path"), default_db.search_path),
-            connect_timeout=_as_positive_int(db_section.get("connect_timeout"), default_db.connect_timeout),
-            statement_timeout=_as_positive_int(db_section.get("statement_timeout"), default_db.statement_timeout),
-        ),
         data=FinetuneDataConfig(
             input_path=_resolve_path(data_section.get("input_path"), path, default_data.input_path),
             prepared_output_path=_resolve_path(
@@ -288,14 +262,12 @@ def _build_trl_finetune_config_from_payload(
 def override_trl_finetune_config(
     base: SpatialText2SQLFinetuneConfig,
     *,
-    database: Mapping[str, Any] | None = None,
     data: Mapping[str, Any] | None = None,
     model: Mapping[str, Any] | None = None,
     training: Mapping[str, Any] | None = None,
     logging: Mapping[str, Any] | None = None,
 ) -> SpatialText2SQLFinetuneConfig:
     merged = {
-        "database": {**base.database.__dict__, **dict(database or {})},
         "data": {**base.data.__dict__, **dict(data or {})},
         "model": {**base.model.__dict__, **dict(model or {})},
         "training": {**base.training.__dict__, **dict(training or {})},

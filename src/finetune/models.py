@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from src.synthesis.database.utils import stable_jsonify, to_text
+from .utils import stable_jsonify, to_text
 
 
 def _as_text_list(value: Any) -> list[str]:

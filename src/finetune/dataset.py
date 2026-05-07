@@ -3,39 +3,24 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from src.synthesis.database.utils import stable_jsonify, to_text
-from src.synthesis.sql.prompt_metadata import PostGISPromptMetadataProvider
-
-from .config import FinetuneDBConfig, FinetuneDataConfig
+from .config import FinetuneDataConfig
 from .models import PreparedFinetuneSample, RawFinetuneSample
 from .prompting import FinetunePromptRenderer
+from .utils import stable_jsonify, to_text
 
 LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _MetadataLookupRequest:
-    database_id: str
-    city: str
-    selected_table_names: list[str]
-    selected_tables: list[Any]
 
 
 class SpatialText2SQLDatasetBuilder:
     def __init__(
         self,
         *,
-        db_config: FinetuneDBConfig,
         data_config: FinetuneDataConfig,
-        metadata_provider: PostGISPromptMetadataProvider | None = None,
         prompt_renderer: FinetunePromptRenderer | None = None,
     ) -> None:
-        self.db_config = db_config
         self.data_config = data_config
-        self.metadata_provider = metadata_provider or PostGISPromptMetadataProvider(self._to_sql_db_config())
         self.prompt_renderer = prompt_renderer or FinetunePromptRenderer(
             template_path=self.data_config.prompt_template_path,
             task_description=self.data_config.task_description,
@@ -85,21 +70,11 @@ class SpatialText2SQLDatasetBuilder:
         embedded_metadata = self._load_embedded_metadata(row)
         if embedded_metadata is not None:
             return embedded_metadata
-
-        table_names = [to_text(name) for name in row.used_tables if to_text(name)]
-        if not table_names:
-            LOGGER.warning(
-                "Fine-tune sample %s has no used_tables; schema prompt context will be empty.",
-                row.question_id or row.database_id,
-            )
-            return None
-        lookup = _MetadataLookupRequest(
-            database_id=row.database_id,
-            city=row.city,
-            selected_table_names=table_names,
-            selected_tables=[],
+        LOGGER.warning(
+            "Fine-tune sample %s is missing embedded metadata.database_context; schema prompt context will be empty.",
+            row.question_id or row.database_id,
         )
-        return self.metadata_provider.load_database_metadata(lookup)  # type: ignore[arg-type]
+        return None
 
     @staticmethod
     def _load_embedded_metadata(row: RawFinetuneSample) -> dict[str, Any] | None:
@@ -167,17 +142,3 @@ class SpatialText2SQLDatasetBuilder:
         if not parts:
             return "Keep the SQL filters, ranking, and output columns aligned with the question wording."
         return "Preserve the query structure: " + "; ".join(parts) + "."
-
-    def _to_sql_db_config(self):
-        from src.synthesis.sql.config import SQLSynthesisDBConfig
-
-        return SQLSynthesisDBConfig(
-            host=self.db_config.host,
-            port=self.db_config.port,
-            database=self.db_config.database,
-            user=self.db_config.user,
-            password=self.db_config.password,
-            search_path=self.db_config.search_path,
-            connect_timeout=self.db_config.connect_timeout,
-            statement_timeout=self.db_config.statement_timeout,
-        )

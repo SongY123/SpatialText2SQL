@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from src.synthesis.database.utils import stable_jsonify, to_text
+from .utils import stable_jsonify, to_text
 
 
 class FinetunePromptRenderer:
