@@ -117,6 +117,37 @@ class RawFinetuneSample:
 
 
 @dataclass(frozen=True)
+class AlpacaFinetuneSample:
+    instruction: str
+    input_text: str
+    output_text: str
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "AlpacaFinetuneSample":
+        instruction = to_text(payload.get("instruction"))
+        input_text = to_text(payload.get("input"))
+        output_text = to_text(payload.get("output"))
+        if not instruction:
+            raise ValueError("Missing required field: instruction")
+        if not input_text:
+            raise ValueError("Missing required field: input")
+        if not output_text:
+            raise ValueError("Missing required field: output")
+        return cls(
+            instruction=instruction,
+            input_text=input_text,
+            output_text=output_text,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "instruction": self.instruction,
+            "input": self.input_text,
+            "output": self.output_text,
+        }
+
+
+@dataclass(frozen=True)
 class PreparedFinetuneSample:
     question_id: int
     database_id: str

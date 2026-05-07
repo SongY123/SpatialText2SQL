@@ -14,13 +14,21 @@ from .config import (
     load_trl_finetune_config,
     override_trl_finetune_config,
 )
-from .io import load_raw_finetune_samples
+from .formatter import NL2SQLAlpacaFormatter
+from .io import (
+    load_alpaca_finetune_samples,
+    load_raw_finetune_samples,
+    write_alpaca_finetune_samples,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run TRL full fine-tuning from an existing Alpaca-format JSONL file.")
+    parser = argparse.ArgumentParser(
+        description="Automatically format nl2sql JSONL into Alpaca JSONL and run TRL full fine-tuning."
+    )
     parser.add_argument("--config", default=str(DEFAULT_TRL_FINETUNE_CONFIG_PATH))
-    parser.add_argument("--alpaca-input")
+    parser.add_argument("--input")
+    parser.add_argument("--alpaca-output")
     parser.add_argument("--model-name-or-path")
     parser.add_argument("--tokenizer-name-or-path")
     parser.add_argument("--output-dir")
@@ -82,7 +90,9 @@ def _build_accelerate_command(config, args) -> list[str]:
         "src.finetune.cli",
         "--config",
         str(args.config),
-        "--alpaca-input",
+        "--input",
+        config.data.input_path,
+        "--alpaca-output",
         config.data.alpaca_output_path,
         "--model-name-or-path",
         config.model.model_name_or_path,
@@ -113,6 +123,20 @@ def _build_accelerate_command(config, args) -> list[str]:
     return command
 
 
+def _prepare_rows(config) -> list:
+    raw_rows = load_raw_finetune_samples(config.data.input_path)
+    logging.info("Loaded raw fine-tune samples | count=%s | input=%s", len(raw_rows), config.data.input_path)
+    formatter = NL2SQLAlpacaFormatter(data_config=config.data)
+    alpaca_rows = formatter.format_samples(raw_rows)
+    write_alpaca_finetune_samples(config.data.alpaca_output_path, alpaca_rows)
+    logging.info(
+        "Formatted Alpaca fine-tune samples written | count=%s | output=%s",
+        len(alpaca_rows),
+        config.data.alpaca_output_path,
+    )
+    return alpaca_rows
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -121,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     config = override_trl_finetune_config(
         config,
         data={key: value for key, value in {
-            "alpaca_output_path": args.alpaca_input,
+            "input_path": args.input,
+            "alpaca_output_path": args.alpaca_output,
             "eval_ratio": args.eval_ratio,
         }.items() if value is not None},
         model={key: value for key, value in {
@@ -155,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "TRL fine-tune config loaded | alpaca_input=%s | model=%s | output_dir=%s | distributed_backend=%s | nvidia_gpu_indices=%s | num_processes=%s",
+        "TRL fine-tune config loaded | input=%s | alpaca_output=%s | model=%s | output_dir=%s | distributed_backend=%s | nvidia_gpu_indices=%s | num_processes=%s",
+        config.data.input_path,
         config.data.alpaca_output_path,
         config.model.model_name_or_path,
         config.training.output_dir,
@@ -165,12 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if _should_launch_with_accelerate(config, args):
+        _prepare_rows(config)
         command = _build_accelerate_command(config, args)
         logging.info("Launching distributed fine-tuning via accelerate | command=%s", command)
         completed = subprocess.run(command, env=os.environ.copy(), check=False)
         return int(completed.returncode)
 
-    alpaca_rows = load_raw_finetune_samples(config.data.alpaca_output_path)
+    if args.launched_by_accelerate:
+        alpaca_rows = load_alpaca_finetune_samples(config.data.alpaca_output_path)
+    else:
+        alpaca_rows = _prepare_rows(config)
 
     from .trainer import TRLFullFinetuner
 

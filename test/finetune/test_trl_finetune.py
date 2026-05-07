@@ -16,7 +16,8 @@ from src.finetune.config import (
 from src.finetune.cli import _apply_runtime_environment, _build_accelerate_command, _effective_num_processes
 from src.finetune.dataset import SpatialText2SQLDatasetBuilder
 from src.finetune.formatter import NL2SQLAlpacaFormatter
-from src.finetune.models import RawFinetuneSample
+from src.finetune.io import write_alpaca_finetune_samples
+from src.finetune.models import AlpacaFinetuneSample, RawFinetuneSample
 from src.finetune.prompting import FinetunePromptRenderer
 
 
@@ -53,7 +54,7 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertEqual(runtime.nvidia_gpu_indices, list(range(8)))
         self.assertEqual(runtime.distributed_backend, "accelerate")
 
-    def test_accelerate_command_uses_alpaca_input_and_num_processes(self):
+    def test_accelerate_command_uses_input_and_alpaca_output(self):
         config = override_trl_finetune_config(
             load_trl_finetune_config(),
             runtime={"nvidia_gpu_indices": [0, 1], "num_processes": 2},
@@ -62,7 +63,9 @@ class TRLFinetuneTests(unittest.TestCase):
         args = SimpleNamespace(config="config/finetune.yaml")
         command = _build_accelerate_command(config, args)
         self.assertIn("accelerate.commands.launch", command)
-        self.assertIn("--alpaca-input", command)
+        self.assertIn("--input", command)
+        self.assertIn(config.data.input_path, command)
+        self.assertIn("--alpaca-output", command)
         self.assertIn(config.data.alpaca_output_path, command)
         self.assertIn("--num_processes", command)
         self.assertIn("2", command)
@@ -163,12 +166,26 @@ class TRLFinetuneTests(unittest.TestCase):
         )
         rows = formatter.format_samples([raw])
         self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0], AlpacaFinetuneSample)
         self.assertIn("## Task Description", rows[0].instruction)
         self.assertIn("## Schema", rows[0].input_text)
         self.assertNotIn("## Spatial Field Metadata", rows[0].input_text)
         self.assertIn("Use the parks table and return the name column.", rows[0].output_text)
         self.assertIn("```sql", rows[0].output_text)
         self.assertIn("SELECT name FROM parks LIMIT 5", rows[0].output_text)
+        self.assertEqual(set(rows[0].to_dict().keys()), {"instruction", "input", "output"})
+
+    def test_alpaca_writer_emits_instruction_input_output_only(self):
+        row = AlpacaFinetuneSample(
+            instruction="Do the task.",
+            input_text="## Schema\n- parks(id integer)\n\n## Representative Values\n{}\n\n## Question\nWhich parks?",
+            output_text="Reason briefly.\n\n```sql\nSELECT id FROM parks\n```",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "alpaca.jsonl"
+            write_alpaca_finetune_samples(str(output_path), [row])
+            payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(payload, row.to_dict())
 
     def test_dataset_builder_normalizes_question_id_and_difficulty(self):
         runtime_metadata = {

@@ -10,16 +10,19 @@ from .config import (
 from .dataset import SpatialText2SQLDatasetBuilder
 from .formatter import NL2SQLAlpacaFormatter
 from .io import (
+    load_alpaca_finetune_samples,
     load_raw_finetune_samples,
     load_prepared_finetune_samples,
+    write_alpaca_finetune_samples,
     write_prepared_finetune_samples,
     write_raw_finetune_samples,
 )
-from .models import PreparedFinetuneSample, RawFinetuneSample
+from .models import AlpacaFinetuneSample, PreparedFinetuneSample, RawFinetuneSample
 from .trainer import TRLFullFinetuner
 
 __all__ = [
     "DEFAULT_TRL_FINETUNE_CONFIG_PATH",
+    "AlpacaFinetuneSample",
     "FinetuneRuntimeConfig",
     "NL2SQLAlpacaFormatter",
     "PreparedFinetuneSample",
@@ -27,10 +30,12 @@ __all__ = [
     "SpatialText2SQLDatasetBuilder",
     "SpatialText2SQLFinetuneConfig",
     "TRLFullFinetuner",
+    "load_alpaca_finetune_samples",
     "load_prepared_finetune_samples",
     "load_raw_finetune_samples",
     "load_trl_finetune_config",
     "override_trl_finetune_config",
+    "write_alpaca_finetune_samples",
     "write_prepared_finetune_samples",
     "write_raw_finetune_samples",
 ]

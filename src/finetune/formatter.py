@@ -6,7 +6,7 @@ import logging
 from typing import Any, Mapping, Sequence
 
 from .config import FinetuneDataConfig
-from .models import RawFinetuneSample
+from .models import AlpacaFinetuneSample, RawFinetuneSample
 from .prompting import FinetunePromptRenderer
 from .utils import stable_jsonify
 
@@ -26,8 +26,8 @@ class NL2SQLAlpacaFormatter:
             max_representative_rows=self.data_config.max_representative_rows,
         )
 
-    def format_samples(self, rows: Sequence[RawFinetuneSample]) -> list[RawFinetuneSample]:
-        formatted_rows: list[RawFinetuneSample] = []
+    def format_samples(self, rows: Sequence[RawFinetuneSample]) -> list[AlpacaFinetuneSample]:
+        formatted_rows: list[AlpacaFinetuneSample] = []
         for row in rows:
             metadata = self._load_embedded_metadata(row)
             schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
@@ -48,22 +48,10 @@ class NL2SQLAlpacaFormatter:
                     row.question_id or row.database_id,
                 )
             formatted_rows.append(
-                RawFinetuneSample(
-                    question_id=row.question_id,
-                    database_id=row.database_id,
-                    city=row.city,
-                    question=row.question,
-                    sql=row.sql,
-                    difficulty=row.difficulty,
+                AlpacaFinetuneSample(
                     instruction=instruction,
                     input_text=input_text,
                     output_text=output_text,
-                    sql_reasoning_summary=row.sql_reasoning_summary,
-                    used_tables=list(row.used_tables),
-                    used_columns=list(row.used_columns),
-                    used_spatial_functions=list(row.used_spatial_functions),
-                    sql_features=stable_jsonify(row.sql_features),
-                    metadata=stable_jsonify(row.metadata),
                 )
             )
         return formatted_rows

@@ -14,7 +14,7 @@ import transformers
 import trl
 
 from .config import SpatialText2SQLFinetuneConfig
-from .models import RawFinetuneSample
+from .models import AlpacaFinetuneSample
 from .prompting import FinetunePromptRenderer
 
 LOGGER = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class TRLFullFinetuner:
     def __init__(self, config: SpatialText2SQLFinetuneConfig) -> None:
         self.config = config
 
-    def train(self, rows: Sequence[RawFinetuneSample]) -> dict[str, Any]:
+    def train(self, rows: Sequence[AlpacaFinetuneSample]) -> dict[str, Any]:
         if not rows:
             raise ValueError("No Alpaca fine-tune rows were provided.")
 
@@ -126,8 +126,8 @@ class TRLFullFinetuner:
 
     def _split_rows(
         self,
-        rows: Sequence[RawFinetuneSample],
-    ) -> tuple[list[RawFinetuneSample], list[RawFinetuneSample]]:
+        rows: Sequence[AlpacaFinetuneSample],
+    ) -> tuple[list[AlpacaFinetuneSample], list[AlpacaFinetuneSample]]:
         if len(rows) < 2 or self.config.data.eval_ratio <= 0:
             return list(rows), []
         rng = np.random.default_rng(self.config.data.shuffle_seed)
@@ -135,8 +135,8 @@ class TRLFullFinetuner:
         eval_count = max(1, int(round(len(rows) * self.config.data.eval_ratio)))
         eval_count = min(eval_count, len(rows) - 1)
         eval_indices = set(indices[:eval_count])
-        train_rows: list[RawFinetuneSample] = []
-        eval_rows: list[RawFinetuneSample] = []
+        train_rows: list[AlpacaFinetuneSample] = []
+        eval_rows: list[AlpacaFinetuneSample] = []
         for index, row in enumerate(rows):
             if index in eval_indices:
                 eval_rows.append(row)
@@ -145,11 +145,11 @@ class TRLFullFinetuner:
         return train_rows, eval_rows
 
     @staticmethod
-    def _prompt_from_row(row: RawFinetuneSample) -> str:
+    def _prompt_from_row(row: AlpacaFinetuneSample) -> str:
         return FinetunePromptRenderer.compose_prompt(row.instruction, row.input_text)
 
     @staticmethod
-    def _completion_from_row(row: RawFinetuneSample) -> str:
+    def _completion_from_row(row: AlpacaFinetuneSample) -> str:
         return row.output_text
 
     def _build_sft_config(self, sft_config_cls, *, has_eval: bool):
