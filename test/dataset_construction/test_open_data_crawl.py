@@ -2,6 +2,7 @@ import tempfile
 import threading
 import unittest
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -50,11 +51,15 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
             list(DEFAULT_CITY_ORDER),
         )
         self.assertEqual(
-            [profile.city_id for profile in parse_city_list("nyc,boston")],
-            ["nyc", "boston"],
+            [profile.city_id for profile in parse_city_list("nyc,austin")],
+            ["nyc", "austin"],
         )
-        self.assertEqual(CITY_PROFILES["boston"].skip_dataset_names, ("2011 Contours- 1ft",))
-        self.assertTrue(should_skip_dataset_name(CITY_PROFILES["boston"], "  2011   contours- 1ft "))
+        phoenix_with_skip = replace(
+            CITY_PROFILES["phoenix"],
+            skip_dataset_names=("2011 Contours- 1ft",),
+        )
+        self.assertEqual(phoenix_with_skip.skip_dataset_names, ("2011 Contours- 1ft",))
+        self.assertTrue(should_skip_dataset_name(phoenix_with_skip, "  2011   contours- 1ft "))
         self.assertFalse(should_skip_dataset_name(CITY_PROFILES["chicago"], "One Foot Contours"))
 
     def test_extract_tags_merges_and_deduplicates(self):
@@ -233,7 +238,7 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
 
             class FakeCrawler(CkanGeoJsonCrawler):
                 def __init__(self):
-                    super().__init__(CITY_PROFILES["boston"], output_dir=Path(tmpdir))
+                    super().__init__(CITY_PROFILES["phoenix"], output_dir=Path(tmpdir))
 
                 def iter_packages(self):
                     yield {
@@ -284,7 +289,10 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
 
             class FakeCrawler(CkanGeoJsonCrawler):
                 def __init__(self):
-                    super().__init__(CITY_PROFILES["boston"], output_dir=Path(tmpdir))
+                    super().__init__(
+                        replace(CITY_PROFILES["phoenix"], skip_dataset_names=("2011 Contours- 1ft",)),
+                        output_dir=Path(tmpdir),
+                    )
 
                 def iter_packages(self):
                     yield {
@@ -333,7 +341,7 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
             class FakeCrawler(CkanGeoJsonCrawler):
                 def __init__(self):
                     super().__init__(
-                        CITY_PROFILES["boston"],
+                        CITY_PROFILES["phoenix"],
                         output_dir=out_root,
                         existing_datasets={
                             "a-first": {
@@ -381,7 +389,7 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
             class FakeCrawler(CkanGeoJsonCrawler):
                 def __init__(self):
                     super().__init__(
-                        CITY_PROFILES["boston"],
+                        CITY_PROFILES["phoenix"],
                         output_dir=out_root,
                         existing_datasets={
                             "dataset-1": {
@@ -437,9 +445,9 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
         self.assertEqual(record["source_link"], schema_url)
 
     def test_download_headers_are_browser_like_for_ckan_redirects(self):
-        headers = CkanGeoJsonCrawler._download_headers("https://data.boston.gov/dataset/example")
+        headers = CkanGeoJsonCrawler._download_headers("https://www.phoenixopendata.com/dataset/example")
         self.assertIn("Mozilla/5.0", headers["User-Agent"])
-        self.assertEqual(headers["Referer"], "https://data.boston.gov/dataset/example")
+        self.assertEqual(headers["Referer"], "https://www.phoenixopendata.com/dataset/example")
         self.assertNotIn("X-App-Token", headers)
         self.assertIn("text/html", headers["Accept"])
         self.assertEqual(headers["Upgrade-Insecure-Requests"], "1")
@@ -773,7 +781,7 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
             data_path = Path(tmpdir) / "broken.geojson"
             data_path.write_text('{"type":"FeatureCollection","features":[', encoding="utf-8")
             city_meta = build_city_metadata(
-                CITY_PROFILES["boston"],
+                CITY_PROFILES["austin"],
                 {
                     "data_dir": tmpdir,
                     "datasets": [{"id": "broken", "name": "Broken", "path": str(data_path)}],
@@ -866,9 +874,9 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_root = Path(tmpdir)
-            boston_geojson = out_root / "boston" / "geojson" / "existing-boston.geojson"
-            boston_geojson.parent.mkdir(parents=True, exist_ok=True)
-            boston_geojson.write_text(
+            austin_geojson = out_root / "austin" / "geojson" / "existing-austin.geojson"
+            austin_geojson.parent.mkdir(parents=True, exist_ok=True)
+            austin_geojson.write_text(
                 json.dumps(
                     {
                         "type": "FeatureCollection",
@@ -888,18 +896,18 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
                 json.dumps(
                     [
                         {
-                            "City": "Boston",
-                            "city_id": "boston",
-                            "data_dir": str(out_root / "boston"),
+                            "City": "Austin",
+                            "city_id": "austin",
+                            "data_dir": str(out_root / "austin"),
                             "#Table": 1,
                             "#Field/Table": 2.0,
                             "#Spatial Field/Table": 1.0,
                             "#Row/Table": 1.0,
                             "datasets": [
                                 {
-                                    "id": "existing-boston",
-                                    "name": "Existing Boston",
-                                    "path": str(boston_geojson),
+                                    "id": "existing-austin",
+                                    "name": "Existing Austin",
+                                    "path": str(austin_geojson),
                                     "row_count": 1,
                                     "field_count": 2,
                                     "spatial_field_count": 1,
@@ -923,8 +931,8 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
             def fake_build_crawler(profile, args, *, existing_datasets=None):
                 with events_lock:
                     events.append(("build", profile.city_id))
-                if profile.city_id == "boston":
-                    self.assertIn("existing-boston", existing_datasets)
+                if profile.city_id == "austin":
+                    self.assertIn("existing-austin", existing_datasets)
                 else:
                     self.assertEqual(existing_datasets, {})
                 return FakeCrawler(profile.city_id, existing_datasets or {})
@@ -935,7 +943,7 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
                 return original_write(path, city_metadata)
 
             args = crawl_cli.build_argument_parser().parse_args(
-                ["--cities", "boston,chicago", "--out-root", str(out_root)]
+                ["--cities", "austin,chicago", "--out-root", str(out_root)]
             )
             with patch.object(crawl_cli, "_build_crawler", side_effect=fake_build_crawler), patch.object(
                 crawl_cli, "write_root_metadata", side_effect=wrapped_write
@@ -949,22 +957,22 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
         self.assertEqual(events[-1][0], "write")
         self.assertCountEqual(
             [event for event in events if event[0] == "build"],
-            [("build", "boston"), ("build", "chicago")],
+            [("build", "austin"), ("build", "chicago")],
         )
         self.assertCountEqual(
             [event for event in events if event[0] == "run-start"],
-            [("run-start", "boston"), ("run-start", "chicago")],
+            [("run-start", "austin"), ("run-start", "chicago")],
         )
         first_finish = min(index for index, event in enumerate(events) if event[0] == "run-finish")
         run_start_positions = [index for index, event in enumerate(events) if event[0] == "run-start"]
         self.assertTrue(all(index < first_finish for index in run_start_positions))
-        self.assertEqual(summary["cities"]["boston"]["status"], "ok")
+        self.assertEqual(summary["cities"]["austin"]["status"], "ok")
         self.assertEqual(summary["cities"]["chicago"]["status"], "ok")
         self.assertEqual(len(written), 2)
         written_by_city = {entry["city_id"]: entry for entry in written}
-        self.assertEqual(set(written_by_city), {"boston", "chicago"})
-        self.assertEqual(len(written_by_city["boston"]["datasets"]), 2)
-        self.assertEqual(written_by_city["boston"]["errors"], [])
+        self.assertEqual(set(written_by_city), {"austin", "chicago"})
+        self.assertEqual(len(written_by_city["austin"]["datasets"]), 2)
+        self.assertEqual(written_by_city["austin"]["errors"], [])
         self.assertEqual(len(written_by_city["chicago"]["datasets"]), 1)
         self.assertEqual(len(column_type_written), 2)
         self.assertEqual(summary["columntype"], str((out_root / "columntype.json").resolve()))

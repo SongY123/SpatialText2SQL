@@ -12,7 +12,9 @@ By default, it will download map datasets from all 7 cities. The format is unifi
 data/raw/<city_name>/geojson/
 ```
 
-The current city directory names are: `new_york_city`, `los_angeles`, `chicago`, `seattle`, `san_francisco`, `boston`, and `phoenix`.
+The current city directory names are: `new_york_city`, `los_angeles`, `chicago`, `seattle`, `san_francisco`, `austin`, and `phoenix`.
+
+The crawler discovers map datasets via the **Socrata Discovery API** (`only=map`). **Washington DC (`opendata.dc.gov`) uses ArcGIS Hub and is not registered in that API**, so Boston was replaced with **Austin** (`data.austintexas.gov`), which matches the same Socrata crawl path as NYC.
 
 The crawler will prioritize reading the existing `data/raw/metadata.json`:
 
@@ -47,7 +49,7 @@ scripts/dataset_construction/crawl_open_data_maps.sh 10
 ## Key Parameters
 
 - `--sample N`: Download at most `N` datasets per city. If omitted, downloads all map data for all cities.
-- `--cities LIST`: Comma-separated list of cities. Options: `nyc,lacity,chicago,seattle,sf,boston,phoenix`. Default: `all`.
+- `--cities LIST`: Comma-separated list of cities. Options: `nyc,lacity,chicago,seattle,sf,austin,phoenix`. Default: `all`.
 - `--out-root PATH`: Root directory for downloads. Default: `data/raw`.
 - `--metadata-name NAME`: Filename for the root metadata. Default: `metadata.json`.
 - `--page-size N`: Pagination size for catalog APIs. Default: `100`.

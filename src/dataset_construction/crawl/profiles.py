@@ -62,15 +62,13 @@ CITY_PROFILES: dict[str, CityProfile] = {
         output_dir_name="san_francisco",
         browse_url="https://data.sfgov.org/browse?limitTo=maps",
     ),
-    "boston": CityProfile(
-        city_id="boston",
-        label="Boston",
-        portal_type="ckan",
-        base_url="https://data.boston.gov",
-        output_dir_name="boston",
-        browse_url="https://data.boston.gov/dataset/",
-        ckan_fq="organization:boston-maps",
-        skip_dataset_names=("2011 Contours- 1ft",),
+    "austin": CityProfile(
+        city_id="austin",
+        label="Austin",
+        portal_type="socrata",
+        domain="data.austintexas.gov",
+        output_dir_name="austin",
+        browse_url="https://data.austintexas.gov/browse?limitTo=maps",
     ),
     "phoenix": CityProfile(
         city_id="phoenix",
@@ -84,7 +82,7 @@ CITY_PROFILES: dict[str, CityProfile] = {
 }
 
 
-DEFAULT_CITY_ORDER = ("nyc", "lacity", "chicago", "seattle", "sf", "boston", "phoenix")
+DEFAULT_CITY_ORDER = ("nyc", "lacity", "chicago", "seattle", "sf", "austin", "phoenix")
 
 
 def _normalize_dataset_name(value: str) -> str:
