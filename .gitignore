@@ -218,3 +218,4 @@ results/
 server_outputs/
 scripts/spatialsql/migration_report*.json
 scripts/spatialsql/migration_report*.txt
+experiments/
