@@ -35,6 +35,19 @@ INVALID_GEOMETRY_ERROR_MARKERS = (
     "invalid geometry",
     "parse error",
 )
+ROWWISE_RETRY_SQLSTATE_PREFIXES = (
+    "22",
+    "23",
+)
+ROWWISE_RETRY_MESSAGE_MARKERS = (
+    "invalid input syntax",
+    "value too long",
+    "numeric value out of range",
+    "out of range",
+    "violates",
+    "malformed",
+    "bad value",
+)
 
 LONGITUDE_HINTS = {
     "lon",
@@ -309,12 +322,26 @@ def _error_message(exc: BaseException) -> str:
     return " | ".join(part for part in parts if part).strip()
 
 
+def _error_code(exc: BaseException) -> str:
+    return to_text(getattr(exc, "pgcode", ""))
+
+
 def _is_invalid_geometry_error(exc: BaseException) -> bool:
     message = _error_message(exc).lower()
     return (
         "geometry" in message
         and any(marker in message for marker in INVALID_GEOMETRY_ERROR_MARKERS)
     )
+
+
+def _is_rowwise_retryable_insert_error(exc: BaseException) -> bool:
+    if _is_invalid_geometry_error(exc):
+        return True
+    code = _error_code(exc)
+    if len(code) >= 2 and code[:2] in ROWWISE_RETRY_SQLSTATE_PREFIXES:
+        return True
+    message = _error_message(exc).lower()
+    return any(marker in message for marker in ROWWISE_RETRY_MESSAGE_MARKERS)
 
 
 def _coordinate_role(name: str) -> Optional[str]:
@@ -514,7 +541,7 @@ class PostGISSynthesizedDatabaseMigrator:
 
     def _ensure_catalog(self, catalog_name: str) -> None:
         if self._catalog_exists(catalog_name):
-            LOGGER.info("Catalog already exists: %s", catalog_name)
+            LOGGER.warning("Catalog already exists: %s", catalog_name)
             return
         conn = self._connect_autocommit(self.settings.bootstrap_db)
         try:
@@ -523,6 +550,15 @@ class PostGISSynthesizedDatabaseMigrator:
         finally:
             conn.close()
         LOGGER.info("Created catalog: %s", catalog_name)
+
+    def _prepare_catalog(self) -> str:
+        catalog_name = normalize_postgres_identifier(self.settings.catalog, prefix="catalog")
+        self._ensure_catalog(catalog_name)
+        self._comment_on_catalog(
+            catalog_name,
+            "Catalog storing synthesized spatial database schemas.",
+        )
+        return catalog_name
 
     def _ensure_postgis_extensions(self, conn: PGConnection) -> None:
         with conn.cursor() as cur:
@@ -647,6 +683,8 @@ class PostGISSynthesizedDatabaseMigrator:
                 )
 
     def _build_insert_template(self, specs: Sequence[ColumnMigrationSpec]) -> str:
+        if not specs:
+            return "()"
         parts: list[str] = []
         for spec in specs:
             if not spec.is_spatial:
@@ -690,11 +728,14 @@ class PostGISSynthesizedDatabaseMigrator:
             sql.Identifier(schema_name),
             sql.Identifier(table_name),
         )
-        columns_sql = [sql.Identifier(spec.canonical_name) for spec in specs]
-        insert_sql = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
-            qualified_table,
-            sql.SQL(", ").join(columns_sql),
-        ).as_string(conn)
+        if specs:
+            columns_sql = [sql.Identifier(spec.canonical_name) for spec in specs]
+            insert_sql = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+                qualified_table,
+                sql.SQL(", ").join(columns_sql),
+            ).as_string(conn)
+        else:
+            insert_sql = sql.SQL("INSERT INTO {} VALUES %s").format(qualified_table).as_string(conn)
         template = self._build_insert_template(specs)
         rows = [
             self._build_insert_values(build_feature_row(table, feature, specs), specs)
@@ -716,10 +757,16 @@ class PostGISSynthesizedDatabaseMigrator:
                 self._execute_insert_batch(conn, insert_sql, batch_rows, template)
             except Exception as exc:
                 self._safe_rollback(conn)
-                if not _is_invalid_geometry_error(exc):
+                if not _is_rowwise_retryable_insert_error(exc):
                     raise
+                reason = (
+                    "invalid geometry"
+                    if _is_invalid_geometry_error(exc)
+                    else "retryable insert error"
+                )
                 LOGGER.warning(
-                    "Invalid geometry detected while inserting batch rows %s-%s into %s.%s; retrying row-by-row. %s",
+                    "%s detected while inserting batch rows %s-%s into %s.%s; retrying row-by-row. %s",
+                    reason.capitalize(),
                     batch_start + 1,
                     batch_end,
                     schema_name,
@@ -731,19 +778,25 @@ class PostGISSynthesizedDatabaseMigrator:
                         self._execute_insert_batch(conn, insert_sql, [row], template)
                     except Exception as row_exc:
                         self._safe_rollback(conn)
-                        if not _is_invalid_geometry_error(row_exc):
+                        if not _is_rowwise_retryable_insert_error(row_exc):
                             raise
                         skipped_rows += 1
+                        row_reason = (
+                            "invalid geometry"
+                            if _is_invalid_geometry_error(row_exc)
+                            else "insert error"
+                        )
                         LOGGER.warning(
-                            "Skipping row %s for %s.%s due to invalid geometry: %s",
+                            "Skipping row %s for %s.%s due to %s: %s",
                             row_offset,
                             schema_name,
                             table_name,
+                            row_reason,
                             _error_message(row_exc),
                         )
         if skipped_rows:
             LOGGER.warning(
-                "Skipped %s invalid geometry row(s) while loading %s.%s",
+                "Skipped %s row(s) while loading %s.%s due to retryable insert errors",
                 skipped_rows,
                 schema_name,
                 table_name,
@@ -780,11 +833,6 @@ class PostGISSynthesizedDatabaseMigrator:
         schema_comment = (
             f"Synthesized spatial database for city={database.city}; "
             f"database_id={database.database_id}; table_count={len(database.selected_tables)}"
-        )
-        self._ensure_catalog(catalog_name)
-        self._comment_on_catalog(
-            catalog_name,
-            "Catalog storing synthesized spatial database schemas.",
         )
         conn = self._connect_autocommit(catalog_name)
         try:
@@ -838,6 +886,9 @@ class PostGISSynthesizedDatabaseMigrator:
         return location
 
     def migrate_databases(self, databases: Sequence[SynthesizedSpatialDatabase]) -> list[str]:
+        if not databases:
+            return []
+        self._prepare_catalog()
         migrated: list[str] = []
         for database in databases:
             migrated.append(self.migrate_database(database))

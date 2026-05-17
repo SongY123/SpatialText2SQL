@@ -209,6 +209,15 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertTrue(fake_conn.closed)
         self.assertEqual(len(fake_conn.cursor_obj.executed), 1)
 
+    def test_ensure_catalog_warns_when_catalog_exists(self):
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings(catalog="synthesis"))
+        with mock.patch.object(migrator, "_catalog_exists", return_value=True):
+            with mock.patch.object(migrator, "_connect_autocommit") as connect_autocommit:
+                with self.assertLogs("src.synthesis.database.migration.core", level="WARNING") as captured:
+                    migrator._ensure_catalog("synthesis")
+        connect_autocommit.assert_not_called()
+        self.assertIn("Catalog already exists: synthesis", "\n".join(captured.output))
+
     def test_migrate_database_override_recreates_schema(self):
         class FakeConnection:
             def __init__(self):
@@ -242,24 +251,20 @@ class PostGISMigrationTests(unittest.TestCase):
         migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
         fake_conn = FakeConnection()
         expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
-        with mock.patch.object(migrator, "_ensure_catalog") as ensure_catalog:
-            with mock.patch.object(migrator, "_comment_on_catalog") as comment_on_catalog:
-                with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn) as connect_autocommit:
-                    with mock.patch.object(migrator, "_ensure_postgis_extensions") as ensure_extensions:
-                        with mock.patch.object(migrator, "_schema_exists", return_value=True) as schema_exists:
-                            with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
-                                with mock.patch.object(migrator, "_list_tables") as list_tables:
-                                    with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
-                                        with mock.patch.object(migrator, "_create_table") as create_table:
-                                            with mock.patch.object(migrator, "_insert_features") as insert_features:
-                                                with mock.patch(
-                                                    "src.synthesis.database.migration.core.load_geojson_features",
-                                                    return_value=[],
-                                                ) as patched_load:
-                                                    location = migrator.migrate_database(database)
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn) as connect_autocommit:
+            with mock.patch.object(migrator, "_ensure_postgis_extensions") as ensure_extensions:
+                with mock.patch.object(migrator, "_schema_exists", return_value=True) as schema_exists:
+                    with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
+                        with mock.patch.object(migrator, "_list_tables") as list_tables:
+                            with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
+                                with mock.patch.object(migrator, "_create_table") as create_table:
+                                    with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                        with mock.patch(
+                                            "src.synthesis.database.migration.core.load_geojson_features",
+                                            return_value=[],
+                                        ) as patched_load:
+                                            location = migrator.migrate_database(database)
 
-        ensure_catalog.assert_called_once_with("syntheized")
-        comment_on_catalog.assert_called_once()
         connect_autocommit.assert_called_once_with("syntheized")
         ensure_extensions.assert_called_once_with(fake_conn)
         schema_exists.assert_called_once_with(fake_conn, expected_schema)
@@ -324,24 +329,20 @@ class PostGISMigrationTests(unittest.TestCase):
         expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
         existing_table = normalize_postgres_identifier(hydrants.table_name, prefix="table")
         missing_table = normalize_postgres_identifier(schools.table_name, prefix="table")
-        with mock.patch.object(migrator, "_ensure_catalog") as ensure_catalog:
-            with mock.patch.object(migrator, "_comment_on_catalog") as comment_on_catalog:
-                with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn) as connect_autocommit:
-                    with mock.patch.object(migrator, "_ensure_postgis_extensions") as ensure_extensions:
-                        with mock.patch.object(migrator, "_schema_exists", return_value=True) as schema_exists:
-                            with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
-                                with mock.patch.object(migrator, "_list_tables", return_value={existing_table}) as list_tables:
-                                    with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
-                                        with mock.patch.object(migrator, "_create_table") as create_table:
-                                            with mock.patch.object(migrator, "_insert_features") as insert_features:
-                                                with mock.patch(
-                                                    "src.synthesis.database.migration.core.load_geojson_features",
-                                                    return_value=[],
-                                                ) as patched_load:
-                                                    location = migrator.migrate_database(database)
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn) as connect_autocommit:
+            with mock.patch.object(migrator, "_ensure_postgis_extensions") as ensure_extensions:
+                with mock.patch.object(migrator, "_schema_exists", return_value=True) as schema_exists:
+                    with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
+                        with mock.patch.object(migrator, "_list_tables", return_value={existing_table}) as list_tables:
+                            with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
+                                with mock.patch.object(migrator, "_create_table") as create_table:
+                                    with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                        with mock.patch(
+                                            "src.synthesis.database.migration.core.load_geojson_features",
+                                            return_value=[],
+                                        ) as patched_load:
+                                            location = migrator.migrate_database(database)
 
-        ensure_catalog.assert_called_once_with("syntheized")
-        comment_on_catalog.assert_called_once()
         connect_autocommit.assert_called_once_with("syntheized")
         ensure_extensions.assert_called_once_with(fake_conn)
         schema_exists.assert_called_once_with(fake_conn, expected_schema)
@@ -391,21 +392,19 @@ class PostGISMigrationTests(unittest.TestCase):
         )
         fake_conn = FakeConnection()
         expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
-        with mock.patch.object(migrator, "_ensure_catalog"):
-            with mock.patch.object(migrator, "_comment_on_catalog"):
-                with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
-                    with mock.patch.object(migrator, "_ensure_postgis_extensions"):
-                        with mock.patch.object(migrator, "_schema_exists", return_value=False) as schema_exists:
-                            with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
-                                with mock.patch.object(migrator, "_list_tables") as list_tables:
-                                    with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
-                                        with mock.patch.object(migrator, "_create_table") as create_table:
-                                            with mock.patch.object(migrator, "_insert_features") as insert_features:
-                                                with mock.patch(
-                                                    "src.synthesis.database.migration.core.load_geojson_features",
-                                                    return_value=[],
-                                                ):
-                                                    migrator.migrate_database(database)
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
+            with mock.patch.object(migrator, "_ensure_postgis_extensions"):
+                with mock.patch.object(migrator, "_schema_exists", return_value=False) as schema_exists:
+                    with mock.patch.object(migrator, "_ensure_schema") as ensure_schema:
+                        with mock.patch.object(migrator, "_list_tables") as list_tables:
+                            with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
+                                with mock.patch.object(migrator, "_create_table") as create_table:
+                                    with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                        with mock.patch(
+                                            "src.synthesis.database.migration.core.load_geojson_features",
+                                            return_value=[],
+                                        ):
+                                            migrator.migrate_database(database)
 
         schema_exists.assert_called_once_with(fake_conn, expected_schema)
         ensure_schema.assert_called_once()
@@ -413,6 +412,32 @@ class PostGISMigrationTests(unittest.TestCase):
         recreate_schema.assert_not_called()
         create_table.assert_called_once()
         insert_features.assert_called_once()
+
+    def test_migrate_databases_prepares_catalog_once(self):
+        database_one = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="db1",
+            city="nyc",
+            selected_tables=[],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+        database_two = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="db2",
+            city="sf",
+            selected_tables=[],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+        with mock.patch.object(migrator, "_prepare_catalog") as prepare_catalog:
+            with mock.patch.object(migrator, "migrate_database", side_effect=["syntheized.db1", "syntheized.db2"]) as migrate_database:
+                locations = migrator.migrate_databases([database_one, database_two])
+
+        prepare_catalog.assert_called_once_with()
+        self.assertEqual(migrate_database.call_count, 2)
+        self.assertEqual(locations, ["syntheized.db1", "syntheized.db2"])
 
     def test_bulk_insert_value_builder_converts_spatial_value_to_wkt(self):
         table = CanonicalSpatialTable.from_dict(
@@ -506,6 +531,124 @@ class PostGISMigrationTests(unittest.TestCase):
 
         self.assertEqual([row[0] for row in inserted_rows], [1, 3])
         self.assertEqual(fake_conn.rollback_count, 2)
+
+    def test_insert_features_skips_retryable_data_error_rows(self):
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeConnection:
+            def __init__(self):
+                self.rollback_count = 0
+
+            def cursor(self):
+                return FakeCursor()
+
+            def rollback(self):
+                self.rollback_count += 1
+
+        class RetryableInsertError(Exception):
+            def __init__(self, message: str, pgcode: str = "22000"):
+                super().__init__(message)
+                self.pgerror = message
+                self.pgcode = pgcode
+
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "labels",
+                "normalized_schema": [
+                    {"name": "name", "canonical_name": "name", "canonical_type": "text"},
+                ],
+                "spatial_fields": [],
+            }
+        )
+        specs = prepare_column_specs(table)
+        features = [
+            {"type": "Feature", "properties": {"name": "alpha"}, "geometry": None},
+            {"type": "Feature", "properties": {"name": "bad"}, "geometry": None},
+            {"type": "Feature", "properties": {"name": "gamma"}, "geometry": None},
+        ]
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings(), insert_batch_size=100)
+        fake_conn = FakeConnection()
+        inserted_rows: list[tuple[object, ...]] = []
+
+        def fake_execute_values(cur, insert_sql, rows, template=None, page_size=None):
+            del cur, insert_sql, template, page_size
+            if any(any(value == "bad" for value in row) for row in rows):
+                raise RetryableInsertError("invalid input syntax for type text")
+            inserted_rows.extend(rows)
+
+        with mock.patch("psycopg2.sql.Composed.as_string", return_value="INSERT INTO demo(name) VALUES %s"):
+            with mock.patch("src.synthesis.database.migration.core.execute_values", side_effect=fake_execute_values):
+                migrator._insert_features(
+                    fake_conn,
+                    "demo_schema",
+                    "labels",
+                    table,
+                    specs,
+                    features,
+                )
+
+        self.assertEqual([row[0] for row in inserted_rows], ["alpha", "gamma"])
+        self.assertEqual(fake_conn.rollback_count, 2)
+
+    def test_insert_features_supports_zero_column_tables(self):
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeConnection:
+            def cursor(self):
+                return FakeCursor()
+
+            def rollback(self):
+                raise AssertionError("rollback should not be called")
+
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "lacity",
+                "table_name": "zoning",
+                "normalized_schema": [],
+                "spatial_fields": [],
+            }
+        )
+        specs = prepare_column_specs(table)
+        features = [
+            {"type": "Feature", "properties": {}, "geometry": None},
+            {"type": "Feature", "properties": {}, "geometry": None},
+        ]
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings(), insert_batch_size=100)
+        recorded: dict[str, object] = {}
+
+        def fake_execute_values(cur, insert_sql, rows, template=None, page_size=None):
+            del cur, page_size
+            recorded["insert_sql"] = insert_sql
+            recorded["rows"] = list(rows)
+            recorded["template"] = template
+
+        with mock.patch("psycopg2.sql.Composed.as_string", return_value='INSERT INTO "lacity_0001"."zoning" VALUES %s'):
+            with mock.patch("src.synthesis.database.migration.core.execute_values", side_effect=fake_execute_values):
+                migrator._insert_features(
+                    FakeConnection(),
+                    "lacity_0001",
+                    "zoning",
+                    table,
+                    specs,
+                    features,
+                )
+
+        self.assertEqual(recorded["insert_sql"], 'INSERT INTO "lacity_0001"."zoning" VALUES %s')
+        self.assertEqual(recorded["template"], "()")
+        self.assertEqual(recorded["rows"], [(), ()])
 
 
 if __name__ == "__main__":
