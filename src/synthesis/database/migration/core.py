@@ -23,11 +23,17 @@ from ..utils import is_missing, stable_jsonify, to_text
 LOGGER = logging.getLogger(__name__)
 DEFAULT_INSERT_BATCH_SIZE = 10000
 DEFAULT_SOURCE_ROW_LIMIT = 500000
+DEFAULT_MIGRATION_MODE = "override"
+APPEND_MIGRATION_MODE = "append"
 
 POSTGIS_EXTENSIONS = (
     "postgis",
     "postgis_topology",
     "postgis_raster",
+)
+INVALID_GEOMETRY_ERROR_MARKERS = (
+    "invalid geometry",
+    "parse error",
 )
 
 LONGITUDE_HINTS = {
@@ -63,6 +69,18 @@ WKT_PREFIXES = (
 PAIR_STRING_PATTERN = re.compile(
     r"^\s*[\[(]?\s*([+-]?(?:\d+\.?\d*|\.\d+))\s*[,; ]\s*([+-]?(?:\d+\.?\d*|\.\d+))\s*[\])]?\s*$"
 )
+
+
+def normalize_migration_mode(value: Any, default: str = DEFAULT_MIGRATION_MODE) -> str:
+    text = to_text(value).lower()
+    if not text:
+        return default
+    if text not in {DEFAULT_MIGRATION_MODE, APPEND_MIGRATION_MODE}:
+        raise ValueError(
+            f"Unsupported migration mode: {value!r}. Expected one of: "
+            f"{DEFAULT_MIGRATION_MODE}, {APPEND_MIGRATION_MODE}."
+        )
+    return text
 
 
 def normalize_postgres_identifier(value: Any, prefix: str = "obj") -> str:
@@ -283,6 +301,22 @@ def _normalize_spatial_to_wkt(value: Any) -> Optional[str]:
     return None
 
 
+def _error_message(exc: BaseException) -> str:
+    parts = [str(exc)]
+    pgerror = getattr(exc, "pgerror", None)
+    if pgerror:
+        parts.append(str(pgerror))
+    return " | ".join(part for part in parts if part).strip()
+
+
+def _is_invalid_geometry_error(exc: BaseException) -> bool:
+    message = _error_message(exc).lower()
+    return (
+        "geometry" in message
+        and any(marker in message for marker in INVALID_GEOMETRY_ERROR_MARKERS)
+    )
+
+
 def _coordinate_role(name: str) -> Optional[str]:
     normalized = normalize_postgres_identifier(name, prefix="col")
     if normalized in LONGITUDE_HINTS or any(normalized.endswith(f"_{hint}") for hint in LONGITUDE_HINTS):
@@ -444,6 +478,7 @@ class PostGISSynthesizedDatabaseMigrator:
         settings: PostGISConnectionSettings,
         insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE,
         source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT,
+        migration_mode: str = DEFAULT_MIGRATION_MODE,
     ):
         self.settings = settings
         if int(insert_batch_size) <= 0:
@@ -452,6 +487,7 @@ class PostGISSynthesizedDatabaseMigrator:
         if int(source_row_limit) != -1 and int(source_row_limit) <= 0:
             raise ValueError(f"source_row_limit must be -1 or a positive integer, got: {source_row_limit!r}")
         self.source_row_limit = int(source_row_limit)
+        self.migration_mode = normalize_migration_mode(migration_mode)
 
     def _connect(self, database: str) -> PGConnection:
         return psycopg2.connect(
@@ -517,6 +553,38 @@ class PostGISSynthesizedDatabaseMigrator:
                 (comment,),
             )
 
+    def _schema_exists(self, conn: PGConnection, schema_name: str) -> bool:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
+                (schema_name,),
+            )
+            return cur.fetchone() is not None
+
+    def _ensure_schema(self, conn: PGConnection, schema_name: str, comment: str) -> None:
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema_name)))
+            cur.execute(
+                sql.SQL("COMMENT ON SCHEMA {} IS %s").format(sql.Identifier(schema_name)),
+                (comment,),
+            )
+
+    def _list_tables(self, conn: PGConnection, schema_name: str) -> set[str]:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_type = 'BASE TABLE'
+                """,
+                (schema_name,),
+            )
+            return {
+                to_text(row[0])
+                for row in cur.fetchall()
+                if row and to_text(row[0])
+            }
+
     def _build_column_comment(self, spec: ColumnMigrationSpec) -> str:
         parts = [
             f"canonical_type={spec.canonical_type}",
@@ -559,7 +627,6 @@ class PostGISSynthesizedDatabaseMigrator:
                 sql.Identifier(schema_name),
                 sql.Identifier(table_name),
             )
-            cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(qualified_table))
             cur.execute(
                 sql.SQL("CREATE TABLE {} ({})").format(
                     qualified_table,
@@ -641,13 +708,70 @@ class PostGISSynthesizedDatabaseMigrator:
             table_name,
             page_size,
         )
+        skipped_rows = 0
+        for batch_start in range(0, len(rows), page_size):
+            batch_end = min(batch_start + page_size, len(rows))
+            batch_rows = rows[batch_start:batch_end]
+            try:
+                self._execute_insert_batch(conn, insert_sql, batch_rows, template)
+            except Exception as exc:
+                self._safe_rollback(conn)
+                if not _is_invalid_geometry_error(exc):
+                    raise
+                LOGGER.warning(
+                    "Invalid geometry detected while inserting batch rows %s-%s into %s.%s; retrying row-by-row. %s",
+                    batch_start + 1,
+                    batch_end,
+                    schema_name,
+                    table_name,
+                    _error_message(exc),
+                )
+                for row_offset, row in enumerate(batch_rows, start=batch_start + 1):
+                    try:
+                        self._execute_insert_batch(conn, insert_sql, [row], template)
+                    except Exception as row_exc:
+                        self._safe_rollback(conn)
+                        if not _is_invalid_geometry_error(row_exc):
+                            raise
+                        skipped_rows += 1
+                        LOGGER.warning(
+                            "Skipping row %s for %s.%s due to invalid geometry: %s",
+                            row_offset,
+                            schema_name,
+                            table_name,
+                            _error_message(row_exc),
+                        )
+        if skipped_rows:
+            LOGGER.warning(
+                "Skipped %s invalid geometry row(s) while loading %s.%s",
+                skipped_rows,
+                schema_name,
+                table_name,
+            )
+
+    @staticmethod
+    def _safe_rollback(conn: PGConnection) -> None:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _execute_insert_batch(
+        conn: PGConnection,
+        insert_sql: str,
+        rows: Sequence[tuple[Any, ...]],
+        template: str,
+    ) -> None:
+        if not rows:
+            return
         with conn.cursor() as cur:
             execute_values(
                 cur,
                 insert_sql,
                 rows,
                 template=template,
-                page_size=page_size,
+                page_size=len(rows),
             )
 
     def migrate_database(self, database: SynthesizedSpatialDatabase) -> str:
@@ -665,11 +789,37 @@ class PostGISSynthesizedDatabaseMigrator:
         conn = self._connect_autocommit(catalog_name)
         try:
             self._ensure_postgis_extensions(conn)
-            self._recreate_schema(conn, schema_name, schema_comment)
+            existing_tables: set[str] = set()
+            schema_exists = self._schema_exists(conn, schema_name)
+            if self.migration_mode == DEFAULT_MIGRATION_MODE:
+                self._recreate_schema(conn, schema_name, schema_comment)
+            elif schema_exists:
+                self._ensure_schema(conn, schema_name, schema_comment)
+                existing_tables = self._list_tables(conn, schema_name)
+                LOGGER.info(
+                    "Append mode detected existing schema %s with %s table(s); only missing tables will be created.",
+                    schema_name,
+                    len(existing_tables),
+                )
+            else:
+                self._ensure_schema(conn, schema_name, schema_comment)
+                LOGGER.info(
+                    "Append mode will create new schema %s for synthesized database %s.",
+                    schema_name,
+                    database.database_id,
+                )
             for table in database.selected_tables:
                 specs = prepare_column_specs(table)
                 table_name = normalize_postgres_identifier(table.table_name, prefix="table")
+                if self.migration_mode == APPEND_MIGRATION_MODE and table_name in existing_tables:
+                    LOGGER.info(
+                        "Skipping existing table %s.%s in append mode.",
+                        schema_name,
+                        table_name,
+                    )
+                    continue
                 self._create_table(conn, schema_name, table_name, specs, self._build_table_comment(table))
+                existing_tables.add(table_name)
                 source_path = table.extra_metadata.get("path") or table.extra_metadata.get("source_path")
                 if not source_path:
                     raise FileNotFoundError(

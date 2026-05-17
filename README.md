@@ -111,7 +111,7 @@ Default behavior:
 
 - Input: `data/raw/metadata_canonicalized.json`
 - Output: `data/processed/synthesized_spatial_databases.jsonl`
-- Number of synthesized databases per city: automatically set to `ceil(num_tables_in_city / 10)`
+- Number of synthesized databases per city: automatically set to `ceil(num_tables_in_city / 8)`
 - `TARGET_AVG_DEGREE=4`
 - `EXPLORATION_PROB=0.1`
 - `SIZE_MEAN=8`
@@ -186,6 +186,10 @@ scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
 # Truncate loaded source rows per table (-1 disables truncation)
 SOURCE_ROW_LIMIT=500000 \
 scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
+
+# Keep existing schemas/tables and only create missing tables
+MIGRATION_MODE=append \
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
 ```
 
 Database configuration defaults:
@@ -198,13 +202,16 @@ Database configuration defaults:
 - Bootstrap database: `postgres`
 - Insert batch size: `10000`
 - Source row limit per table: `500000` (`-1` disables truncation)
+- Migration mode: `override`
 
 `bootstrap_db` is only the bootstrap connection used to check or create the shared target catalog. The synthesized databases themselves are migrated as schemas inside the target catalog.
 
 Migration behavior:
 
 - Each synthesized `database_id` becomes one schema inside the shared catalog.
-- The migrator recreates that schema and then imports the selected tables into it.
+- `override` drops and recreates the target schema, then imports all selected tables into it.
+- `append` keeps existing schemas and tables. If a schema already exists, the migrator lists the tables already present and only creates/imports the missing ones. If the schema does not exist yet, it creates the schema and imports all tables directly.
+- `append` checks table existence only. It does not validate or deduplicate rows for tables that are already present.
 - GeoJSON features are inserted in batches, not one row at a time.
 
 Edit persistent settings in `config/migrate.yaml`.

@@ -68,7 +68,7 @@ class SpatialDatabaseSynthesizer:
     def estimate_num_databases_for_city(self, available_tables: int) -> int:
         if available_tables <= 0:
             return 0
-        return max(1, int(math.ceil(available_tables / 10.0)))
+        return max(1, int(math.ceil(available_tables / 8.0)))
 
     def synthesize(
         self,

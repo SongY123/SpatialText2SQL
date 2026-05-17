@@ -8,7 +8,13 @@ from typing import Any, Mapping
 
 import yaml
 
-from .core import DEFAULT_INSERT_BATCH_SIZE, DEFAULT_SOURCE_ROW_LIMIT, PostGISConnectionSettings
+from .core import (
+    DEFAULT_INSERT_BATCH_SIZE,
+    DEFAULT_MIGRATION_MODE,
+    DEFAULT_SOURCE_ROW_LIMIT,
+    PostGISConnectionSettings,
+    normalize_migration_mode,
+)
 
 
 def _project_root() -> Path:
@@ -26,6 +32,7 @@ class MigrationRuntimeConfig:
     log_level: str = "INFO"
     insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE
     source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT
+    migration_mode: str = DEFAULT_MIGRATION_MODE
     connection: PostGISConnectionSettings = field(default_factory=PostGISConnectionSettings)
 
 
@@ -96,5 +103,9 @@ def load_migration_config(config_path: str | Path | None = None) -> MigrationRun
         log_level=_as_text(logging_section.get("level")) or "INFO",
         insert_batch_size=_as_positive_int(payload.get("insert_batch_size"), DEFAULT_INSERT_BATCH_SIZE),
         source_row_limit=_as_row_limit(payload.get("source_row_limit"), DEFAULT_SOURCE_ROW_LIMIT),
+        migration_mode=normalize_migration_mode(
+            payload.get("migration_mode", payload.get("mode")),
+            default=DEFAULT_MIGRATION_MODE,
+        ),
         connection=connection,
     )

@@ -27,12 +27,14 @@ Optional environment overrides:
   PGMAINTENANCE_DB (legacy alias for PGBOOTSTRAP_DB)
   INSERT_BATCH_SIZE
   SOURCE_ROW_LIMIT (-1 disables truncation)
+  MIGRATION_MODE (override or append)
   LOG_LEVEL
 
 Examples:
   $(basename "$0")
   $(basename "$0") data/processed/synthesized_spatial_databases.jsonl
   $(basename "$0") --cities nyc,sf
+  MIGRATION_MODE=append $(basename "$0")
 EOF
   exit 0
 fi
@@ -75,6 +77,9 @@ if [[ -n "${INSERT_BATCH_SIZE:-}" ]]; then
 fi
 if [[ -n "${SOURCE_ROW_LIMIT:-}" ]]; then
   EXTRA_ARGS+=(--source-row-limit "${SOURCE_ROW_LIMIT}")
+fi
+if [[ -n "${MIGRATION_MODE:-}" ]]; then
+  EXTRA_ARGS+=(--mode "${MIGRATION_MODE}")
 fi
 if [[ -n "${LOG_LEVEL:-}" ]]; then
   EXTRA_ARGS+=(--log-level "${LOG_LEVEL}")

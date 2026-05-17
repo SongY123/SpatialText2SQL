@@ -322,8 +322,8 @@ class SpatialDatabaseSynthesisTests(unittest.TestCase):
         synthesizer = SpatialDatabaseSynthesizer(embedding_provider=MockEmbeddingProvider())
         self.assertEqual(synthesizer.estimate_num_databases_for_city(0), 0)
         self.assertEqual(synthesizer.estimate_num_databases_for_city(1), 1)
-        self.assertEqual(synthesizer.estimate_num_databases_for_city(10), 1)
-        self.assertEqual(synthesizer.estimate_num_databases_for_city(11), 2)
+        self.assertEqual(synthesizer.estimate_num_databases_for_city(8), 1)
+        self.assertEqual(synthesizer.estimate_num_databases_for_city(9), 2)
 
     def test_synthesize_can_filter_selected_cities(self):
         provider = self._embedding_provider_for_city_tables()

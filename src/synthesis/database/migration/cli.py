@@ -10,7 +10,12 @@ from src.dataset_construction.crawl.profiles import DEFAULT_CITY_ORDER, parse_ci
 
 from ..io import load_synthesized_databases
 from .config import DEFAULT_MIGRATE_CONFIG_PATH, load_migration_config
-from .core import PostGISConnectionSettings, PostGISSynthesizedDatabaseMigrator
+from .core import (
+    APPEND_MIGRATION_MODE,
+    DEFAULT_MIGRATION_MODE,
+    PostGISConnectionSettings,
+    PostGISSynthesizedDatabaseMigrator,
+)
 
 
 def positive_int(value: str) -> int:
@@ -48,6 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--maintenance-db", help=argparse.SUPPRESS)
     parser.add_argument("--insert-batch-size", type=positive_int)
     parser.add_argument("--source-row-limit", type=row_limit_int)
+    parser.add_argument(
+        "--mode",
+        choices=(DEFAULT_MIGRATION_MODE, APPEND_MIGRATION_MODE),
+        help=(
+            "Migration mode. "
+            f"'{DEFAULT_MIGRATION_MODE}' drops and recreates the target schema; "
+            f"'{APPEND_MIGRATION_MODE}' only creates missing schemas/tables."
+        ),
+    )
     parser.add_argument("--log-level")
     parser.add_argument("--list-cities", action="store_true", help="Print configured city ids and exit.")
     return parser
@@ -67,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     merged_log_level = args.log_level or file_config.log_level
     merged_insert_batch_size = args.insert_batch_size or file_config.insert_batch_size
     merged_source_row_limit = args.source_row_limit or file_config.source_row_limit
+    merged_migration_mode = args.mode or file_config.migration_mode
     merged_connection = PostGISConnectionSettings(
         host=args.host or file_config.connection.host,
         port=args.port or file_config.connection.port,
@@ -97,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         merged_connection,
         insert_batch_size=merged_insert_batch_size,
         source_row_limit=merged_source_row_limit,
+        migration_mode=merged_migration_mode,
     )
     migrated = migrator.migrate_databases(filtered)
     logging.info("Migrated %s synthesized database(s).", len(migrated))
