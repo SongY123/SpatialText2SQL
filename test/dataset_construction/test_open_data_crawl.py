@@ -444,6 +444,136 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
         self.assertEqual(record["columns"], [{"name": "OBJECTID", "description": "Object ID", "type": "esriFieldTypeOID"}, {"name": "geometry", "description": "Feature geometry", "type": "esriGeometryPolygon"}])
         self.assertEqual(record["source_link"], schema_url)
 
+    def test_socrata_metadata_only_reuses_local_geojson_without_downloading(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir)
+            local_path = out_root / "geojson" / make_geojson_filename("Parks", "abcd-1234")
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"name": "A"},
+                                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            test_case = self
+
+            class FakeCrawler(SocrataMapCrawler):
+                def iter_catalog_map_assets(self):
+                    yield {
+                        "resource": {
+                            "id": "abcd-1234",
+                            "name": "Parks",
+                            "description": "Parks map",
+                        },
+                        "classification": {"tags": ["parks"]},
+                    }
+
+                def _process_asset(self, asset_payload):
+                    del asset_payload
+                    test_case.fail("metadata_only mode should not trigger GeoJSON downloads")
+
+                def get_view_metadata(self, view_id: str) -> dict[str, object]:
+                    test_case.assertEqual(view_id, "abcd-1234")
+                    return {
+                        "description": "Parks view",
+                        "tags": ["parks"],
+                        "columns": [
+                            {"name": "name", "description": "Park name", "dataTypeName": "text"},
+                        ],
+                    }
+
+            crawler = FakeCrawler(CITY_PROFILES["chicago"], output_dir=out_root)
+            crawler.metadata_only = True
+            result = crawler.run(download_limit=1)
+
+        self.assertEqual(result["meta"]["downloaded_count"], 0)
+        self.assertEqual(result["meta"]["skipped_existing_count"], 1)
+        self.assertEqual(result["meta"]["error_count"], 0)
+        self.assertEqual(len(result["datasets"]), 1)
+        self.assertEqual(result["datasets"][0]["id"], "abcd-1234")
+        self.assertEqual(result["datasets"][0]["geojson_path"], str(local_path.resolve()))
+
+    def test_ckan_metadata_only_reuses_local_geojson_without_downloading(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir)
+            local_path = out_root / "geojson" / f"{sanitize_filename('Dataset 1')}__geo.geojson"
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"OBJECTID": 1},
+                                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            schema_url = "https://services.arcgis.com/example/FeatureServer/0"
+            test_case = self
+
+            class FakeCrawler(CkanGeoJsonCrawler):
+                def iter_packages(self):
+                    yield {
+                        "id": "dataset-1",
+                        "name": "dataset-1",
+                        "title": "Dataset 1",
+                        "resources": [
+                            {"id": "geo", "format": "GeoJSON", "url": "https://example.com/data.geojson"},
+                            {"id": "schema", "format": "ArcGIS GeoServices REST API", "url": schema_url},
+                        ],
+                    }
+
+                def _download_dataset(self, dataset):
+                    del dataset
+                    test_case.fail("metadata_only mode should not trigger GeoJSON downloads")
+
+                def _get_dataset_metadata(self, dataset):
+                    payload = dict(dataset)
+                    payload["notes"] = "Dataset description"
+                    payload["tags"] = [{"name": "flooding"}]
+                    return payload
+
+                def _get_layer_metadata(self, url):
+                    test_case.assertEqual(url, schema_url)
+                    return {
+                        "fields": [
+                            {"name": "OBJECTID", "alias": "Object ID", "type": "esriFieldTypeOID"},
+                        ],
+                        "geometryType": "esriGeometryPoint",
+                    }
+
+            crawler = FakeCrawler(CITY_PROFILES["phoenix"], output_dir=out_root)
+            crawler.metadata_only = True
+            result = crawler.run(download_limit=1)
+
+        self.assertEqual(result["meta"]["downloaded_count"], 0)
+        self.assertEqual(result["meta"]["skipped_existing_count"], 1)
+        self.assertEqual(result["meta"]["error_count"], 0)
+        self.assertEqual(len(result["datasets"]), 1)
+        self.assertEqual(result["datasets"][0]["id"], "dataset-1")
+        self.assertEqual(result["datasets"][0]["geojson_path"], str(local_path.resolve()))
+        self.assertEqual(
+            result["datasets"][0]["columns"],
+            [
+                {"name": "OBJECTID", "description": "Object ID", "type": "esriFieldTypeOID"},
+                {"name": "geometry", "description": "Feature geometry", "type": "esriGeometryPoint"},
+            ],
+        )
+
     def test_download_headers_are_browser_like_for_ckan_redirects(self):
         headers = CkanGeoJsonCrawler._download_headers("https://www.phoenixopendata.com/dataset/example")
         self.assertIn("Mozilla/5.0", headers["User-Agent"])
@@ -976,6 +1106,100 @@ class TestOpenDataCrawlHelpers(unittest.TestCase):
         self.assertEqual(len(written_by_city["chicago"]["datasets"]), 1)
         self.assertEqual(len(column_type_written), 2)
         self.assertEqual(summary["columntype"], str((out_root / "columntype.json").resolve()))
+
+    def test_cli_stats_only_rebuilds_metadata_without_carrying_stale_errors(self):
+        test_case = self
+
+        class FakeCrawler:
+            def __init__(self, city_id: str, existing_datasets: dict[str, dict[str, object]]):
+                self.city_id = city_id
+                self.existing_datasets = existing_datasets
+                self.metadata_only = False
+
+            def run(self, *, download_limit=None):
+                del download_limit
+                test_case.assertTrue(self.metadata_only)
+                dataset = dict(next(iter(self.existing_datasets.values())))
+                return {
+                    "meta": {"downloaded_count": 0, "error_count": 0},
+                    "datasets": [dataset],
+                    "errors": [],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_root = Path(tmpdir)
+            local_path = out_root / "austin" / "geojson" / "existing-austin.geojson"
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"name": "A"},
+                                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metadata_path = out_root / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "City": "Austin",
+                            "city_id": "austin",
+                            "data_dir": str(out_root / "austin"),
+                            "#Table": 1,
+                            "#Field/Table": 2.0,
+                            "#Spatial Field/Table": 1.0,
+                            "#Row/Table": 1.0,
+                            "datasets": [
+                                {
+                                    "id": "existing-austin",
+                                    "name": "Existing Austin",
+                                    "path": str(local_path.resolve()),
+                                    "geojson_path": str(local_path.resolve()),
+                                    "row_count": 1,
+                                    "field_count": 2,
+                                    "spatial_field_count": 1,
+                                }
+                            ],
+                            "errors": [
+                                {
+                                    "id": "old-error",
+                                    "name": "Old Error",
+                                    "error": "stale_error",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_build_crawler(profile, args, *, existing_datasets=None):
+                del args
+                self.assertEqual(profile.city_id, "austin")
+                self.assertIn("existing-austin", existing_datasets)
+                return FakeCrawler(profile.city_id, existing_datasets or {})
+
+            args = crawl_cli.build_argument_parser().parse_args(
+                ["--cities", "austin", "--out-root", str(out_root), "--stats-only"]
+            )
+            with patch.object(crawl_cli, "_build_crawler", side_effect=fake_build_crawler):
+                summary = crawl_cli.run(args)
+
+            written = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["metadata_written"])
+        self.assertEqual(summary["cities"]["austin"]["status"], "ok")
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["city_id"], "austin")
+        self.assertEqual(written[0]["errors"], [])
 
 
 if __name__ == "__main__":

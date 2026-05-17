@@ -244,6 +244,7 @@ class SocrataMapCrawler:
         self.timeout = timeout
         self.sleep_seconds = max(0.0, sleep_seconds)
         self.overwrite = overwrite
+        self.metadata_only = False
         self.existing_datasets = {str(key).strip().lower(): dict(value) for key, value in (existing_datasets or {}).items()}
         # optional callable to invoke with partial crawl results after each dataset
         self._intermediate_writer = intermediate_writer
@@ -283,11 +284,25 @@ class SocrataMapCrawler:
             sampled_count += 1
 
             existing_record = self._match_existing_record(resource)
+            if existing_record is None and self.metadata_only:
+                existing_record = self._local_record_for_metadata_only(asset_payload)
             if not self.overwrite and existing_record is not None:
                 if self._record_file_exists(existing_record):
                     datasets.append(self._hydrate_existing_record(existing_record, asset_payload).to_dict())
                     skipped_existing_count += 1
                     continue
+
+            if self.metadata_only:
+                errors.append(
+                    {
+                        "asset_id": asset_id,
+                        "name": metadata_name,
+                        "error": "local_geojson_missing_for_metadata_only",
+                    }
+                )
+                print("          [missing] local geojson not found in metadata-only mode")
+                time.sleep(self.sleep_seconds)
+                continue
 
             print(f"[download] {completed_count + 1} {asset_id} {metadata_name[:80]}")
             try:
@@ -394,6 +409,45 @@ class SocrataMapCrawler:
             if existing_record is not None:
                 return existing_record
         return None
+
+    def _local_record_for_metadata_only(self, asset_payload: Mapping[str, Any]) -> dict[str, Any] | None:
+        resource = asset_payload.get("resource") or {}
+        asset_id = str(resource.get("id") or "").strip().lower()
+        if not asset_id:
+            return None
+
+        name = metadata_dataset_name(asset_payload)
+        initial_candidates = build_export_candidate_ids(asset_id, resource)
+        for view_id in initial_candidates:
+            local_record = self._build_local_existing_record(name, view_id)
+            if local_record is not None:
+                return local_record
+
+        try:
+            view_metadata = self.get_view_metadata(asset_id)
+        except CrawlError:
+            return None
+
+        full_candidates = build_export_candidate_ids(asset_id, resource, view_metadata)
+        for view_id in full_candidates:
+            local_record = self._build_local_existing_record(name, view_id)
+            if local_record is not None:
+                return local_record
+        return None
+
+    def _build_local_existing_record(self, name: str, view_id: str) -> dict[str, Any] | None:
+        filename = make_geojson_filename(name, view_id)
+        path = self.geojson_dir / filename
+        if not path.is_file() or path.stat().st_size <= 0:
+            return None
+        return {
+            "id": view_id,
+            "geojson_view_id": view_id,
+            "path": str(path.resolve()),
+            "geojson_path": str(path.resolve()),
+            "geojson_filename": path.name,
+            "download_url": self._build_geojson_export_urls(view_id)[0],
+        }
 
     def _process_asset(self, asset_payload: Mapping[str, Any]) -> SocrataMapRecord:
         return self._build_record(

@@ -81,6 +81,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         dest="override",
         help="Re-download files even if they already exist in metadata or on disk.",
     )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help=(
+            "Rebuild metadata.json and columntype.json from existing local GeoJSON files. "
+            "This mode only calls metadata APIs and never downloads GeoJSON files."
+        ),
+    )
     parser.add_argument("--list-cities", action="store_true", help="Print configured city ids and exit.")
     return parser
 
@@ -150,6 +158,8 @@ def _filter_existing_errors(profile: CityProfile, errors: list[Any]) -> list[Any
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     profiles = parse_city_list(args.cities)
+    if args.stats_only and args.override:
+        raise ValueError("--stats-only cannot be combined with --override.")
     args.out_root = args.out_root.resolve()
     args.out_root.mkdir(parents=True, exist_ok=True)
     metadata_path = args.out_root / args.metadata_name
@@ -164,6 +174,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     print(f"[config] cities={','.join(profile.city_id for profile in profiles)}")
     print(f"[config] sample={args.sample if args.sample is not None else 'all'}")
     print(f"[config] override={bool(args.override)}")
+    print(f"[config] stats_only={bool(args.stats_only)}")
     print("[config] format=geojson")
     print(f"[config] city_workers={len(profiles)}")
 
@@ -212,11 +223,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 existing_datasets=existing_datasets,
             )
 
+        if args.stats_only:
+            setattr(crawler, "metadata_only", True)
         result = crawler.run(download_limit=args.sample)
         city_data_dir = args.out_root / profile.output_dir_name
         result["data_dir"] = str(city_data_dir.resolve())
-        combined_errors = _filter_existing_errors(profile, list(existing_city_metadata.get("errors") or []))
-        combined_errors.extend(result.get("errors") or [])
+        if args.stats_only:
+            combined_errors = list(result.get("errors") or [])
+        else:
+            combined_errors = _filter_existing_errors(profile, list(existing_city_metadata.get("errors") or []))
+            combined_errors.extend(result.get("errors") or [])
         result["errors"] = combined_errors
         city_metadata = build_city_metadata(profile, result)
         return profile, result, city_metadata

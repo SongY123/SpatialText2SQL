@@ -61,6 +61,8 @@ class OpenAICompatibleLLMClient:
         self.client = self._create_client()
 
     def _resolve_api_key(self) -> str:
+        if str(self.api_key_env).strip().upper() == "EMPTY":
+            return "EMPTY"
         api_key = os.environ.get(self.api_key_env, "")
         if not api_key:
             raise ValueError(f"Missing API key environment variable: {self.api_key_env}")

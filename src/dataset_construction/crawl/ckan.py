@@ -111,6 +111,7 @@ class CkanGeoJsonCrawler:
         self.timeout = timeout
         self.sleep_seconds = max(0.0, sleep_seconds)
         self.overwrite = overwrite
+        self.metadata_only = False
         self.existing_datasets = {str(key).strip().lower(): dict(value) for key, value in (existing_datasets or {}).items()}
         # optional callable to invoke with partial crawl results after each dataset
         self._intermediate_writer = intermediate_writer
@@ -168,6 +169,25 @@ class CkanGeoJsonCrawler:
                     datasets.append(self._hydrate_existing_record(existing_record, dataset))
                     skipped_existing_count += 1
                     continue
+            elif self.metadata_only:
+                existing_record = self._local_record_for_metadata_only(dataset)
+                if existing_record is not None and self._record_file_exists(existing_record):
+                    datasets.append(self._hydrate_existing_record(existing_record, dataset))
+                    skipped_existing_count += 1
+                    continue
+
+            if self.metadata_only:
+                errors.append(
+                    {
+                        "dataset_id": dataset_id,
+                        "name": metadata_name,
+                        "error": "local_geojson_missing_for_metadata_only",
+                        "url": None,
+                    }
+                )
+                print("          [missing] local geojson not found in metadata-only mode")
+                time.sleep(self.sleep_seconds)
+                continue
 
             print(f"[download] {completed_count + 1} {dataset_id} {metadata_name[:80]}")
             try:
@@ -344,6 +364,31 @@ class CkanGeoJsonCrawler:
         if dataset_name:
             return f"{self.profile.base_url.rstrip('/')}/dataset/{dataset_name}"
         return self.profile.base_url
+
+    def _local_record_for_metadata_only(self, dataset: Mapping[str, Any]) -> dict[str, Any] | None:
+        metadata_name = metadata_dataset_name(dataset)
+        resources = dataset.get("resources") or []
+        for resource in resources:
+            if not isinstance(resource, Mapping) or not is_geojson_resource(resource):
+                continue
+            resource_id = str(resource.get("id") or sanitize_filename(metadata_name, max_len=16)).strip()
+            resource_token = re.sub(r"[^0-9a-zA-Z]+", "", resource_id)[:12] or "res"
+            filename = f"{sanitize_filename(metadata_name)}__{resource_token}.geojson"
+            path = self.geojson_dir / filename
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+            dataset_id = str(dataset.get("id") or dataset.get("name") or "").strip()
+            return {
+                "id": dataset_id,
+                "dataset_id": dataset_id,
+                "resource_id": resource_id,
+                "name": metadata_name,
+                "download_url": str(resource.get("url") or "").strip(),
+                "path": str(path.resolve()),
+                "geojson_path": str(path.resolve()),
+                "geojson_filename": path.name,
+            }
+        return None
 
     def _source_metadata(self, dataset: Mapping[str, Any]) -> tuple[str, list[dict[str, str]]]:
         source_link = self._page_link(str(dataset.get("name") or dataset.get("id") or "").strip())
