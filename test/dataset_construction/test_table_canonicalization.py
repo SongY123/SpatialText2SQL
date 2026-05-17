@@ -3,6 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from src.dataset_construction.type_converter import (
+    canonical_type_to_postgres_type,
+    raw_column_type_to_canonical,
+)
 from src.dataset_construction.canonicalization import (
     canonicalize_metadata_file,
     canonicalize_tables,
@@ -37,6 +41,62 @@ class TableCanonicalizationTests(unittest.TestCase):
         self.assertEqual(infer_column_type("", ["true", "false", "yes"])[0], "boolean")
         self.assertEqual(infer_column_type("", ["2024-05-01T10:30:00", "2024-05-02T11:00:00"])[0], "timestamp")
         self.assertEqual(infer_column_type("", [{"x": 1}, {"y": 2}])[0], "unk")
+
+    def test_raw_column_type_converter_covers_all_types_in_columntype_manifest(self):
+        payload = json.loads(Path("data/raw/columntype.json").read_text(encoding="utf-8"))
+        raw_types = sorted({raw_type for city in payload for raw_type in city.get("column_types", [])})
+        expected = {
+            "calendar_date": "date",
+            "checkbox": "boolean",
+            "date": "date",
+            "esriFieldTypeBlob": "text",
+            "esriFieldTypeDate": "timestamp",
+            "esriFieldTypeDouble": "double",
+            "esriFieldTypeGlobalID": "text",
+            "esriFieldTypeInteger": "integer",
+            "esriFieldTypeOID": "integer",
+            "esriFieldTypeSmallInteger": "integer",
+            "esriFieldTypeString": "text",
+            "esriGeometryPoint": "spatial",
+            "esriGeometryPolygon": "spatial",
+            "esriGeometryPolyline": "spatial",
+            "line": "spatial",
+            "linestring": "spatial",
+            "location": "spatial",
+            "multiline": "spatial",
+            "multilinestring": "spatial",
+            "multipoint": "spatial",
+            "multipolygon": "spatial",
+            "number": "double",
+            "photo": "text",
+            "point": "spatial",
+            "polygon": "spatial",
+            "text": "text",
+            "url": "text",
+        }
+        self.assertEqual(set(raw_types), set(expected))
+        self.assertEqual(
+            {raw_type: raw_column_type_to_canonical(raw_type) for raw_type in raw_types},
+            expected,
+        )
+
+    def test_infer_column_type_respects_schema_declared_portal_types(self):
+        self.assertEqual(infer_column_type("esriFieldTypeDate", [1714567890123])[0], "timestamp")
+        self.assertEqual(infer_column_type("checkbox", ["0", "1", "0"])[0], "boolean")
+        self.assertEqual(
+            infer_column_type("location", [{"latitude": "40.7", "longitude": "-73.9"}])[0],
+            "spatial",
+        )
+        self.assertEqual(infer_column_type("url", ["12345"])[0], "text")
+        self.assertEqual(infer_column_type("esriFieldTypeDouble", ["1", "2"])[0], "double")
+
+    def test_type_converter_maps_canonical_types_to_postgres_types(self):
+        self.assertEqual(canonical_type_to_postgres_type("integer"), "BIGINT")
+        self.assertEqual(canonical_type_to_postgres_type("double"), "DOUBLE PRECISION")
+        self.assertEqual(canonical_type_to_postgres_type("boolean"), "BOOLEAN")
+        self.assertEqual(canonical_type_to_postgres_type("date"), "DATE")
+        self.assertEqual(canonical_type_to_postgres_type("timestamp"), "TIMESTAMP")
+        self.assertEqual(canonical_type_to_postgres_type("spatial", 4326), "geometry(GEOMETRY,4326)")
 
     def test_detect_geojson_geometry_uses_declared_geometry_field(self):
         raw_table = {

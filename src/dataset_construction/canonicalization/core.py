@@ -10,19 +10,11 @@ import re
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from src.dataset_construction.crawl.metadata import SPATIAL_NAME_HINTS
-
-
-CANONICAL_TYPES = {
-    "integer",
-    "double",
-    "text",
-    "date",
-    "time",
-    "timestamp",
-    "boolean",
-    "spatial",
-    "unk",
-}
+from src.dataset_construction.type_converter import (
+    CANONICAL_TYPES,
+    raw_column_type_prefers_value_refinement,
+    raw_column_type_to_canonical,
+)
 
 SQL_RESERVED_WORDS = {
     "all",
@@ -317,18 +309,6 @@ SUBJECT_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("contour", "elevation", "terrain", "depth"), "elevation or depth information"),
     (("address", "postal", "zip"), "address records"),
 )
-
-RAW_TYPE_HINTS: dict[str, tuple[str, ...]] = {
-    "integer": ("int", "integer", "smallint", "bigint", "long", "short", "oid"),
-    "double": ("double", "float", "number", "numeric", "decimal", "real"),
-    "text": ("text", "string", "varchar", "char"),
-    "date": ("date",),
-    "time": ("time",),
-    "timestamp": ("timestamp", "datetime", "date_time"),
-    "boolean": ("bool", "boolean"),
-    "spatial": GEOMETRY_TYPE_HINTS,
-}
-
 
 @dataclass
 class CanonicalColumn:
@@ -657,13 +637,7 @@ def _classify_value(value: Any) -> str:
 
 
 def _map_raw_type(raw_type: Any) -> str:
-    normalized = _normalize_name_for_matching(_normalize_text(raw_type))
-    if not normalized:
-        return "unk"
-    for canonical_type, hints in RAW_TYPE_HINTS.items():
-        if any(normalized == hint or hint in normalized for hint in hints):
-            return canonical_type
-    return "unk"
+    return raw_column_type_to_canonical(raw_type)
 
 
 def normalize_column_name(
@@ -702,9 +676,17 @@ def infer_column_type(
 
     non_missing = [value for value in values if not _is_missing(value)]
     raw_type_guess = _map_raw_type(raw_type)
+    prefer_value_refinement = raw_column_type_prefers_value_refinement(raw_type)
 
     if not non_missing:
-        return (raw_type_guess if raw_type_guess != "spatial" else "unk"), True
+        return raw_type_guess, True
+
+    if raw_type_guess == "spatial":
+        return "spatial", nullable
+    if raw_type_guess in {"date", "time", "timestamp", "boolean"}:
+        return raw_type_guess, nullable
+    if raw_type_guess in {"integer", "double", "text"} and not prefer_value_refinement:
+        return raw_type_guess, nullable
 
     kinds = {_classify_value(value) for value in non_missing}
     kinds.discard("missing")
@@ -729,7 +711,7 @@ def infer_column_type(
     if "text" in kinds:
         return "text", nullable
 
-    if raw_type_guess not in {"unk", "spatial"}:
+    if raw_type_guess != "unk":
         return raw_type_guess, nullable
 
     if "complex" in kinds or "unk" in kinds:

@@ -15,6 +15,8 @@ from psycopg2 import sql
 from psycopg2.extras import execute_values
 from psycopg2.extensions import connection as PGConnection
 
+from src.dataset_construction.type_converter import canonical_type_to_postgres_type
+
 from ..models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 from ..utils import is_missing, stable_jsonify, to_text
 
@@ -90,27 +92,6 @@ def parse_srid(crs: Any) -> Optional[int]:
     if upper.isdigit():
         return int(upper)
     return None
-
-
-def canonical_type_to_postgres_type(canonical_type: str, srid: int | None = None) -> str:
-    canonical = to_text(canonical_type).lower() or "text"
-    if canonical == "integer":
-        return "BIGINT"
-    if canonical == "double":
-        return "DOUBLE PRECISION"
-    if canonical == "date":
-        return "DATE"
-    if canonical == "time":
-        return "TIME"
-    if canonical == "timestamp":
-        return "TIMESTAMP"
-    if canonical == "boolean":
-        return "BOOLEAN"
-    if canonical == "spatial":
-        if srid is not None:
-            return f"geometry(GEOMETRY,{srid})"
-        return "geometry"
-    return "TEXT"
 
 
 @dataclass(frozen=True)
