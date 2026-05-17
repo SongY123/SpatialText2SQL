@@ -344,6 +344,15 @@ def _is_rowwise_retryable_insert_error(exc: BaseException) -> bool:
     return any(marker in message for marker in ROWWISE_RETRY_MESSAGE_MARKERS)
 
 
+def _is_duplicate_table_error(exc: BaseException) -> bool:
+    if isinstance(exc, psycopg2.errors.DuplicateTable):
+        return True
+    if _error_code(exc) == "42P07":
+        return True
+    message = _error_message(exc).lower()
+    return "already exists" in message and "relation" in message
+
+
 def _coordinate_role(name: str) -> Optional[str]:
     normalized = normalize_postgres_identifier(name, prefix="col")
     if normalized in LONGITUDE_HINTS or any(normalized.endswith(f"_{hint}") for hint in LONGITUDE_HINTS):
@@ -927,14 +936,35 @@ class PostGISSynthesizedDatabaseMigrator:
             for table in database.selected_tables:
                 specs = prepare_column_specs(table)
                 table_name = normalize_postgres_identifier(table.table_name, prefix="table")
-                if self.migration_mode == APPEND_MIGRATION_MODE and table_name in existing_tables:
+                if table_name in existing_tables:
+                    reason = (
+                        "append mode found an existing target table"
+                        if self.migration_mode == APPEND_MIGRATION_MODE
+                        else "another selected table already normalized to the same target name"
+                    )
                     LOGGER.info(
-                        "Skipping existing table %s.%s in append mode.",
+                        "Skipping table %s.%s because %s.",
                         schema_name,
                         table_name,
+                        reason,
                     )
                     continue
-                self._create_table(conn, schema_name, table_name, specs, self._build_table_comment(table))
+                try:
+                    self._create_table(conn, schema_name, table_name, specs, self._build_table_comment(table))
+                except Exception as exc:
+                    self._safe_rollback(conn)
+                    if not _is_duplicate_table_error(exc):
+                        raise
+                    existing_tables.add(table_name)
+                    LOGGER.warning(
+                        "Skipping table %s.%s because target table creation hit a duplicate-table conflict. source_table=%s table_id=%s error=%s",
+                        schema_name,
+                        table_name,
+                        table.table_name,
+                        table.table_id,
+                        _error_message(exc),
+                    )
+                    continue
                 existing_tables.add(table_name)
                 source_path = table.extra_metadata.get("path") or table.extra_metadata.get("source_path")
                 if not source_path:

@@ -418,6 +418,140 @@ class PostGISMigrationTests(unittest.TestCase):
         create_table.assert_not_called()
         insert_features.assert_not_called()
 
+    def test_migrate_database_override_skips_duplicate_normalized_table_names(self):
+        class FakeConnection:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        first_table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "urban roadways",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                ],
+                "spatial_fields": [],
+                "path": "/tmp/urban_roadways_one.geojson",
+            }
+        )
+        second_table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t2",
+                "city": "nyc",
+                "table_name": "urban-roadways",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                ],
+                "spatial_fields": [],
+                "path": "/tmp/urban_roadways_two.geojson",
+            }
+        )
+        database = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="NYC Demo DB",
+            city="nyc",
+            selected_tables=[first_table, second_table],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+        fake_conn = FakeConnection()
+        expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
+        expected_table_name = normalize_postgres_identifier(first_table.table_name, prefix="table")
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
+            with mock.patch.object(migrator, "_ensure_postgis_extensions"):
+                with mock.patch.object(migrator, "_schema_exists", return_value=False):
+                    with mock.patch.object(migrator, "_recreate_schema"):
+                        with mock.patch.object(migrator, "_create_table") as create_table:
+                            with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                with mock.patch(
+                                    "src.synthesis.database.migration.core.load_geojson_features",
+                                    return_value=[],
+                                ) as patched_load:
+                                    location = migrator.migrate_database(database)
+
+        create_table.assert_called_once()
+        self.assertEqual(create_table.call_args.args[1], expected_schema)
+        self.assertEqual(create_table.call_args.args[2], expected_table_name)
+        insert_features.assert_called_once()
+        patched_load.assert_called_once_with(
+            "/tmp/urban_roadways_one.geojson",
+            source_row_limit=DEFAULT_SOURCE_ROW_LIMIT,
+        )
+        self.assertEqual(location, f"syntheized.{expected_schema}")
+
+    def test_migrate_database_skips_duplicate_table_creation_error(self):
+        class FakeConnection:
+            def __init__(self):
+                self.closed = False
+                self.rollback_count = 0
+
+            def close(self):
+                self.closed = True
+
+            def rollback(self):
+                self.rollback_count += 1
+
+        class DuplicateTableError(Exception):
+            def __init__(self, message: str = 'relation "urban_roadways" already exists'):
+                super().__init__(message)
+                self.pgerror = message
+                self.pgcode = "42P07"
+
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "urban roadways",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                ],
+                "spatial_fields": [],
+                "path": "/tmp/urban_roadways.geojson",
+            }
+        )
+        database = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="NYC Demo DB",
+            city="nyc",
+            selected_tables=[table],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+        fake_conn = FakeConnection()
+        expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
+        expected_table_name = normalize_postgres_identifier(table.table_name, prefix="table")
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
+            with mock.patch.object(migrator, "_ensure_postgis_extensions"):
+                with mock.patch.object(migrator, "_schema_exists", return_value=False):
+                    with mock.patch.object(migrator, "_recreate_schema"):
+                        with mock.patch.object(
+                            migrator,
+                            "_create_table",
+                            side_effect=DuplicateTableError(),
+                        ) as create_table:
+                            with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                with mock.patch(
+                                    "src.synthesis.database.migration.core.load_geojson_features",
+                                ) as patched_load:
+                                    location = migrator.migrate_database(database)
+
+        create_table.assert_called_once()
+        self.assertEqual(create_table.call_args.args[1], expected_schema)
+        self.assertEqual(create_table.call_args.args[2], expected_table_name)
+        insert_features.assert_not_called()
+        patched_load.assert_not_called()
+        self.assertEqual(fake_conn.rollback_count, 1)
+        self.assertTrue(fake_conn.closed)
+        self.assertEqual(location, f"syntheized.{expected_schema}")
+
     def test_migrate_database_append_creates_new_schema_without_listing_tables(self):
         class FakeConnection:
             def __init__(self):
