@@ -357,6 +357,67 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertTrue(fake_conn.closed)
         self.assertEqual(location, f"syntheized.{expected_schema}")
 
+    def test_migrate_database_append_drops_unexpected_tables(self):
+        class FakeConnection:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        hydrants = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "hydrants",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                ],
+                "spatial_fields": [],
+                "path": "/tmp/hydrants.geojson",
+            }
+        )
+        database = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="NYC Demo DB",
+            city="nyc",
+            selected_tables=[hydrants],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+
+        migrator = PostGISSynthesizedDatabaseMigrator(
+            PostGISConnectionSettings(),
+            migration_mode="append",
+        )
+        fake_conn = FakeConnection()
+        expected_schema = normalize_postgres_identifier(database.database_id, prefix="schema")
+        existing_table = normalize_postgres_identifier(hydrants.table_name, prefix="table")
+        unexpected_table = "legacy_table"
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
+            with mock.patch.object(migrator, "_ensure_postgis_extensions"):
+                with mock.patch.object(migrator, "_schema_exists", return_value=True):
+                    with mock.patch.object(migrator, "_ensure_schema"):
+                        with mock.patch.object(
+                            migrator,
+                            "_list_tables",
+                            return_value={existing_table, unexpected_table},
+                        ):
+                            with mock.patch.object(migrator, "_drop_tables") as drop_tables:
+                                with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
+                                    with mock.patch.object(migrator, "_create_table") as create_table:
+                                        with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                            with mock.patch(
+                                                "src.synthesis.database.migration.core.load_geojson_features",
+                                                return_value=[],
+                                            ):
+                                                migrator.migrate_database(database)
+
+        drop_tables.assert_called_once_with(fake_conn, expected_schema, [unexpected_table])
+        recreate_schema.assert_not_called()
+        create_table.assert_not_called()
+        insert_features.assert_not_called()
+
     def test_migrate_database_append_creates_new_schema_without_listing_tables(self):
         class FakeConnection:
             def __init__(self):

@@ -210,7 +210,7 @@ Migration behavior:
 
 - Each synthesized `database_id` becomes one schema inside the shared catalog.
 - `override` drops and recreates the target schema, then imports all selected tables into it.
-- `append` keeps existing schemas and tables. If a schema already exists, the migrator lists the tables already present and only creates/imports the missing ones. If the schema does not exist yet, it creates the schema and imports all tables directly.
+- `append` keeps matching existing tables. If a schema already exists, the migrator compares its table set against the current `synthesized_spatial_databases.jsonl` definition, drops unexpected tables, and only creates/imports the missing ones. If the schema does not exist yet, it creates the schema and imports all tables directly.
 - `append` checks table existence only. It does not validate or deduplicate rows for tables that are already present.
 - GeoJSON features are inserted in batches, not one row at a time.
 

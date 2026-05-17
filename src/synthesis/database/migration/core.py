@@ -621,6 +621,17 @@ class PostGISSynthesizedDatabaseMigrator:
                 if row and to_text(row[0])
             }
 
+    def _drop_tables(self, conn: PGConnection, schema_name: str, table_names: Sequence[str]) -> None:
+        if not table_names:
+            return
+        with conn.cursor() as cur:
+            for table_name in table_names:
+                qualified_table = sql.SQL("{}.{}").format(
+                    sql.Identifier(schema_name),
+                    sql.Identifier(table_name),
+                )
+                cur.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(qualified_table))
+
     def _build_column_comment(self, spec: ColumnMigrationSpec) -> str:
         parts = [
             f"canonical_type={spec.canonical_type}",
@@ -877,6 +888,10 @@ class PostGISSynthesizedDatabaseMigrator:
             f"Synthesized spatial database for city={database.city}; "
             f"database_id={database.database_id}; table_count={len(database.selected_tables)}"
         )
+        expected_table_names = {
+            normalize_postgres_identifier(table.table_name, prefix="table")
+            for table in database.selected_tables
+        }
         conn = self._connect_autocommit(catalog_name)
         try:
             self._ensure_postgis_extensions(conn)
@@ -887,6 +902,16 @@ class PostGISSynthesizedDatabaseMigrator:
             elif schema_exists:
                 self._ensure_schema(conn, schema_name, schema_comment)
                 existing_tables = self._list_tables(conn, schema_name)
+                unexpected_tables = sorted(existing_tables - expected_table_names)
+                if unexpected_tables:
+                    LOGGER.warning(
+                        "Append mode found %s unexpected table(s) in schema %s that are not present in synthesized_spatial_databases.jsonl; dropping them: %s",
+                        len(unexpected_tables),
+                        schema_name,
+                        ", ".join(unexpected_tables),
+                    )
+                    self._drop_tables(conn, schema_name, unexpected_tables)
+                    existing_tables.difference_update(unexpected_tables)
                 LOGGER.info(
                     "Append mode detected existing schema %s with %s table(s); only missing tables will be created.",
                     schema_name,
