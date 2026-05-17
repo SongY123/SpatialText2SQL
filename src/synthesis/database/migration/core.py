@@ -728,14 +728,15 @@ class PostGISSynthesizedDatabaseMigrator:
             sql.Identifier(schema_name),
             sql.Identifier(table_name),
         )
+        if not specs:
+            self._insert_default_rows(conn, qualified_table, schema_name, table_name, len(features))
+            return
         if specs:
             columns_sql = [sql.Identifier(spec.canonical_name) for spec in specs]
             insert_sql = sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
                 qualified_table,
                 sql.SQL(", ").join(columns_sql),
             ).as_string(conn)
-        else:
-            insert_sql = sql.SQL("INSERT INTO {} VALUES %s").format(qualified_table).as_string(conn)
         template = self._build_insert_template(specs)
         rows = [
             self._build_insert_values(build_feature_row(table, feature, specs), specs)
@@ -794,6 +795,48 @@ class PostGISSynthesizedDatabaseMigrator:
                             row_reason,
                             _error_message(row_exc),
                         )
+        if skipped_rows:
+            LOGGER.warning(
+                "Skipped %s row(s) while loading %s.%s due to retryable insert errors",
+                skipped_rows,
+                schema_name,
+                table_name,
+            )
+
+    def _insert_default_rows(
+        self,
+        conn: PGConnection,
+        qualified_table: sql.Composed,
+        schema_name: str,
+        table_name: str,
+        row_count: int,
+    ) -> None:
+        if row_count <= 0:
+            return
+        insert_sql = sql.SQL("INSERT INTO {} DEFAULT VALUES").format(qualified_table).as_string(conn)
+        LOGGER.info(
+            "Inserting %s default row(s) into %s.%s one row at a time",
+            row_count,
+            schema_name,
+            table_name,
+        )
+        skipped_rows = 0
+        for row_offset in range(1, row_count + 1):
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(insert_sql)
+            except Exception as exc:
+                self._safe_rollback(conn)
+                if not _is_rowwise_retryable_insert_error(exc):
+                    raise
+                skipped_rows += 1
+                LOGGER.warning(
+                    "Skipping row %s for %s.%s due to insert error while using DEFAULT VALUES: %s",
+                    row_offset,
+                    schema_name,
+                    table_name,
+                    _error_message(exc),
+                )
         if skipped_rows:
             LOGGER.warning(
                 "Skipped %s row(s) while loading %s.%s due to retryable insert errors",

@@ -599,15 +599,25 @@ class PostGISMigrationTests(unittest.TestCase):
 
     def test_insert_features_supports_zero_column_tables(self):
         class FakeCursor:
+            def __init__(self, executed: list[str]):
+                self.executed = executed
+
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc, tb):
                 return False
 
+            def execute(self, query, params=None):
+                del params
+                self.executed.append(query)
+
         class FakeConnection:
+            def __init__(self):
+                self.executed: list[str] = []
+
             def cursor(self):
-                return FakeCursor()
+                return FakeCursor(self.executed)
 
             def rollback(self):
                 raise AssertionError("rollback should not be called")
@@ -627,18 +637,15 @@ class PostGISMigrationTests(unittest.TestCase):
             {"type": "Feature", "properties": {}, "geometry": None},
         ]
         migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings(), insert_batch_size=100)
-        recorded: dict[str, object] = {}
+        fake_conn = FakeConnection()
 
-        def fake_execute_values(cur, insert_sql, rows, template=None, page_size=None):
-            del cur, page_size
-            recorded["insert_sql"] = insert_sql
-            recorded["rows"] = list(rows)
-            recorded["template"] = template
-
-        with mock.patch("psycopg2.sql.Composed.as_string", return_value='INSERT INTO "lacity_0001"."zoning" VALUES %s'):
-            with mock.patch("src.synthesis.database.migration.core.execute_values", side_effect=fake_execute_values):
+        with mock.patch(
+            "psycopg2.sql.Composed.as_string",
+            return_value='INSERT INTO "lacity_0001"."zoning" DEFAULT VALUES',
+        ):
+            with mock.patch("src.synthesis.database.migration.core.execute_values") as execute_values:
                 migrator._insert_features(
-                    FakeConnection(),
+                    fake_conn,
                     "lacity_0001",
                     "zoning",
                     table,
@@ -646,9 +653,14 @@ class PostGISMigrationTests(unittest.TestCase):
                     features,
                 )
 
-        self.assertEqual(recorded["insert_sql"], 'INSERT INTO "lacity_0001"."zoning" VALUES %s')
-        self.assertEqual(recorded["template"], "()")
-        self.assertEqual(recorded["rows"], [(), ()])
+        execute_values.assert_not_called()
+        self.assertEqual(
+            fake_conn.executed,
+            [
+                'INSERT INTO "lacity_0001"."zoning" DEFAULT VALUES',
+                'INSERT INTO "lacity_0001"."zoning" DEFAULT VALUES',
+            ],
+        )
 
 
 if __name__ == "__main__":
