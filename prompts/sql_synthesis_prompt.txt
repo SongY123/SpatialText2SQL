@@ -47,7 +47,9 @@ If no sampled function can be used naturally or safely, generate the simplest ex
 - Prefer direct base-table joins and inline expressions. Avoid unnecessary CTEs, derived tables, and intermediate aliases unless essential for the requested difficulty.
 - Return only semantically meaningful columns needed for the task; do not use `SELECT *` or dump every column.
 - If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
-- Return at most 5 rows. Add `LIMIT 5` unless the query is guaranteed to return a single row, such as a scalar aggregate or primary-key lookup.
+- Return at most 5 rows.
+- For bounded ranked/result-list queries, choose a random row cap `k` between 1 and 5 and express it with `LIMIT <k>`; do not always use 5.
+- Omit LIMIT only when the query is guaranteed to return a single row, such as a scalar aggregate or primary-key lookup.
 
 ## PostGIS Semantics Requirements
 - Respect geometry/geography types and function signatures exactly.

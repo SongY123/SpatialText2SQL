@@ -628,6 +628,8 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("used_spatial_functions", prompt)
         self.assertIn("Return a JSON object only", prompt)
         self.assertIn("do not use `SELECT *`", prompt)
+        self.assertIn("choose a random row cap `k` between 1 and 5", prompt)
+        self.assertIn("do not always use 5", prompt)
 
     def test_minor_revision_prompt_contains_error_and_involved_table_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})

@@ -179,6 +179,19 @@ scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
   data/processed/synthesized_spatial_databases.jsonl \
   --cities nyc,sf
 
+# Restrict to one or more synthesized database_id values within the selected cities
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
+  data/processed/synthesized_spatial_databases.jsonl \
+  --cities nyc \
+  --database-ids nyc_0001,nyc_0003
+
+# Import one synthesized database into an explicit target schema
+scripts/dataset_construction/migrate_synthesized_spatial_databases.sh \
+  data/processed/synthesized_spatial_databases.jsonl \
+  --cities nyc \
+  --database-ids nyc_0001 \
+  --target-schema nyc_demo
+
 # Control bulk insert batch size
 INSERT_BATCH_SIZE=2000 \
 scripts/dataset_construction/migrate_synthesized_spatial_databases.sh
@@ -209,6 +222,8 @@ Database configuration defaults:
 Migration behavior:
 
 - Each synthesized `database_id` becomes one schema inside the shared catalog.
+- `database_ids` is applied after city filtering, so you can import only a specific synthesized database for a city.
+- `target_schema` overrides the default schema name derived from `database_id`, but only when exactly one synthesized database is selected.
 - `override` drops and recreates the target schema, then imports all selected tables into it.
 - `append` keeps matching existing tables. If a schema already exists, the migrator compares its table set against the current `synthesized_spatial_databases.jsonl` definition, drops unexpected tables, and only creates/imports the missing ones. If the schema does not exist yet, it creates the schema and imports all tables directly.
 - `append` checks table existence only. It does not validate or deduplicate rows for tables that are already present.
