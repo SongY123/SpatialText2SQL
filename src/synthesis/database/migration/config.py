@@ -29,6 +29,8 @@ DEFAULT_MIGRATE_CONFIG_PATH = _project_root() / "config" / "migrate.yaml"
 class MigrationRuntimeConfig:
     input_path: str = str(DEFAULT_INPUT_PATH)
     cities: str = "all"
+    database_ids: str = ""
+    target_schema: str = ""
     log_level: str = "INFO"
     insert_batch_size: int = DEFAULT_INSERT_BATCH_SIZE
     source_row_limit: int = DEFAULT_SOURCE_ROW_LIMIT
@@ -100,6 +102,8 @@ def load_migration_config(config_path: str | Path | None = None) -> MigrationRun
     return MigrationRuntimeConfig(
         input_path=_resolve_input_path(payload.get("input"), path),
         cities=_as_text(payload.get("cities")) or "all",
+        database_ids=_as_text(payload.get("database_ids", payload.get("database_id"))),
+        target_schema=_as_text(payload.get("target_schema", payload.get("schema"))),
         log_level=_as_text(logging_section.get("level")) or "INFO",
         insert_batch_size=_as_positive_int(payload.get("insert_batch_size"), DEFAULT_INSERT_BATCH_SIZE),
         source_row_limit=_as_row_limit(payload.get("source_row_limit"), DEFAULT_SOURCE_ROW_LIMIT),

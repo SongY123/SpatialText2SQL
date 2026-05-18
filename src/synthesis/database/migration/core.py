@@ -547,6 +547,14 @@ class PostGISSynthesizedDatabaseMigrator:
         conn.autocommit = True
         return conn
 
+    @staticmethod
+    def _resolve_schema_name(
+        database: SynthesizedSpatialDatabase,
+        target_schema: str | None = None,
+    ) -> str:
+        raw_schema_name = target_schema or database.database_id
+        return normalize_postgres_identifier(raw_schema_name, prefix="schema")
+
     def _catalog_exists(self, catalog_name: str) -> bool:
         conn = self._connect_autocommit(self.settings.bootstrap_db)
         try:
@@ -898,9 +906,13 @@ class PostGISSynthesizedDatabaseMigrator:
                 page_size=len(rows),
             )
 
-    def migrate_database(self, database: SynthesizedSpatialDatabase) -> str:
+    def migrate_database(
+        self,
+        database: SynthesizedSpatialDatabase,
+        target_schema: str | None = None,
+    ) -> str:
         catalog_name = normalize_postgres_identifier(self.settings.catalog, prefix="catalog")
-        schema_name = normalize_postgres_identifier(database.database_id, prefix="schema")
+        schema_name = self._resolve_schema_name(database, target_schema)
         schema_comment = (
             f"Synthesized spatial database for city={database.city}; "
             f"database_id={database.database_id}; table_count={len(database.selected_tables)}"
@@ -991,11 +1003,17 @@ class PostGISSynthesizedDatabaseMigrator:
         )
         return location
 
-    def migrate_databases(self, databases: Sequence[SynthesizedSpatialDatabase]) -> list[str]:
+    def migrate_databases(
+        self,
+        databases: Sequence[SynthesizedSpatialDatabase],
+        target_schema: str | None = None,
+    ) -> list[str]:
         if not databases:
             return []
+        if target_schema and len(databases) != 1:
+            raise ValueError("target_schema can only be used when exactly one synthesized database is selected.")
         self._prepare_catalog()
         migrated: list[str] = []
         for database in databases:
-            migrated.append(self.migrate_database(database))
+            migrated.append(self.migrate_database(database, target_schema=target_schema))
         return migrated

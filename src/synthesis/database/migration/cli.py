@@ -18,6 +18,22 @@ from .core import (
 )
 
 
+def _csv_list(value: str) -> list[str]:
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _filter_databases(
+    databases,
+    *,
+    selected_city_ids: set[str],
+    selected_database_ids: set[str] | None = None,
+):
+    filtered = [item for item in databases if item.city in selected_city_ids]
+    if not selected_database_ids:
+        return filtered
+    return [item for item in filtered if item.database_id in selected_database_ids]
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -43,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cities",
         help=f"Comma-separated city ids or 'all'. Choices: {', '.join(DEFAULT_CITY_ORDER)}.",
+    )
+    parser.add_argument(
+        "--database-ids",
+        help="Comma-separated synthesized database_id values to migrate after city filtering.",
+    )
+    parser.add_argument(
+        "--target-schema",
+        help="Optional target schema override. Only valid when exactly one synthesized database is selected.",
     )
     parser.add_argument("--host")
     parser.add_argument("--port", type=positive_int)
@@ -78,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     file_config = load_migration_config(args.config)
     merged_input = args.input or file_config.input_path
     merged_cities = args.cities or file_config.cities
+    merged_database_ids = args.database_ids or file_config.database_ids
+    merged_target_schema = args.target_schema or file_config.target_schema
     merged_log_level = args.log_level or file_config.log_level
     merged_insert_batch_size = args.insert_batch_size or file_config.insert_batch_size
     merged_source_row_limit = args.source_row_limit or file_config.source_row_limit
@@ -107,14 +133,21 @@ def main(argv: list[str] | None = None) -> int:
 
     databases = load_synthesized_databases(merged_input)
     selected_city_ids = {profile.city_id for profile in selected_profiles}
-    filtered = [item for item in databases if item.city in selected_city_ids]
+    selected_database_ids = set(_csv_list(merged_database_ids)) if merged_database_ids else None
+    filtered = _filter_databases(
+        databases,
+        selected_city_ids=selected_city_ids,
+        selected_database_ids=selected_database_ids,
+    )
+    if merged_target_schema and len(filtered) != 1:
+        parser.error("--target-schema requires exactly one selected synthesized database.")
     migrator = PostGISSynthesizedDatabaseMigrator(
         merged_connection,
         insert_batch_size=merged_insert_batch_size,
         source_row_limit=merged_source_row_limit,
         migration_mode=merged_migration_mode,
     )
-    migrated = migrator.migrate_databases(filtered)
+    migrated = migrator.migrate_databases(filtered, target_schema=merged_target_schema or None)
     logging.info("Migrated %s synthesized database(s).", len(migrated))
     return 0
 

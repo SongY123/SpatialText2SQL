@@ -25,6 +25,8 @@ Optional environment overrides:
   PGCATALOG
   PGBOOTSTRAP_DB
   PGMAINTENANCE_DB (legacy alias for PGBOOTSTRAP_DB)
+  DATABASE_IDS
+  TARGET_SCHEMA
   INSERT_BATCH_SIZE
   SOURCE_ROW_LIMIT (-1 disables truncation)
   MIGRATION_MODE (override or append)
@@ -34,6 +36,8 @@ Examples:
   $(basename "$0")
   $(basename "$0") data/processed/synthesized_spatial_databases.jsonl
   $(basename "$0") --cities nyc,sf
+  DATABASE_IDS=nyc_0001 $(basename "$0")
+  DATABASE_IDS=nyc_0001 TARGET_SCHEMA=nyc_demo $(basename "$0")
   MIGRATION_MODE=append $(basename "$0")
 EOF
   exit 0
@@ -71,6 +75,12 @@ if [[ -n "${PGBOOTSTRAP_DB:-}" ]]; then
 fi
 if [[ -n "${PGMAINTENANCE_DB:-}" ]]; then
   EXTRA_ARGS+=(--maintenance-db "${PGMAINTENANCE_DB}")
+fi
+if [[ -n "${DATABASE_IDS:-}" ]]; then
+  EXTRA_ARGS+=(--database-ids "${DATABASE_IDS}")
+fi
+if [[ -n "${TARGET_SCHEMA:-}" ]]; then
+  EXTRA_ARGS+=(--target-schema "${TARGET_SCHEMA}")
 fi
 if [[ -n "${INSERT_BATCH_SIZE:-}" ]]; then
   EXTRA_ARGS+=(--insert-batch-size "${INSERT_BATCH_SIZE}")

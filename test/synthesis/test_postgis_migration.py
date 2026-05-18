@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from src.synthesis.database.io import load_synthesized_databases
+from src.synthesis.database.migration.cli import _filter_databases
 from src.synthesis.database.migration import (
     PostGISConnectionSettings,
     PostGISSynthesizedDatabaseMigrator,
@@ -140,6 +141,8 @@ class PostGISMigrationTests(unittest.TestCase):
                     [
                         "input: data/processed/synthesized_spatial_databases.jsonl",
                         "cities: nyc,sf",
+                        "database_ids: nyc_0001,sf_0002",
+                        "target_schema: custom_schema",
                         "insert_batch_size: 2000",
                         "source_row_limit: -1",
                         "migration_mode: append",
@@ -158,6 +161,8 @@ class PostGISMigrationTests(unittest.TestCase):
             )
             loaded = load_migration_config(config_path)
         self.assertEqual(loaded.cities, "nyc,sf")
+        self.assertEqual(loaded.database_ids, "nyc_0001,sf_0002")
+        self.assertEqual(loaded.target_schema, "custom_schema")
         self.assertEqual(loaded.connection.host, "db.local")
         self.assertEqual(loaded.connection.port, 6543)
         self.assertEqual(loaded.connection.catalog, "syntheized")
@@ -205,6 +210,42 @@ class PostGISMigrationTests(unittest.TestCase):
             unlimited = load_geojson_features(path, source_row_limit=-1)
         self.assertEqual(len(limited), 2)
         self.assertEqual(len(unlimited), 3)
+
+    def test_filter_databases_applies_city_and_database_id_filters(self):
+        databases = [
+            SynthesizedSpatialDatabase.from_selected_tables(
+                database_id="nyc_0001",
+                city="nyc",
+                selected_tables=[],
+                sampling_trace=[],
+                graph_stats={},
+                synthesize_config={},
+            ),
+            SynthesizedSpatialDatabase.from_selected_tables(
+                database_id="nyc_0002",
+                city="nyc",
+                selected_tables=[],
+                sampling_trace=[],
+                graph_stats={},
+                synthesize_config={},
+            ),
+            SynthesizedSpatialDatabase.from_selected_tables(
+                database_id="sf_0001",
+                city="sf",
+                selected_tables=[],
+                sampling_trace=[],
+                graph_stats={},
+                synthesize_config={},
+            ),
+        ]
+
+        filtered = _filter_databases(
+            databases,
+            selected_city_ids={"nyc"},
+            selected_database_ids={"nyc_0002", "sf_0001"},
+        )
+
+        self.assertEqual([item.database_id for item in filtered], ["nyc_0002"])
 
     def test_ensure_catalog_uses_autocommit_connection(self):
         class FakeCursor:
@@ -310,6 +351,59 @@ class PostGISMigrationTests(unittest.TestCase):
         self.assertEqual(insert_features.call_args.args[1], expected_schema)
         self.assertTrue(fake_conn.closed)
         self.assertEqual(location, f"syntheized.{expected_schema}")
+
+    def test_migrate_database_uses_explicit_target_schema(self):
+        class FakeConnection:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "hydrants",
+                "normalized_schema": [
+                    {"name": "id", "canonical_name": "id", "canonical_type": "integer"},
+                ],
+                "spatial_fields": [],
+                "path": "/tmp/hydrants.geojson",
+            }
+        )
+        database = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="NYC Demo DB",
+            city="nyc",
+            selected_tables=[table],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+        fake_conn = FakeConnection()
+        expected_schema = normalize_postgres_identifier("custom demo schema", prefix="schema")
+        with mock.patch.object(migrator, "_connect_autocommit", return_value=fake_conn):
+            with mock.patch.object(migrator, "_ensure_postgis_extensions"):
+                with mock.patch.object(migrator, "_schema_exists", return_value=False):
+                    with mock.patch.object(migrator, "_recreate_schema") as recreate_schema:
+                        with mock.patch.object(migrator, "_create_table") as create_table:
+                            with mock.patch.object(migrator, "_insert_features") as insert_features:
+                                with mock.patch(
+                                    "src.synthesis.database.migration.core.load_geojson_features",
+                                    return_value=[],
+                                ):
+                                    location = migrator.migrate_database(
+                                        database,
+                                        target_schema="custom demo schema",
+                                    )
+
+        self.assertEqual(recreate_schema.call_args.args[1], expected_schema)
+        self.assertEqual(create_table.call_args.args[1], expected_schema)
+        self.assertEqual(insert_features.call_args.args[1], expected_schema)
+        self.assertEqual(location, f"syntheized.{expected_schema}")
+        self.assertTrue(fake_conn.closed)
 
     def test_migrate_database_append_skips_existing_tables(self):
         class FakeConnection:
@@ -664,6 +758,28 @@ class PostGISMigrationTests(unittest.TestCase):
         prepare_catalog.assert_called_once_with()
         self.assertEqual(migrate_database.call_count, 2)
         self.assertEqual(locations, ["syntheized.db1", "syntheized.db2"])
+
+    def test_migrate_databases_rejects_target_schema_for_multiple_databases(self):
+        database_one = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="db1",
+            city="nyc",
+            selected_tables=[],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+        database_two = SynthesizedSpatialDatabase.from_selected_tables(
+            database_id="db2",
+            city="sf",
+            selected_tables=[],
+            sampling_trace=[],
+            graph_stats={},
+            synthesize_config={},
+        )
+        migrator = PostGISSynthesizedDatabaseMigrator(PostGISConnectionSettings())
+
+        with self.assertRaises(ValueError):
+            migrator.migrate_databases([database_one, database_two], target_schema="custom_schema")
 
     def test_bulk_insert_value_builder_converts_spatial_value_to_wkt(self):
         table = CanonicalSpatialTable.from_dict(
