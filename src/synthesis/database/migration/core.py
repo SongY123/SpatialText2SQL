@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -25,6 +26,7 @@ DEFAULT_INSERT_BATCH_SIZE = 10000
 DEFAULT_SOURCE_ROW_LIMIT = 500000
 DEFAULT_MIGRATION_MODE = "override"
 APPEND_MIGRATION_MODE = "append"
+INTEGER_MAX_VALUE = 2_147_483_647
 
 POSTGIS_EXTENSIONS = (
     "postgis",
@@ -253,9 +255,15 @@ def _coerce_scalar_value(value: Any, canonical_type: str) -> Any:
     canonical = to_text(canonical_type).lower()
     if canonical == "integer":
         try:
-            return int(float(value))
+            numeric = float(value)
         except (TypeError, ValueError):
             return None
+        if not math.isfinite(numeric):
+            return INTEGER_MAX_VALUE
+        try:
+            return int(numeric)
+        except OverflowError:
+            return INTEGER_MAX_VALUE
     if canonical == "double":
         try:
             return float(value)

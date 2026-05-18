@@ -16,7 +16,11 @@ from src.synthesis.database.migration import (
     parse_srid,
     prepare_column_specs,
 )
-from src.synthesis.database.migration.core import DEFAULT_INSERT_BATCH_SIZE, DEFAULT_SOURCE_ROW_LIMIT
+from src.synthesis.database.migration.core import (
+    DEFAULT_INSERT_BATCH_SIZE,
+    DEFAULT_SOURCE_ROW_LIMIT,
+    INTEGER_MAX_VALUE,
+)
 from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 
 
@@ -68,6 +72,33 @@ class PostGISMigrationTests(unittest.TestCase):
         row = build_feature_row(table, feature, specs)
         self.assertEqual(row["boro"], 1)
         self.assertEqual(row["geometry"]["type"], "Point")
+
+    def test_build_feature_row_clamps_infinite_integer_to_max_value(self):
+        table = CanonicalSpatialTable.from_dict(
+            {
+                "table_id": "t1",
+                "city": "nyc",
+                "table_name": "hydrants",
+                "normalized_schema": [
+                    {
+                        "name": "BORO",
+                        "canonical_name": "boro",
+                        "canonical_type": "integer",
+                    }
+                ],
+                "spatial_fields": [],
+            }
+        )
+        specs = prepare_column_specs(table)
+        feature = {
+            "type": "Feature",
+            "properties": {"BORO": "Infinity"},
+            "geometry": None,
+        }
+
+        row = build_feature_row(table, feature, specs)
+
+        self.assertEqual(row["boro"], INTEGER_MAX_VALUE)
 
     def test_load_synthesized_databases(self):
         database = SynthesizedSpatialDatabase.from_selected_tables(
