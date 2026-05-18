@@ -228,6 +228,14 @@ class FakePromptMetadataProvider:
         return self.payload
 
 
+class RecordingCursor:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, query, params=None):
+        self.calls.append((query, params))
+
+
 class SQLSynthesisTests(unittest.TestCase):
     def test_config_loading_and_override(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -975,6 +983,35 @@ class SQLSynthesisTests(unittest.TestCase):
         result = checker.check("INSERT INTO x VALUES (1)", _make_database(table_count=1))
         self.assertFalse(result.success)
         self.assertFalse(result.executed)
+
+    def test_execution_checker_sets_schema_search_path_before_execution_settings(self):
+        checker = SQLExecutionChecker(
+            SQLSynthesisDBConfig(search_path="custom"),
+            SQLExecutionCheckConfig(enable_execution_check=True, require_non_empty_result=False, execution_timeout=12),
+        )
+        cursor = RecordingCursor()
+
+        checker._apply_session_settings(cursor, "nyc_0001")
+
+        self.assertEqual(len(cursor.calls), 3)
+        self.assertIn("SET search_path TO", repr(cursor.calls[0][0]))
+        self.assertIn("Identifier('nyc_0001')", repr(cursor.calls[0][0]))
+        self.assertIn("'public'", repr(cursor.calls[0][0]))
+        self.assertEqual(cursor.calls[1], ("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", None))
+        self.assertEqual(cursor.calls[2], ("SET statement_timeout = %s", (12000,)))
+
+    def test_prompt_metadata_provider_sets_schema_search_path_before_execution_settings(self):
+        provider = PostGISPromptMetadataProvider(SQLSynthesisDBConfig(search_path="custom", statement_timeout=3456))
+        cursor = RecordingCursor()
+
+        provider._apply_session_settings(cursor, "nyc_0001")
+
+        self.assertEqual(len(cursor.calls), 3)
+        self.assertIn("SET search_path TO", repr(cursor.calls[0][0]))
+        self.assertIn("Identifier('nyc_0001')", repr(cursor.calls[0][0]))
+        self.assertIn("'public'", repr(cursor.calls[0][0]))
+        self.assertEqual(cursor.calls[1], ("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", None))
+        self.assertEqual(cursor.calls[2], ("SET statement_timeout = %s", (3456,)))
 
     def test_end_to_end_synthesizer_repairs_non_timeout_execution_error_once(self):
         library = _load_library([_sample_function_json_payload()[0]], "## spatialsql_pg\nST_DWithin\n")

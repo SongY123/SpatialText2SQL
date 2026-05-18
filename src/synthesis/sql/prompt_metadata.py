@@ -151,18 +151,11 @@ class PostGISPromptMetadataProvider:
         return ""
 
     def _apply_session_settings(self, cursor, schema_name: str) -> None:
+        cursor.execute(
+            pg_sql.SQL("SET search_path TO {}, public").format(pg_sql.Identifier(schema_name))
+        )
         cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         cursor.execute("SET statement_timeout = %s", (int(self.db_config.statement_timeout),))
-        configured_search_path = to_text(self.db_config.search_path)
-        if configured_search_path:
-            resolved_search_path = configured_search_path.replace("{schema}", schema_name)
-            if "{schema}" not in configured_search_path:
-                resolved_search_path = f"{schema_name}, {configured_search_path}"
-        else:
-            resolved_search_path = schema_name
-        cursor.execute(
-            pg_sql.SQL("SET search_path TO {}").format(pg_sql.SQL(resolved_search_path))
-        )
 
     @staticmethod
     def _fetch_columns(cursor, schema_name: str, requested_tables: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
