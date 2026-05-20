@@ -13,7 +13,7 @@ migration_mode: override
 
 database:
   host: localhost
-  port: 5432
+  port: 54321
   user: postgres
   password: "123456"
   catalog: synthesis
