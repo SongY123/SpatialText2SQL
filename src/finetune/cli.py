@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
 import subprocess
@@ -166,6 +167,19 @@ def _cleanup_distributed() -> None:
         torch.distributed.destroy_process_group()
 
 
+def _validate_deepspeed_setup(config) -> None:
+    config_path = str(config.training.deepspeed_config_path).strip()
+    if not config_path:
+        return
+    resolved_path = Path(config_path)
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"DeepSpeed config not found: {resolved_path}")
+    if importlib.util.find_spec("deepspeed") is None:
+        raise ModuleNotFoundError(
+            "DeepSpeed config is enabled but the 'deepspeed' package is not installed in this environment."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -199,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         }.items() if value is not None},
     )
     _apply_runtime_environment(config)
+    _validate_deepspeed_setup(config)
 
     log_handlers = None
     if config.logging.log_path:

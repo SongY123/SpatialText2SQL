@@ -13,7 +13,12 @@ from src.finetune.config import (
     load_trl_finetune_config,
     override_trl_finetune_config,
 )
-from src.finetune.cli import _apply_runtime_environment, _build_accelerate_command, _effective_num_processes
+from src.finetune.cli import (
+    _apply_runtime_environment,
+    _build_accelerate_command,
+    _effective_num_processes,
+    _validate_deepspeed_setup,
+)
 from src.finetune.dataset import SpatialText2SQLDatasetBuilder
 from src.finetune.formatter import NL2SQLAlpacaFormatter
 from src.finetune.io import write_alpaca_finetune_samples
@@ -78,6 +83,19 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn("--nvidia-gpu-indices", command)
         self.assertIn("0,1", command)
         self.assertIn("--deepspeed-config-path", command)
+
+    def test_repo_default_finetune_config_enables_zero3(self):
+        config = load_trl_finetune_config()
+        self.assertTrue(config.training.deepspeed_config_path.endswith("config/deepspeed/zero3_bf16.json"))
+        self.assertTrue(Path(config.training.deepspeed_config_path).is_file())
+
+    def test_validate_deepspeed_setup_requires_existing_config(self):
+        config = override_trl_finetune_config(
+            load_trl_finetune_config(),
+            training={"deepspeed_config_path": "/tmp/does-not-exist-zero3.json"},
+        )
+        with self.assertRaises(FileNotFoundError):
+            _validate_deepspeed_setup(config)
 
     def test_raw_finetune_sample_accepts_nl2sql_metadata(self):
         row = RawFinetuneSample.from_dict(

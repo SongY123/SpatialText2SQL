@@ -1,8 +1,15 @@
 input: data/processed/synthesized_spatial_databases.jsonl
 cities: all
+# Optional comma-separated database_id filter after city filtering.
+database_ids: ""
+# Optional target schema override. Only valid when exactly one synthesized database is selected.
+target_schema: ""
 insert_batch_size: 10000
 # Maximum number of source rows loaded per table; set to -1 to disable truncation.
 source_row_limit: 500000
+# override: drop and recreate the target schema
+# append: keep existing schemas/tables and only create missing tables
+migration_mode: override
 
 database:
   host: localhost

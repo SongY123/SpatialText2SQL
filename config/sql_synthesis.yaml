@@ -19,9 +19,9 @@ database:
 #  max_retries: 2
 
 llm:
-  provider: ollama
-  model: gemma4:31b
-  base_url: http://10.132.80.118:11434/v1/
+  provider: openai_compatible
+  model: gemma-4-31B-it
+  base_url: http://10.132.80.118:8999/v1
   api_key_env: EMPTY
   temperature: 0.2
   max_tokens: 5000

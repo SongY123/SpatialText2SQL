@@ -375,7 +375,8 @@ Default settings:
 - Default multi-GPU visibility: all eight GPUs `0-7`
 - Distributed launcher: `accelerate`
 - GPU selection: `runtime.nvidia_gpu_indices` in `config/finetune.yaml` or `--nvidia-gpu-indices 0,1,...`
-- Optional DeepSpeed config: `training.deepspeed_config_path`
+- Default DeepSpeed config: `config/deepspeed/zero3_bf16.json`
+- To disable DeepSpeed and revert to plain data parallel, set `training.deepspeed_config_path: ""`
 
 Training data behavior:
 
@@ -386,6 +387,7 @@ Training data behavior:
 - The generated Alpaca file contains only three fields per row: `instruction`, `input`, and `output`.
 - When `runtime.nvidia_gpu_indices` is set, the fine-tune CLI exports `CUDA_VISIBLE_DEVICES` and `NVIDIA_VISIBLE_DEVICES` before importing the trainer stack.
 - When more than one visible GPU is configured and `runtime.distributed_backend=accelerate`, the CLI formats once on the parent process and then relaunches training with `accelerate launch` against the generated Alpaca file.
+- The default DeepSpeed config uses ZeRO-3, which shards model parameters, gradients, and optimizer states across ranks to lower per-GPU memory usage. This is model-state sharding, not tensor parallelism.
 - If `training.deepspeed_config_path` is provided, the Hugging Face trainer passes that DeepSpeed config through to TRL/HF training under the same `accelerate` launch flow.
 
 Edit persistent settings in `config/finetune.yaml`.
