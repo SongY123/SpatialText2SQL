@@ -227,8 +227,12 @@ class TRLFullFinetuner:
         metrics: dict[str, Any],
     ) -> None:
         self._wait_for_everyone(trainer)
+        # DeepSpeed ZeRO-3 and other sharded backends may require collectives during
+        # save_model(), so every rank must enter the call even though only the save
+        # rank will actually write files.
+        trainer.save_model(str(output_dir))
+        self._wait_for_everyone(trainer)
         if self._is_main_process(trainer):
-            trainer.save_model(str(output_dir))
             tokenizer.save_pretrained(str(output_dir))
             trainer.save_state()
             self._write_metrics_file(output_dir, metrics)

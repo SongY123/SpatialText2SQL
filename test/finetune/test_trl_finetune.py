@@ -235,7 +235,7 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertEqual(payload["completion_mask"][-3:], [1, 1, 1])
         self.assertEqual(payload["completion_mask"][: len("PROMPT## Response\n")], [0] * len("PROMPT## Response\n"))
 
-    def test_persist_training_artifacts_runs_only_on_main_process(self):
+    def test_persist_training_artifacts_runs_collective_model_save_but_main_process_only_side_effects(self):
         class FakeAccelerator:
             def __init__(self):
                 self.calls = 0
@@ -277,10 +277,10 @@ class TRLFinetuneTests(unittest.TestCase):
                 metrics={"train_loss": 1.0},
             )
             self.assertFalse((Path(temp_dir) / "train_metrics.json").exists())
-        self.assertEqual(trainer.saved_model, 0)
+        self.assertEqual(trainer.saved_model, 1)
         self.assertEqual(trainer.saved_state, 0)
         self.assertEqual(tokenizer.saved, 0)
-        self.assertEqual(trainer.accelerator.calls, 2)
+        self.assertEqual(trainer.accelerator.calls, 3)
 
     def test_resolve_warmup_steps_uses_ratio_when_explicit_steps_are_zero(self):
         config = override_trl_finetune_config(
