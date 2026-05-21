@@ -349,6 +349,17 @@ class TRLFinetuneTests(unittest.TestCase):
             else:
                 os.environ["WORLD_SIZE"] = original_world_size
 
+    def test_gradient_accumulation_prefers_explicit_deepspeed_value(self):
+        config = override_trl_finetune_config(
+            load_trl_finetune_config(),
+            training={
+                "gradient_accumulation_steps": 3,
+                "deepspeed_config_path": "config/deepspeed/zero3_bf16.json",
+            },
+        )
+        finetuner = TRLFullFinetuner(config)
+        self.assertEqual(finetuner._resolve_gradient_accumulation_steps(), 16)
+
     def test_dataset_builder_normalizes_question_id_and_difficulty(self):
         runtime_metadata = {
             "tables": [

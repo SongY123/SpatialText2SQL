@@ -14,7 +14,7 @@
     "stage3_param_persistence_threshold": "auto",
     "stage3_gather_16bit_weights_on_model_save": true
   },
-  "gradient_accumulation_steps": "auto",
+  "gradient_accumulation_steps": 16,
   "gradient_clipping": "auto",
   "train_batch_size": "auto",
   "train_micro_batch_size_per_gpu": "auto",

@@ -288,7 +288,7 @@ class TRLFullFinetuner:
         maybe_set("overwrite_output_dir", self.config.training.overwrite_output_dir)
         maybe_set("per_device_train_batch_size", self.config.training.per_device_train_batch_size)
         maybe_set("per_device_eval_batch_size", self.config.training.per_device_eval_batch_size)
-        maybe_set("gradient_accumulation_steps", self.config.training.gradient_accumulation_steps)
+        maybe_set("gradient_accumulation_steps", self._resolve_gradient_accumulation_steps())
         maybe_set("learning_rate", self.config.training.learning_rate)
         maybe_set("num_train_epochs", self.config.training.num_train_epochs)
         maybe_set("max_steps", self.config.training.max_steps)
@@ -354,11 +354,25 @@ class TRLFullFinetuner:
             return int(self.config.training.max_steps)
         world_size = self._distributed_world_size()
         per_device_batch_size = max(int(self.config.training.per_device_train_batch_size), 1)
-        grad_accum = max(int(self.config.training.gradient_accumulation_steps), 1)
+        grad_accum = self._resolve_gradient_accumulation_steps()
         per_step_examples = per_device_batch_size * world_size
         dataloader_steps = max(1, math.ceil(train_row_count / per_step_examples))
         update_steps_per_epoch = max(1, math.ceil(dataloader_steps / grad_accum))
         return max(1, math.ceil(update_steps_per_epoch * float(self.config.training.num_train_epochs)))
+
+    def _resolve_gradient_accumulation_steps(self) -> int:
+        deepspeed_path = str(self.config.training.deepspeed_config_path or "").strip()
+        if deepspeed_path:
+            try:
+                payload = json.loads(Path(deepspeed_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Failed to read DeepSpeed config: {deepspeed_path}") from exc
+            deepspeed_value = payload.get("gradient_accumulation_steps")
+            if isinstance(deepspeed_value, int) and deepspeed_value > 0:
+                return deepspeed_value
+            if isinstance(deepspeed_value, str) and deepspeed_value.strip().isdigit():
+                return max(int(deepspeed_value.strip()), 1)
+        return max(int(self.config.training.gradient_accumulation_steps), 1)
 
     @staticmethod
     def _distributed_world_size() -> int:
