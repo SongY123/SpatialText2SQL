@@ -133,6 +133,8 @@ class TRLFinetuneTests(unittest.TestCase):
         prompt = renderer.compose_prompt(instruction, input_text)
         self.assertIn("## Task Description", instruction)
         self.assertIn("## Response Requirements", instruction)
+        self.assertIn("```sql``` code block", instruction)
+        self.assertNotIn("reasoning summary", instruction)
         self.assertIn("## Schema", input_text)
         self.assertIn("## Representative Values", input_text)
         self.assertIn("## Question", input_text)
@@ -195,16 +197,57 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn("## Task Description", rows[0].instruction)
         self.assertIn("## Schema", rows[0].input_text)
         self.assertNotIn("## Spatial Field Metadata", rows[0].input_text)
-        self.assertIn("Use the parks table and return the name column.", rows[0].output_text)
+        self.assertEqual(rows[0].output_text.strip(), "```sql\nSELECT name FROM parks LIMIT 5\n```")
         self.assertIn("```sql", rows[0].output_text)
         self.assertIn("SELECT name FROM parks LIMIT 5", rows[0].output_text)
         self.assertEqual(set(rows[0].to_dict().keys()), {"instruction", "input", "output"})
+
+    def test_alpaca_formatter_uses_full_database_context_not_used_tables_subset(self):
+        formatter = NL2SQLAlpacaFormatter(
+            data_config=FinetuneDataConfig(
+                input_path="",
+                alpaca_output_path="",
+                task_description="Translate to SQL.",
+                question_id_start=0,
+                max_representative_rows=3,
+            ),
+        )
+        raw = RawFinetuneSample.from_dict(
+            {
+                "question_id": "nyc_0001_0002",
+                "database_id": "nyc_0001",
+                "city": "new york",
+                "question": "Which park names should be returned?",
+                "sql": "SELECT name FROM parks LIMIT 5",
+                "source_difficulty_level": "easy",
+                "used_tables": ["parks"],
+                "used_columns": ["name"],
+                "metadata": {
+                    "database_context": {
+                        "schema_ddls": [
+                            "CREATE TABLE parks (\n    id integer,\n    name text\n);",
+                            "CREATE TABLE schools (\n    id integer,\n    name text\n);",
+                        ],
+                        "representative_values": {
+                            "parks": [{"id": 1, "name": "alpha"}],
+                            "schools": [{"id": 9, "name": "ps 1"}],
+                        },
+                    }
+                },
+            }
+        )
+        rows = formatter.format_samples([raw])
+        self.assertEqual(len(rows), 1)
+        self.assertIn("CREATE TABLE parks", rows[0].input_text)
+        self.assertIn("CREATE TABLE schools", rows[0].input_text)
+        self.assertIn('"parks"', rows[0].input_text)
+        self.assertIn('"schools"', rows[0].input_text)
 
     def test_alpaca_writer_emits_instruction_input_output_only(self):
         row = AlpacaFinetuneSample(
             instruction="Do the task.",
             input_text="## Schema\n- parks(id integer)\n\n## Representative Values\n{}\n\n## Question\nWhich parks?",
-            output_text="Reason briefly.\n\n```sql\nSELECT id FROM parks\n```",
+            output_text="```sql\nSELECT id FROM parks\n```",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "alpaca.jsonl"

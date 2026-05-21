@@ -32,7 +32,6 @@ class NL2SQLAlpacaFormatter:
             metadata = self._load_embedded_metadata(row)
             schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
                 metadata,
-                included_tables=row.used_tables,
                 max_representative_rows=self.data_config.max_representative_rows,
             )
             instruction = self.prompt_renderer.render_instruction()
@@ -42,11 +41,6 @@ class NL2SQLAlpacaFormatter:
                 representative_values=representative_values,
             )
             output_text = self.prompt_renderer.render_output(row.sql_reasoning_summary, row.sql)
-            if not row.sql_reasoning_summary:
-                LOGGER.warning(
-                    "Fine-tune sample %s is missing sql_reasoning_summary; formatter will emit SQL-only output block.",
-                    row.question_id or row.database_id,
-                )
             formatted_rows.append(
                 AlpacaFinetuneSample(
                     instruction=instruction,
@@ -61,6 +55,8 @@ class NL2SQLAlpacaFormatter:
         metadata = row.metadata if isinstance(row.metadata, Mapping) else {}
         database_context = metadata.get("database_context")
         if isinstance(database_context, Mapping):
+            if database_context.get("schema_ddls") or isinstance(database_context.get("representative_values"), Mapping):
+                return {str(key): stable_jsonify(value) for key, value in database_context.items()}
             tables = database_context.get("tables")
             if isinstance(tables, Sequence) and not isinstance(tables, (str, bytes, bytearray)):
                 return {str(key): stable_jsonify(value) for key, value in database_context.items()}

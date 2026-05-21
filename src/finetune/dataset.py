@@ -33,7 +33,6 @@ class SpatialText2SQLDatasetBuilder:
             metadata = self._load_metadata(row)
             schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
                 metadata,
-                included_tables=row.used_tables,
                 max_representative_rows=self.data_config.max_representative_rows,
             )
             instruction = row.instruction or self.prompt_renderer.render_instruction()
@@ -86,6 +85,14 @@ class SpatialText2SQLDatasetBuilder:
     def _load_embedded_metadata(row: RawFinetuneSample) -> dict[str, Any] | None:
         metadata = row.metadata if isinstance(row.metadata, Mapping) else {}
         database_context = metadata.get("database_context")
+        if (
+            isinstance(database_context, Mapping)
+            and (
+                database_context.get("schema_ddls")
+                or isinstance(database_context.get("representative_values"), Mapping)
+            )
+        ):
+            return {str(key): stable_jsonify(value) for key, value in database_context.items()}
         if (
             isinstance(database_context, Mapping)
             and isinstance(database_context.get("tables"), Sequence)

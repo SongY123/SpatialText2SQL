@@ -7,6 +7,9 @@ import logging
 import sys
 from pathlib import Path
 
+from src.synthesis.sql.config import SQLSynthesisDBConfig
+from src.synthesis.sql.prompt_metadata import PostGISPromptMetadataProvider
+
 from .config import (
     DEFAULT_QUALITY_CONTROL_CONFIG_PATH,
     load_quality_control_config,
@@ -151,6 +154,46 @@ def _enrich_samples_from_sql_context(samples, sql_context_by_id):
                 sample.original_payload[key] = sql_context.get(key)
 
 
+def _load_live_database_contexts(samples, config):
+    if not config.run.prefer_live_schema:
+        return {}
+    provider = PostGISPromptMetadataProvider(
+        SQLSynthesisDBConfig(
+            host=config.database.host,
+            port=config.database.port,
+            database=config.database.database,
+            user=config.database.user,
+            password=config.database.password,
+            search_path=config.database.search_path,
+            connect_timeout=config.database.connect_timeout,
+            statement_timeout=config.database.statement_timeout,
+        )
+    )
+    contexts: dict[str, dict] = {}
+    for sample in samples:
+        database_id = str(sample.database_id).strip()
+        if not database_id or database_id in contexts:
+            continue
+        city = str(sample.original_payload.get("city") or sample.metadata.get("city") or "").strip()
+        context = provider.load_database_metadata_by_id(database_id=database_id, city=city)
+        if not isinstance(context, dict):
+            raise RuntimeError(f"Failed to load live database context for {database_id}.")
+        sanitized = {str(key): value for key, value in context.items() if key != "tables"}
+        contexts[database_id] = sanitized
+    return contexts
+
+
+def _inject_live_database_context(samples, contexts_by_database_id):
+    for sample in samples:
+        context = contexts_by_database_id.get(sample.database_id)
+        if not isinstance(context, dict):
+            continue
+        merged_metadata = dict(sample.metadata or {})
+        merged_metadata["database_context"] = context
+        sample.metadata = merged_metadata
+        sample.original_payload["metadata"] = merged_metadata
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -219,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     samples = load_nl_sql_samples(config.run.input_path)
     sql_context_by_id = load_sql_context_by_sql_id(config.run.sql_context_path)
     _enrich_samples_from_sql_context(samples, sql_context_by_id)
+    _inject_live_database_context(samples, _load_live_database_contexts(samples, config))
     logging.info(
         "Quality control formatter-only mode enabled; skipping validator, database, judge, duplicate, and balancing logic."
     )

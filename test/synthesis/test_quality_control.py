@@ -440,16 +440,10 @@ class QualityControlTests(unittest.TestCase):
                             "CREATE TABLE parks (\n    id integer,\n    name text\n);",
                             "CREATE TABLE neighborhoods (\n    id integer,\n    name text\n);",
                         ],
-                        "tables": [
-                            {
-                                "table_name": "parks",
-                                "representative_values": {"name": ["central park"]},
-                            },
-                            {
-                                "table_name": "neighborhoods",
-                                "representative_values": {"name": ["harlem"]},
-                            },
-                        ],
+                        "representative_values": {
+                            "parks": {"name": ["central park"]},
+                            "neighborhoods": {"name": ["harlem"]},
+                        },
                     }
                 },
             }
@@ -468,6 +462,7 @@ class QualityControlTests(unittest.TestCase):
             self.assertEqual(row["selected_table_names"], ["parks", "neighborhoods"])
             self.assertIn("CREATE TABLE parks", row["schema_ddls"][0])
             self.assertEqual(row["representative_values"]["parks"]["name"], ["central park"])
+            self.assertNotIn("tables", row["metadata"]["database_context"])
 
     def test_formatter_only_quality_control_keeps_all_samples_for_finetune(self):
         samples = [

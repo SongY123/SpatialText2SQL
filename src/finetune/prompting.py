@@ -13,12 +13,11 @@ class FinetunePromptRenderer:
     INSTRUCTION_HEADER = "You are an expert spatial Text-to-SQL model."
     RESPONSE_HEADER = "## Response"
     RESPONSE_REQUIREMENTS = (
-        "Return a concise reasoning summary first.",
-        "Then return one executable PostgreSQL/PostGIS SQL query inside a single ```sql``` code block.",
+        "Return one executable PostgreSQL/PostGIS SQL query inside a single ```sql``` code block.",
         "Use only the listed tables and columns.",
         "Preserve the question semantics exactly.",
         "Generate one read-only PostgreSQL/PostGIS SQL query only.",
-        "Do not add any extra explanation outside the reasoning summary and the SQL code block.",
+        "Do not add any extra explanation outside the SQL code block.",
     )
 
     def __init__(
@@ -90,13 +89,9 @@ class FinetunePromptRenderer:
 
     def render_output(self, reasoning_summary: str, sql: str) -> str:
         sql_text = to_text(sql).strip()
-        reasoning = to_text(reasoning_summary).strip()
         if not sql_text:
-            return reasoning
-        sql_block = f"```sql\n{sql_text}\n```"
-        if not reasoning:
-            return sql_block
-        return f"{reasoning}\n\n{sql_block}"
+            return ""
+        return f"```sql\n{sql_text}\n```"
 
     @staticmethod
     def build_runtime_prompt_context(
@@ -105,6 +100,26 @@ class FinetunePromptRenderer:
         included_tables: Sequence[str] | None = None,
         max_representative_rows: int = 3,
     ) -> tuple[list[str], dict[str, Any]]:
+        schema_ddls = [
+            to_text(item)
+            for item in ((database_runtime_metadata or {}).get("schema_ddls") or [])
+            if to_text(item)
+        ]
+        direct_representative_values = (database_runtime_metadata or {}).get("representative_values")
+        if schema_ddls or isinstance(direct_representative_values, Mapping):
+            representative_values: dict[str, Any] = {}
+            if isinstance(direct_representative_values, Mapping):
+                for table_name, table_values in direct_representative_values.items():
+                    normalized_name = to_text(table_name)
+                    if not normalized_name:
+                        continue
+                    representative_values[normalized_name] = FinetunePromptRenderer._prepare_representative_rows(
+                        table_values,
+                        geometry_columns=set(),
+                        limit=max_representative_rows,
+                    )
+            return schema_ddls, representative_values
+
         included = {
             to_text(table_name)
             for table_name in (included_tables or [])

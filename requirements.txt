@@ -25,3 +25,4 @@ torch
 tqdm
 trl
 transformers
+deepspeed

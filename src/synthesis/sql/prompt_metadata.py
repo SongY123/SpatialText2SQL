@@ -49,24 +49,45 @@ class PostGISPromptMetadataProvider:
                 for table in getattr(database, "selected_tables", [])
                 if to_text(getattr(table, "table_name", ""))
             ]
-        cache_key = f"{database.database_id}|{'|'.join(requested_tables)}"
+        return self.load_database_metadata_by_id(
+            database_id=database.database_id,
+            city=database.city,
+            requested_tables=requested_tables,
+        )
+
+    def load_database_metadata_by_id(
+        self,
+        *,
+        database_id: str,
+        city: str = "",
+        requested_tables: Sequence[str] | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_tables = [to_text(name) for name in (requested_tables or []) if to_text(name)]
+        cache_suffix = "|".join(normalized_tables) if normalized_tables else "*"
+        cache_key = f"{database_id}|{cache_suffix}"
         if cache_key in self._cache:
             return stable_jsonify(self._cache[cache_key])
 
-        schema_name = normalize_postgres_identifier(database.database_id, prefix="schema")
+        schema_name = normalize_postgres_identifier(database_id, prefix="schema")
         catalog_name = normalize_postgres_identifier(self.db_config.database, prefix="catalog") or self.db_config.database
-        if not requested_tables:
-            LOGGER.warning("Prompt metadata provider skipped %s because no table names were supplied.", database.database_id)
-            self._cache[cache_key] = None
-            return None
-
         try:
             with self._connect(catalog_name) as conn:
-                metadata = self._load_metadata(conn, schema_name, requested_tables, database)
+                resolved_tables = list(normalized_tables) or self._fetch_table_names(conn, schema_name)
+                if not resolved_tables:
+                    LOGGER.warning("Prompt metadata provider found no tables | schema_id=%s", database_id)
+                    self._cache[cache_key] = None
+                    return None
+                metadata = self._load_metadata(
+                    conn,
+                    schema_name,
+                    resolved_tables,
+                    database_id=database_id,
+                    city=city,
+                )
         except Exception as exc:
             LOGGER.warning(
                 "Failed to load live PostGIS prompt metadata | schema_id=%s | error=%s",
-                database.database_id,
+                database_id,
                 exc,
             )
             self._cache[cache_key] = None
@@ -74,6 +95,25 @@ class PostGISPromptMetadataProvider:
 
         self._cache[cache_key] = metadata
         return stable_jsonify(metadata)
+
+    @staticmethod
+    def _fetch_table_names(connection, schema_name: str) -> list[str]:
+        with connection.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """,
+                (schema_name,),
+            )
+            return [
+                to_text(row.get("table_name"))
+                for row in (cur.fetchall() or [])
+                if isinstance(row, Mapping) and to_text(row.get("table_name"))
+            ]
 
     def _connect(self, catalog_name: str):
         return psycopg2.connect(
@@ -90,7 +130,9 @@ class PostGISPromptMetadataProvider:
         connection,
         schema_name: str,
         requested_tables: Sequence[str],
-        database: SynthesizedSpatialDatabase,
+        *,
+        database_id: str,
+        city: str = "",
     ) -> dict[str, Any]:
         with connection.cursor(cursor_factory=RealDictCursor) as cur:
             self._apply_session_settings(cur, schema_name)
@@ -105,7 +147,7 @@ class PostGISPromptMetadataProvider:
                 if not columns:
                     LOGGER.warning(
                         "Live prompt metadata missing table | schema_id=%s | table=%s",
-                        database.database_id,
+                        database_id,
                         table_name,
                     )
                     continue
@@ -133,9 +175,10 @@ class PostGISPromptMetadataProvider:
                     }
                 )
         return {
-            "database_id": database.database_id,
-            "city": database.city,
+            "database_id": database_id,
+            "city": city,
             "schema_name": schema_name,
+            "selected_table_names": list(requested_tables),
             "schema_ddls": schema_ddls,
             "tables": tables,
             "representative_values": stable_jsonify(representative_values),

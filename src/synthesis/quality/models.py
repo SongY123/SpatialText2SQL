@@ -229,29 +229,40 @@ class NLSQLSample:
         row["metadata"] = merged_metadata
         database_context = merged_metadata.get("database_context")
         if isinstance(database_context, Mapping):
+            database_context_payload = {
+                str(key): stable_jsonify(value)
+                for key, value in database_context.items()
+                if key != "tables"
+            }
+            row["metadata"]["database_context"] = database_context_payload
             selected_table_names = [
                 to_text(item)
-                for item in (database_context.get("selected_table_names") or [])
+                for item in (database_context_payload.get("selected_table_names") or [])
                 if to_text(item)
             ]
             schema_ddls = [
                 to_text(item)
-                for item in (database_context.get("schema_ddls") or [])
+                for item in (database_context_payload.get("schema_ddls") or [])
                 if to_text(item)
             ]
-            representative_values: dict[str, Any] = {}
-            for table_item in (database_context.get("tables") or []):
-                if not isinstance(table_item, Mapping):
-                    continue
-                table_name = to_text(table_item.get("table_name"))
-                if not table_name:
-                    continue
-                representative_values[table_name] = stable_jsonify(table_item.get("representative_values"))
-            if selected_table_names and "selected_table_names" not in row:
+            representative_values = {
+                to_text(table_name): stable_jsonify(values)
+                for table_name, values in _as_mapping(database_context_payload.get("representative_values")).items()
+                if to_text(table_name)
+            }
+            if not representative_values:
+                for table_item in (database_context.get("tables") or []):
+                    if not isinstance(table_item, Mapping):
+                        continue
+                    table_name = to_text(table_item.get("table_name"))
+                    if not table_name:
+                        continue
+                    representative_values[table_name] = stable_jsonify(table_item.get("representative_values"))
+            if selected_table_names:
                 row["selected_table_names"] = selected_table_names
-            if schema_ddls and "schema_ddls" not in row:
+            if schema_ddls:
                 row["schema_ddls"] = schema_ddls
-            if representative_values and "representative_values" not in row:
+            if representative_values:
                 row["representative_values"] = representative_values
 
         return stable_jsonify(row)
