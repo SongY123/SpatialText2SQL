@@ -278,6 +278,45 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertEqual(payload["completion_mask"][-3:], [1, 1, 1])
         self.assertEqual(payload["completion_mask"][: len("PROMPT## Response\n")], [0] * len("PROMPT## Response\n"))
 
+    def test_filter_rows_exceeding_max_length_drops_overlength_samples_before_split(self):
+        class FakeTokenizer:
+            is_fast = True
+
+            def __call__(self, text, add_special_tokens=True, return_offsets_mapping=False, return_special_tokens_mask=False):
+                input_ids = list(range(len(text)))
+                payload = {"input_ids": input_ids}
+                if return_offsets_mapping:
+                    payload["offset_mapping"] = [(index, index + 1) for index in range(len(text))]
+                if return_special_tokens_mask:
+                    payload["special_tokens_mask"] = [0] * len(text)
+                return payload
+
+        config = override_trl_finetune_config(
+            load_trl_finetune_config(),
+            training={"max_length": 40},
+        )
+        finetuner = TRLFullFinetuner(config)
+        rows = [
+            AlpacaFinetuneSample(
+                instruction="Short task.",
+                input_text="## Question\nshort",
+                output_text="```sql\nSELECT 1\n```",
+            ),
+            AlpacaFinetuneSample(
+                instruction="Long task.",
+                input_text="## Question\n" + ("x" * 80),
+                output_text="```sql\nSELECT 1\n```",
+            ),
+        ]
+
+        kept_rows, dropped_rows = finetuner._filter_rows_exceeding_max_length(rows, FakeTokenizer())
+
+        self.assertEqual(len(kept_rows), 1)
+        self.assertEqual(kept_rows[0].instruction, "Short task.")
+        self.assertEqual(len(dropped_rows), 1)
+        self.assertEqual(dropped_rows[0]["question_id"], "row_00001")
+        self.assertGreater(dropped_rows[0]["token_count"], 40)
+
     def test_persist_training_artifacts_runs_collective_model_save_but_main_process_only_side_effects(self):
         class FakeAccelerator:
             def __init__(self):

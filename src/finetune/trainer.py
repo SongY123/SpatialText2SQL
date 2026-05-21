@@ -42,7 +42,25 @@ class TRLFullFinetuner:
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
 
-        train_rows, eval_rows = self._split_rows(rows)
+        filtered_rows, dropped_rows = self._filter_rows_exceeding_max_length(rows, tokenizer)
+        if not filtered_rows:
+            raise ValueError(
+                "All Alpaca fine-tune rows exceed training.max_length after tokenization. "
+                "Reduce prompt size or increase training.max_length."
+            )
+        if dropped_rows and self._is_rank_zero_env():
+            LOGGER.warning(
+                "Dropped overlength fine-tune rows before train/eval split | dropped=%s | kept=%s | max_length=%s",
+                len(dropped_rows),
+                len(filtered_rows),
+                self.config.training.max_length,
+            )
+            LOGGER.warning(
+                "Example dropped question ids: %s",
+                ", ".join(item["question_id"] for item in dropped_rows[:10]),
+            )
+
+        train_rows, eval_rows = self._split_rows(filtered_rows)
         train_dataset = datasets.Dataset.from_list(self._build_tokenized_dataset_rows(train_rows, tokenizer))
         eval_dataset = (
             datasets.Dataset.from_list(self._build_tokenized_dataset_rows(eval_rows, tokenizer))
@@ -103,6 +121,7 @@ class TRLFullFinetuner:
         metrics = dict(train_result.metrics or {})
         metrics["train_rows"] = len(train_rows)
         metrics["eval_rows"] = len(eval_rows)
+        metrics["dropped_overlength_rows"] = len(dropped_rows)
         self._persist_training_artifacts(
             trainer=trainer,
             tokenizer=tokenizer,
@@ -180,6 +199,43 @@ class TRLFullFinetuner:
                 )
             )
         return tokenized_rows
+
+    def _filter_rows_exceeding_max_length(
+        self,
+        rows: Sequence[AlpacaFinetuneSample],
+        tokenizer,
+    ) -> tuple[list[AlpacaFinetuneSample], list[dict[str, Any]]]:
+        kept_rows: list[AlpacaFinetuneSample] = []
+        dropped_rows: list[dict[str, Any]] = []
+        max_length = max(int(self.config.training.max_length), 1)
+        for index, row in enumerate(rows):
+            prompt = self._prompt_from_row(row)
+            completion = self._completion_from_row(row)
+            payload = self._tokenize_with_completion_mask(
+                tokenizer=tokenizer,
+                full_text=prompt + completion,
+                completion_start=len(prompt),
+            )
+            token_count = len(payload["input_ids"])
+            if token_count > max_length:
+                dropped_rows.append(
+                    {
+                        "index": index,
+                        "question_id": self._question_id_for_row(row, index),
+                        "token_count": token_count,
+                    }
+                )
+                continue
+            kept_rows.append(row)
+        return kept_rows, dropped_rows
+
+    @staticmethod
+    def _question_id_for_row(row: AlpacaFinetuneSample, index: int) -> str:
+        for candidate_attr in ("question_id", "database_id"):
+            candidate = getattr(row, candidate_attr, "")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return f"row_{index:05d}"
 
     @staticmethod
     def _tokenize_with_completion_mask(
