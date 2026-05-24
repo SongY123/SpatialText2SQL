@@ -30,8 +30,8 @@ Do not introduce, substitute, recommend, or use any PostGIS function that is not
 If no sampled function can be used naturally or safely, generate the simplest executable query supported by the schema without inventing additional PostGIS functions.
 If a sampled function is a validity or quality-check function such as ST_IsValid, ST_IsValidReason, or ST_IsValidDetail, use it meaningfully as a filter, boolean projection, or diagnostic condition instead of ignoring it in favor of a more common spatial join.
 
-## Sampled Row Cap
-- sampled_bounded_limit: {{bounded_limit_value}}
+## Result Window Guidance
+{{result_window_guidance_block}}
 
 ## SQL Construction Requirements
 - Use only schema-listed tables and columns.
@@ -51,8 +51,6 @@ If a sampled function is a validity or quality-check function such as ST_IsValid
   - return geometry columns only when the intended task is explicitly about geometry, shape, boundary, centroid, coordinates, or spatial output
 - Keep the projected column count small. Prefer at most three output expressions.
 - If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
-- If the query uses a scalar aggregate or any GROUP BY, do not use LIMIT.
-- Otherwise, the query must use `LIMIT {{bounded_limit_value}}` exactly.
 
 ## PostGIS Semantics Requirements
 - Respect geometry/geography types and function signatures exactly.

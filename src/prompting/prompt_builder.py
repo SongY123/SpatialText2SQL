@@ -108,7 +108,9 @@ class PromptBuilder:
         structural_constraints: Dict[str, Any],
         sampled_functions: List[Dict[str, Any]],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        bounded_limit_value: int = 5,
+        expected_limit: int | None = None,
+        allow_limit: bool = True,
+        require_order_by_with_limit: bool = False,
     ) -> str:
         schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
             database,
@@ -144,7 +146,11 @@ class PromptBuilder:
                     structural_constraints,
                 ),
                 "required_function_block": self._stable_json_text(functions_payload),
-                "bounded_limit_value": self._stringify_value(bounded_limit_value),
+                "result_window_guidance_block": self._format_sql_result_window_guidance(
+                    expected_limit=expected_limit,
+                    allow_limit=allow_limit,
+                    require_order_by_with_limit=require_order_by_with_limit,
+                ),
             },
         )
 
@@ -156,7 +162,9 @@ class PromptBuilder:
         execution_error: str,
         used_tables: List[str],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        bounded_limit_value: int = 5,
+        expected_limit: int | None = None,
+        allow_limit: bool = True,
+        require_order_by_with_limit: bool = False,
     ) -> str:
         included_tables = {
             str(table_name).strip()
@@ -180,7 +188,11 @@ class PromptBuilder:
                 "representative_values_block": self._stable_json_text(representative_values),
                 "original_sql": self._stringify_value(original_sql),
                 "execution_error": self._stringify_value(execution_error or "unknown execution error"),
-                "bounded_limit_value": self._stringify_value(bounded_limit_value),
+                "result_window_guidance_block": self._format_sql_result_window_guidance(
+                    expected_limit=expected_limit,
+                    allow_limit=allow_limit,
+                    require_order_by_with_limit=require_order_by_with_limit,
+                ),
             },
         )
 
@@ -752,6 +764,34 @@ class PromptBuilder:
                     "- Use nested structure only when it is semantically necessary.",
                 ]
             )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_sql_result_window_guidance(
+        *,
+        expected_limit: int | None,
+        allow_limit: bool,
+        require_order_by_with_limit: bool,
+    ) -> str:
+        lines: list[str] = []
+        if expected_limit is None and not allow_limit:
+            lines.append("- Do not use LIMIT for this sample.")
+            lines.append("- Use ORDER BY only when it is semantically necessary.")
+            lines.append("- Scalar aggregates and unbounded filters/lookups are both acceptable when they fit the task.")
+            return "\n".join(lines)
+
+        if expected_limit is not None:
+            lines.append("- This sample should behave like a bounded ranked result query.")
+            if require_order_by_with_limit:
+                lines.append("- Include ORDER BY before LIMIT.")
+            lines.append(f"- Use LIMIT {expected_limit} exactly.")
+            lines.append("- Prefer this pattern for top-1 or top-k entity retrieval, ranked listings, or grouped rankings.")
+            lines.append("- Do not use LIMIT for scalar aggregate queries.")
+            return "\n".join(lines)
+
+        lines.append("- LIMIT is optional for this sample.")
+        if require_order_by_with_limit:
+            lines.append("- If you use LIMIT, include ORDER BY before it.")
         return "\n".join(lines)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:

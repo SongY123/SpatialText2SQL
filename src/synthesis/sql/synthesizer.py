@@ -327,15 +327,20 @@ class ConstraintGuidedSQLSynthesizer:
         source_database_table_count: int,
     ) -> SynthesizedSQLQuery | None:
         sample_tag = self._sample_tag(database, sample_index)
-        bounded_limit_value = int(self.rng.integers(1, 6))
+        result_window_profile = self._sample_result_window_profile(difficulty_level)
+        expected_limit = result_window_profile["expected_limit"]
+        allow_limit = bool(result_window_profile["allow_limit"])
+        require_order_by_with_limit = bool(result_window_profile["require_order_by_with_limit"])
         prompt_build_start = time.perf_counter()
         LOGGER.info(
-            "SQL synthesis start | sample=%s | difficulty=%s | prompt_tables=%s | candidate_functions=%s | bounded_limit=%s",
+            "SQL synthesis start | sample=%s | difficulty=%s | prompt_tables=%s | candidate_functions=%s | expected_limit=%s | allow_limit=%s | require_order_by_with_limit=%s",
             sample_tag,
             difficulty_level,
             len(database.selected_tables),
             self._format_function_names(sampled_functions),
-            bounded_limit_value,
+            expected_limit,
+            allow_limit,
+            require_order_by_with_limit,
         )
         required_functions = build_required_function_constraints(sampled_functions, difficulty_level)
         prompt = self.prompt_builder.build_sql_synthesis_prompt(
@@ -344,7 +349,9 @@ class ConstraintGuidedSQLSynthesizer:
             structural_constraints=dict(structural_constraints),
             sampled_functions=required_functions,
             database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
-            bounded_limit_value=bounded_limit_value,
+            expected_limit=expected_limit,
+            allow_limit=allow_limit,
+            require_order_by_with_limit=require_order_by_with_limit,
         )
         prompt_build_ms = (time.perf_counter() - prompt_build_start) * 1000.0
         LOGGER.info(
@@ -423,7 +430,9 @@ class ConstraintGuidedSQLSynthesizer:
                 sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                 difficulty_level=difficulty_level,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
-                expected_limit=bounded_limit_value,
+                expected_limit=expected_limit,
+                allow_limit=allow_limit,
+                require_order_by_with_limit=require_order_by_with_limit,
             )
             validation_ms = (time.perf_counter() - validation_start) * 1000.0
             LOGGER.info(
@@ -489,7 +498,9 @@ class ConstraintGuidedSQLSynthesizer:
                 execution_error=revision_feedback,
                 used_tables=involved_tables,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
-                bounded_limit_value=bounded_limit_value,
+                expected_limit=expected_limit,
+                allow_limit=allow_limit,
+                require_order_by_with_limit=require_order_by_with_limit,
             )
             minor_revision_prompts.append(minor_revision_prompt)
             minor_revision_applied = True
@@ -569,7 +580,9 @@ class ConstraintGuidedSQLSynthesizer:
                     sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                     difficulty_level=difficulty_level,
                     database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
-                    expected_limit=bounded_limit_value,
+                    expected_limit=expected_limit,
+                    allow_limit=allow_limit,
+                    require_order_by_with_limit=require_order_by_with_limit,
                 )
                 validation_ms = (time.perf_counter() - validation_start) * 1000.0
                 LOGGER.info(
@@ -662,7 +675,9 @@ class ConstraintGuidedSQLSynthesizer:
                 "sampled_function_signatures": [item.signature for item in sampled_functions],
                 "required_function_names": [to_text(item.get("function_name")) for item in required_functions],
                 "required_function_signatures": [to_text(item.get("signature")) for item in required_functions],
-                "bounded_limit_value": bounded_limit_value,
+                "expected_limit": expected_limit,
+                "allow_limit": allow_limit,
+                "require_order_by_with_limit": require_order_by_with_limit,
                 "generation_rounds": generation_rounds,
                 "minor_revision_applied": minor_revision_applied,
                 "retained_with_warning": False,
@@ -689,6 +704,38 @@ class ConstraintGuidedSQLSynthesizer:
 
     def get_run_stats(self) -> dict[str, Any]:
         return stable_jsonify(self.last_run_stats)
+
+    def _sample_result_window_profile(self, difficulty_level: str) -> dict[str, Any]:
+        """
+        Sample whether this query should be a bounded ranked result query.
+
+        The probabilities are chosen to stay close to the three reference datasets:
+        - LIMIT appears in roughly one quarter to two fifths of queries overall.
+        - When LIMIT appears, it is usually paired with ORDER BY.
+        - LIMIT values are heavily skewed toward 1, then 5, with 3 as a distant third.
+        """
+        limit_prob_by_difficulty = {
+            "easy": 0.28,
+            "medium": 0.35,
+            "hard": 0.40,
+            "extra-hard": 0.42,
+        }
+        if float(self.rng.random()) >= float(limit_prob_by_difficulty.get(difficulty_level, 0.35)):
+            return {
+                "expected_limit": None,
+                "allow_limit": False,
+                "require_order_by_with_limit": False,
+            }
+
+        limit_values = np.array([1, 2, 3, 4, 5], dtype=int)
+        limit_probs = np.array([0.78, 0.015, 0.07, 0.005, 0.13], dtype=float)
+        limit_probs = limit_probs / limit_probs.sum()
+        expected_limit = int(self.rng.choice(limit_values, p=limit_probs))
+        return {
+            "expected_limit": expected_limit,
+            "allow_limit": True,
+            "require_order_by_with_limit": True,
+        }
 
     def _resolve_num_sql_per_database(self, city: str) -> int:
         config_value = self.config.synthesis.num_sql_per_database

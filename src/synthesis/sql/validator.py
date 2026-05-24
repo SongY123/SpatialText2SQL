@@ -406,6 +406,8 @@ class SQLValidator:
         difficulty_level: str,
         database_runtime_metadata: Mapping[str, object] | None = None,
         expected_limit: int | None = None,
+        allow_limit: bool = True,
+        require_order_by_with_limit: bool = False,
     ) -> SQLValidationResult:
         sql_text = to_text(sql)
         errors: list[str] = []
@@ -506,14 +508,18 @@ class SQLValidator:
                 limit_number = int(limit_match.group(1))
                 if limit_number < 1 or limit_number > 5:
                     errors.append("SQL LIMIT must stay between 1 and 5.")
-                if uses_aggregate_or_group_by:
-                    errors.append("Aggregate or GROUP BY queries must not use LIMIT.")
-                elif expected_limit is not None and limit_number != int(expected_limit):
+                if not allow_limit:
+                    errors.append("This sample should not use LIMIT.")
+                if uses_aggregate_or_group_by and int(projection_features["aggregate_projection_count"]) > 0 and not bool(difficulty_features.get("has_group_by")):
+                    errors.append("Scalar aggregate queries must not use LIMIT.")
+                if require_order_by_with_limit and not bool(difficulty_features.get("has_order_by")):
+                    errors.append("LIMIT queries for this sample must include ORDER BY.")
+                if expected_limit is not None and limit_number != int(expected_limit):
                     errors.append(
                         f"SQL LIMIT must equal the sampled bounded row cap {int(expected_limit)}."
                     )
-        elif not uses_aggregate_or_group_by:
-            errors.append("Non-aggregate queries must include LIMIT.")
+        elif expected_limit is not None:
+            errors.append(f"This sample must use ORDER BY with LIMIT {int(expected_limit)}.")
         if (
             int(projection_features["aggregate_projection_count"]) > 0
             and not bool(difficulty_features.get("has_group_by"))

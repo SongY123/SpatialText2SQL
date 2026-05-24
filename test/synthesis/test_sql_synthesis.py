@@ -439,11 +439,13 @@ class SQLSynthesisTests(unittest.TestCase):
             sampled_functions=["ST_Buffer"],
             difficulty_level="easy",
             expected_limit=5,
+            allow_limit=True,
+            require_order_by_with_limit=True,
         )
         self.assertFalse(result.is_valid)
         self.assertTrue(any("sampled bounded row cap 5" in item for item in result.errors))
 
-    def test_sql_validator_rejects_non_aggregate_query_without_limit(self):
+    def test_sql_validator_rejects_ranked_sample_without_limit(self):
         library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
         database = _make_database(table_count=1)
         validator = SQLValidator(library)
@@ -453,11 +455,13 @@ class SQLSynthesisTests(unittest.TestCase):
             sampled_functions=["ST_Buffer"],
             difficulty_level="easy",
             expected_limit=4,
+            allow_limit=True,
+            require_order_by_with_limit=True,
         )
         self.assertFalse(result.is_valid)
-        self.assertTrue(any("must include LIMIT" in item for item in result.errors))
+        self.assertTrue(any("must use ORDER BY with LIMIT 4" in item for item in result.errors))
 
-    def test_sql_validator_rejects_aggregate_query_with_limit(self):
+    def test_sql_validator_rejects_scalar_aggregate_query_with_limit(self):
         library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
         database = _make_database(table_count=1)
         validator = SQLValidator(library)
@@ -467,9 +471,43 @@ class SQLSynthesisTests(unittest.TestCase):
             sampled_functions=["ST_Union"],
             difficulty_level="easy",
             expected_limit=2,
+            allow_limit=True,
+            require_order_by_with_limit=True,
         )
         self.assertFalse(result.is_valid)
         self.assertTrue(any("must not use LIMIT" in item for item in result.errors))
+
+    def test_sql_validator_rejects_limit_without_order_by_for_ranked_sample(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        validator = SQLValidator(library)
+        result = validator.validate(
+            sql="SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 1",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+            expected_limit=1,
+            allow_limit=True,
+            require_order_by_with_limit=True,
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must include ORDER BY" in item for item in result.errors))
+
+    def test_sql_validator_rejects_limit_for_unbounded_sample(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        validator = SQLValidator(library)
+        result = validator.validate(
+            sql="SELECT ST_Buffer(t.geom, 10) FROM table_1 t ORDER BY t.id LIMIT 1",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+            expected_limit=None,
+            allow_limit=False,
+            require_order_by_with_limit=False,
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("should not use LIMIT" in item for item in result.errors))
 
     def test_ollama_generator_uses_openai_style_client(self):
         generator = OllamaSQLGenerator(
@@ -698,7 +736,9 @@ class SQLSynthesisTests(unittest.TestCase):
                     "example_usages": ["SELECT ST_DWithin(a.geom, b.geom, 100)"],
                 }
             ],
-            bounded_limit_value=4,
+            expected_limit=4,
+            allow_limit=True,
+            require_order_by_with_limit=True,
         )
         self.assertIn("Representative Values", prompt)
         self.assertNotIn("Spatial Field Metadata", prompt)
@@ -708,9 +748,9 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("Return a JSON object only", prompt)
         self.assertIn("do not use `SELECT *`", prompt)
         self.assertIn('sampling_role": "sampled"', prompt)
-        self.assertIn("sampled_bounded_limit: 4", prompt)
-        self.assertIn("If the query uses a scalar aggregate or any GROUP BY, do not use LIMIT.", prompt)
-        self.assertIn("Otherwise, the query must use `LIMIT 4` exactly.", prompt)
+        self.assertIn("This sample should behave like a bounded ranked result query.", prompt)
+        self.assertIn("Include ORDER BY before LIMIT.", prompt)
+        self.assertIn("Use LIMIT 4 exactly.", prompt)
 
     def test_minor_revision_prompt_contains_error_and_involved_table_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})
@@ -751,15 +791,16 @@ class SQLSynthesisTests(unittest.TestCase):
             execution_error="operator does not exist",
             used_tables=["table_1"],
             database_runtime_metadata=runtime_metadata,
-            bounded_limit_value=2,
+            expected_limit=2,
+            allow_limit=True,
+            require_order_by_with_limit=True,
         )
         self.assertIn("operator does not exist", prompt)
         self.assertIn("table_1(id integer, name text, shape geography(Point,4326))", prompt)
         self.assertIn('"hydrant"', prompt)
         self.assertNotIn("table_2(id integer)", prompt)
-        self.assertIn("sampled_bounded_limit: 2", prompt)
-        self.assertIn("If the query uses a scalar aggregate or any GROUP BY, remove LIMIT.", prompt)
-        self.assertIn("Otherwise, the query must use `LIMIT 2` exactly.", prompt)
+        self.assertIn("This sample should behave like a bounded ranked result query.", prompt)
+        self.assertIn("Use LIMIT 2 exactly.", prompt)
 
     def test_prompt_builder_renders_explicit_difficulty_tier_guidance(self):
         builder = PromptBuilder({"project_root": Path.cwd()})

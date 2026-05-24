@@ -21,16 +21,14 @@ Keep the same task intent and touched tables. Make the smallest possible SQL fix
 ## Revision Feedback
 {{execution_error}}
 
-## Sampled Row Cap
-- sampled_bounded_limit: {{bounded_limit_value}}
+## Result Window Guidance
+{{result_window_guidance_block}}
 
 ## Revision Requirements
 - Use only the listed tables and columns.
 - Keep result columns semantically meaningful; do not use `SELECT *`.
 - Preserve the intended result shape with as few output expressions as necessary.
 - Fix syntax, alias, column, type, cast, or function-signature issues only.
-- If the query uses a scalar aggregate or any GROUP BY, remove LIMIT.
-- Otherwise, the query must use `LIMIT {{bounded_limit_value}}` exactly.
 - Return one executable read-only SQL query.
 
 ## Output Format
