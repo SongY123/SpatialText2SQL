@@ -413,6 +413,21 @@ class SQLSynthesisTests(unittest.TestCase):
                 {"geometry": "LINESTRING", "name": "c"},
             ],
         )
+        self.assertIn("scalar aggregates should project exactly one expression", prompt)
+        self.assertIn("Keep the projected column count small", prompt)
+
+    def test_sql_validator_rejects_select_star_and_large_limit(self):
+        database = _make_database(table_count=1)
+        validator = SQLValidator(PostGISFunctionLibrary([]))
+        result = validator.validate(
+            sql="SELECT p.*, ST_Buffer(p.geom, 10) FROM table_1 p LIMIT 10",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("SELECT *" in item for item in result.errors))
+        self.assertTrue(any("LIMIT must stay between 1 and 5" in item for item in result.errors))
 
     def test_ollama_generator_uses_openai_style_client(self):
         generator = OllamaSQLGenerator(
@@ -1320,11 +1335,14 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(rows1[0].spatial_function_constraints, rows2[0].spatial_function_constraints)
         self.assertEqual(generator_1.prompts[0], generator_2.prompts[0])
 
-    def test_validation_mismatches_are_kept_but_unfixed_execution_errors_are_discarded(self):
+    def test_validation_mismatches_trigger_revision_and_unfixed_queries_are_discarded(self):
         library = _load_library(_sample_function_json_payload()[:3], "## spatialsql_pg\nST_Buffer\n")
         database = _make_database(table_count=1)
         invalid_generator = MockSQLGenerator(
-            responses=['{"sql":"SELECT ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Union"],"reasoning_summary":"off-constraint but executable"}']
+            responses=[
+                '{"sql":"SELECT ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Union"],"reasoning_summary":"off-constraint but executable"}',
+                '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"fixed to allowed function"}',
+            ]
         )
         from src.synthesis.sql.models import SQLExecutionResult
         synth_warning = ConstraintGuidedSQLSynthesizer(
@@ -1333,12 +1351,19 @@ class SQLSynthesisTests(unittest.TestCase):
             sql_generator=invalid_generator,
             prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
             validator=SQLValidator(library),
-            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
+            execution_checker=FakeExecutionChecker(
+                [
+                    SQLExecutionResult(executed=True, success=True, row_count=1),
+                    SQLExecutionResult(executed=True, success=True, row_count=1),
+                ]
+            ),
         )
         kept_warning = synth_warning.synthesize_for_database(database)
         self.assertEqual(len(kept_warning), 1)
-        self.assertFalse(kept_warning[0].validation_result["is_valid"])
-        self.assertTrue(kept_warning[0].generation_metadata["retained_with_warning"])
+        self.assertTrue(kept_warning[0].validation_result["is_valid"])
+        self.assertTrue(kept_warning[0].generation_metadata["minor_revision_applied"])
+        self.assertFalse(kept_warning[0].generation_metadata["retained_with_warning"])
+        self.assertEqual(len(invalid_generator.prompts), 2)
 
         failed_exec_generator = MockSQLGenerator(
             responses=[

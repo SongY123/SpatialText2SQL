@@ -1,4 +1,4 @@
-Revise one PostgreSQL/PostGIS SQL query to fix a database execution error.
+Revise one PostgreSQL/PostGIS SQL query to fix validation or database execution issues.
 Keep the same task intent and touched tables. Make the smallest possible SQL fix.
 
 ## Database Context
@@ -18,12 +18,13 @@ Keep the same task intent and touched tables. Make the smallest possible SQL fix
 ## Original SQL
 {{original_sql}}
 
-## Execution Error
+## Revision Feedback
 {{execution_error}}
 
 ## Revision Requirements
 - Use only the listed tables and columns.
 - Keep result columns semantically meaningful; do not use `SELECT *`.
+- Preserve the intended result shape with as few output expressions as necessary.
 - Fix syntax, alias, column, type, cast, or function-signature issues only.
 - Return one executable read-only SQL query.
 

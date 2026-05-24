@@ -32,6 +32,7 @@ class QuestionGenerationRunConfig:
     database_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
     output_path: str = str(_project_root() / "data" / "processed" / "synthesized_questions.jsonl")
     num_questions_per_sql: int = 1
+    max_revision_rounds: int = 2
     fixed_style: str = ""
     style_weights: dict[str, float] = field(default_factory=lambda: {style: 1.0 for style in QUESTION_STYLES})
     random_seed: int = 42
@@ -167,6 +168,10 @@ def _build_question_generation_config_from_payload(
             num_questions_per_sql=_as_positive_int(
                 generation_section.get("num_questions_per_sql"),
                 default_generation.num_questions_per_sql,
+            ),
+            max_revision_rounds=_as_positive_int(
+                generation_section.get("max_revision_rounds"),
+                default_generation.max_revision_rounds,
             ),
             fixed_style=_normalize_style(generation_section.get("style") or generation_section.get("fixed_style")),
             style_weights=_normalize_style_weights(

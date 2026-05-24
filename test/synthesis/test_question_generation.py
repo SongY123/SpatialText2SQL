@@ -204,6 +204,7 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertEqual(loaded.llm.provider, "ollama")
         self.assertEqual(loaded.llm.model, "qwen2.5:7b")
         self.assertEqual(loaded.generation.num_questions_per_sql, 2)
+        self.assertEqual(loaded.generation.max_revision_rounds, 2)
         self.assertTrue(overridden.generation.output_path.endswith("override.jsonl"))
         self.assertEqual(overridden.generation.fixed_style, "formal")
 
@@ -241,6 +242,9 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertEqual(features.limit, 5)
         self.assertIn("100", features.distance_thresholds)
         self.assertIn("name", features.group_by_columns)
+        self.assertEqual(features.select_expression_count, 2)
+        self.assertEqual(features.selected_output_columns, ["name", "park_count"])
+        self.assertFalse(features.returns_geometry)
 
     def test_style_and_spatial_phrase_selection_are_deterministic(self):
         sql = "SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100) LIMIT 3"
@@ -278,9 +282,11 @@ class QuestionGenerationTests(unittest.TestCase):
         self.assertIn("## Execution Results", prompt)
         self.assertNotIn("## Representative Values", prompt)
         self.assertNotIn("## Spatial Field Metadata", prompt)
-        self.assertNotIn("## SQL Feature Summary", prompt)
+        self.assertIn("## SQL Feature Summary", prompt)
         self.assertIn("## Style Constraint", prompt)
         self.assertIn("## Spatial Relation Constraint", prompt)
+        self.assertIn('"select_expression_count": 1', prompt)
+        self.assertIn('"selected_output_columns": [', prompt)
         self.assertIn("Return a JSON object with exactly these fields:", prompt)
         self.assertIn("- question", prompt)
         self.assertIn("- style", prompt)
@@ -468,7 +474,19 @@ Spatial Phrases: within 0.001 units of"""
         self.assertFalse(missing_threshold.is_valid)
         self.assertTrue(any("100" in item for item in missing_threshold.errors))
 
-    def test_end_to_end_generation_keeps_invalid_candidate(self):
+        ranking_features = SQLFeatureExtractor().extract(
+            "SELECT p.name FROM parks p ORDER BY p.name DESC LIMIT 5"
+        )
+        missing_topk = validator.validate(
+            candidate=QuestionGenerationCandidate(question="List park names.", style="direct"),
+            requested_style="direct",
+            sql_features=ranking_features,
+            spatial_constraints=[],
+        )
+        self.assertFalse(missing_topk.is_valid)
+        self.assertTrue(any("LIMIT/top-k value 5" in item for item in missing_topk.errors))
+
+    def test_end_to_end_generation_revises_invalid_candidate(self):
         sql = _make_sql_source(
             "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
         )
@@ -484,6 +502,14 @@ Spatial Phrases: within 0.001 units of"""
                         "spatial_phrases": ["near"],
                     }
                 ),
+                json.dumps(
+                    {
+                        "question": "Which 5 parks are within 100 units of neighborhoods?",
+                        "style": "direct",
+                        "reasoning_summary": "Added the threshold and top-k value.",
+                        "spatial_phrases": ["within 100 units of"],
+                    }
+                ),
             ]
         )
         generator = DiversityAwareQuestionSynthesizer(
@@ -493,8 +519,37 @@ Spatial Phrases: within 0.001 units of"""
         )
         rows = generator.generate_for_sql(sql, context)
         self.assertEqual(len(rows), 1)
-        self.assertFalse(rows[0].validation_result["is_valid"])
+        self.assertTrue(rows[0].validation_result["is_valid"])
         self.assertEqual(rows[0].question_id, "nyc_0001_0001")
+        self.assertEqual(rows[0].question, "Which 5 parks are within 100 units of neighborhoods?")
+        self.assertEqual(len(llm.prompts), 2)
+        self.assertEqual(len(rows[0].feedback_prompts), 1)
+
+    def test_generation_can_disable_revision_rounds(self):
+        sql = _make_sql_source(
+            "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+        )
+        context = _make_context(_make_database())
+        llm = MockQuestionLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "question": "Which parks are near neighborhoods?",
+                        "style": "direct",
+                        "reasoning_summary": "Initial attempt.",
+                        "spatial_phrases": ["near"],
+                    }
+                ),
+            ]
+        )
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(max_revision_rounds=1),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].validation_result["is_valid"])
         self.assertEqual(len(llm.prompts), 1)
 
     def test_generation_uses_sql_reasoning_summary_fallback_for_empty_response(self):

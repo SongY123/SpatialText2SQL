@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-context-path")
     parser.add_argument("--output")
     parser.add_argument("--num-questions-per-sql", type=int)
+    parser.add_argument("--max-revision-rounds", type=int)
     parser.add_argument("--style")
     parser.add_argument("--style-weights")
     parser.add_argument("--provider")
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             "database_context_path": args.database_context_path,
             "output_path": args.output,
             "num_questions_per_sql": args.num_questions_per_sql,
+            "max_revision_rounds": args.max_revision_rounds,
             "style": args.style,
             "style_weights": args.style_weights,
             "random_seed": args.random_seed,

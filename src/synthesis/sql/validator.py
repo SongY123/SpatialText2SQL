@@ -27,6 +27,28 @@ SQL_KEYWORDS = {
 }
 
 
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(depth - 1, 0)
+        elif char == "," and depth == 0:
+            value = "".join(current).strip()
+            if value:
+                parts.append(value)
+            current = []
+            continue
+        current.append(char)
+    trailing = "".join(current).strip()
+    if trailing:
+        parts.append(trailing)
+    return parts
+
+
 def contains_dangerous_sql(sql: str) -> bool:
     return DANGEROUS_SQL_PATTERN.search(sql or "") is not None
 
@@ -252,6 +274,73 @@ def _detect_difficulty_features(
     }
 
 
+def _extract_projection_features(sql: str) -> dict[str, object]:
+    try:  # pragma: no cover - optional path
+        expression = sqlglot.parse_one(sql, read="postgres")
+        select_node = expression if isinstance(expression, exp.Select) else expression.find(exp.Select)
+        if select_node is None:
+            return {
+                "select_expression_count": 0,
+                "aggregate_projection_count": 0,
+                "non_aggregate_projection_count": 0,
+                "has_select_star": False,
+                "has_distinct": False,
+                "returns_geometry": False,
+            }
+        expressions = list(select_node.expressions)
+        aggregate_projection_count = 0
+        has_select_star = False
+        returns_geometry = False
+        for item in expressions:
+            if isinstance(item, exp.Star) or item.find(exp.Star):
+                has_select_star = True
+            item_sql = item.sql(dialect="postgres").lower()
+            if re.search(r"\b(count|sum|avg|min|max)\s*\(", item_sql, re.I):
+                aggregate_projection_count += 1
+            if any(token in item_sql for token in ("geom", "geometry", "geography", "shape", "the_geom", "location")):
+                returns_geometry = True
+        return {
+            "select_expression_count": len(expressions),
+            "aggregate_projection_count": aggregate_projection_count,
+            "non_aggregate_projection_count": max(len(expressions) - aggregate_projection_count, 0),
+            "has_select_star": has_select_star,
+            "has_distinct": select_node.args.get("distinct") is not None,
+            "returns_geometry": returns_geometry,
+        }
+    except Exception:
+        cleaned = _strip_string_literals(sql)
+        match = re.search(r"^\s*select\s+(distinct\s+)?(.+?)\s+from\b", cleaned, re.I | re.S)
+        if not match:
+            return {
+                "select_expression_count": 0,
+                "aggregate_projection_count": 0,
+                "non_aggregate_projection_count": 0,
+                "has_select_star": False,
+                "has_distinct": False,
+                "returns_geometry": False,
+            }
+        expressions = _split_top_level_commas(match.group(2).strip())
+        aggregate_projection_count = 0
+        has_select_star = False
+        returns_geometry = False
+        for item in expressions:
+            lowered = item.lower()
+            if "*" in item:
+                has_select_star = True
+            if re.search(r"\b(count|sum|avg|min|max)\s*\(", lowered, re.I):
+                aggregate_projection_count += 1
+            if any(token in lowered for token in ("geom", "geometry", "geography", "shape", "the_geom", "location")):
+                returns_geometry = True
+        return {
+            "select_expression_count": len(expressions),
+            "aggregate_projection_count": aggregate_projection_count,
+            "non_aggregate_projection_count": max(len(expressions) - aggregate_projection_count, 0),
+            "has_select_star": has_select_star,
+            "has_distinct": bool(match.group(1)),
+            "returns_geometry": returns_geometry,
+        }
+
+
 def _difficulty_matches(target: str, features: Mapping[str, object]) -> tuple[bool, str]:
     table_count = int(features.get("table_count", 0))
     join_count = int(features.get("join_count", 0))
@@ -396,9 +485,28 @@ class SQLValidator:
                 )
 
         difficulty_features = _detect_difficulty_features(sql_text, detected_tables, aliases)
+        projection_features = _extract_projection_features(sql_text)
+        difficulty_features.update(projection_features)
         difficulty_ok, difficulty_message = _difficulty_matches(difficulty_level, difficulty_features)
         if not difficulty_ok:
             errors.append(difficulty_message)
+
+        if projection_features["has_select_star"]:
+            errors.append("SQL must not use SELECT * or table.* projections.")
+        if int(projection_features["select_expression_count"]) > 3:
+            errors.append("SQL must project at most three output expressions.")
+        if difficulty_features.get("has_limit"):
+            limit_match = re.search(r"\blimit\s+(\d+)", sql_text, re.I)
+            if limit_match:
+                limit_number = int(limit_match.group(1))
+                if limit_number < 1 or limit_number > 5:
+                    errors.append("SQL LIMIT must stay between 1 and 5.")
+        if (
+            int(projection_features["aggregate_projection_count"]) > 0
+            and not bool(difficulty_features.get("has_group_by"))
+            and int(projection_features["select_expression_count"]) != 1
+        ):
+            errors.append("Scalar aggregate queries must project exactly one expression.")
 
         return SQLValidationResult(
             is_valid=not errors,

@@ -4,7 +4,7 @@ llm:
   base_url: http://10.132.80.118:8999/v1
   api_key_env: EMPTY
   temperature: 0.2
-  max_tokens: 10000
+  max_tokens: 8192
   timeout: 120
   max_retries: 2
 
@@ -13,6 +13,7 @@ generation:
   database_context_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/synthesized_questions.jsonl
   num_questions_per_sql: 2
+  max_revision_rounds: 1
   style_weights:
     conversational: 1.0
     formal: 1.0

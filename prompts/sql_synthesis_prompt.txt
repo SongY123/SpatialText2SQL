@@ -46,6 +46,13 @@ If no sampled function can be used naturally or safely, generate the simplest ex
 - Every JOIN must have a complete and executable ON condition.
 - Prefer direct base-table joins and inline expressions. Avoid unnecessary CTEs, derived tables, and intermediate aliases unless essential for the requested difficulty.
 - Return only semantically meaningful columns needed for the task; do not use `SELECT *` or dump every column.
+- Prefer benchmark-like result shapes that are easy to verbalize into one question:
+  - scalar aggregates should project exactly one expression
+  - grouped aggregates should usually project one grouping label plus one aggregate
+  - simple entity lists/lookups should usually project one to two descriptive fields
+  - avoid returning opaque surrogate IDs unless they are the natural answer or needed to disambiguate
+  - return geometry columns only when the intended task is explicitly about geometry, shape, boundary, centroid, coordinates, or spatial output
+- Keep the projected column count small. Prefer at most three output expressions.
 - If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
 - Return at most 5 rows.
 - For bounded ranked/result-list queries, choose a random row cap `k` between 1 and 5 and express it with `LIMIT <k>`; do not always use 5.

@@ -151,19 +151,20 @@ class DiversityAwareQuestionSynthesizer:
         candidate = QuestionGenerationCandidate(question="")
         validation_result = QuestionValidationResult(is_valid=False, errors=["Question generation did not start."])
         current_prompt = prompt
+        max_revision_rounds = max(int(getattr(self.config.generation, "max_revision_rounds", 1)), 1)
 
         LOGGER.info(
             "Question LLM prompt | sample=%s | round=%s/%s\n%s",
             sample_tag,
             1,
-            1,
+            max_revision_rounds,
             current_prompt,
         )
         LOGGER.info(
             "Question LLM request start | sample=%s | round=%s/%s | style=%s | prompt_chars=%s",
             sample_tag,
             1,
-            1,
+            max_revision_rounds,
             style,
             len(current_prompt),
         )
@@ -174,7 +175,7 @@ class DiversityAwareQuestionSynthesizer:
             "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
             sample_tag,
             1,
-            1,
+            max_revision_rounds,
             response.attempts,
             len(response.text or ""),
             generation_ms,
@@ -213,7 +214,7 @@ class DiversityAwareQuestionSynthesizer:
                 "Question candidate parse degraded | sample=%s | round=%s/%s | error=%s | raw_preview=%s",
                 sample_tag,
                 1,
-                1,
+                max_revision_rounds,
                 candidate.parse_error,
                 (candidate.raw_response_text or "")[:400],
             )
@@ -222,29 +223,137 @@ class DiversityAwareQuestionSynthesizer:
                 "Generated question | sample=%s | round=%s/%s\n%s",
                 sample_tag,
                 1,
-                1,
+                max_revision_rounds,
                 candidate.question,
             )
-            validation_result = self.validator.validate(
+            validation_result = self._validate_candidate(
                 candidate=candidate,
                 requested_style=style,
-                sql_features=features,
+                features=features,
                 spatial_constraints=spatial_constraints,
             )
-            if candidate.parse_error:
-                validation_result.warnings = [
-                    f"Recovered from non-standard model response: {candidate.parse_error}",
-                    *validation_result.warnings,
-                ]
             LOGGER.info(
                 "Question validation done | sample=%s | round=%s/%s | is_valid=%s | errors=%s | warnings=%s",
                 sample_tag,
                 1,
-                1,
+                max_revision_rounds,
                 validation_result.is_valid,
                 len(validation_result.errors),
                 len(validation_result.warnings),
             )
+            revision_round = 1
+            while candidate.question.strip() and not validation_result.is_valid and revision_round < max_revision_rounds:
+                revision_feedback = self._build_question_revision_feedback(validation_result)
+                current_prompt = self.prompt_builder.build_question_revision_prompt(
+                    sql_query=sql_query,
+                    database_context=context.to_prompt_payload(),
+                    sql_features=features.to_dict(),
+                    current_question=candidate.question,
+                    style_constraint={
+                        "style": style,
+                        "description": STYLE_DESCRIPTIONS.get(style, ""),
+                    },
+                    spatial_relation_constraints=[item.to_dict() for item in spatial_constraints],
+                    revision_feedback=revision_feedback,
+                )
+                feedback_prompts.append(current_prompt)
+                LOGGER.info(
+                    "Question revision prompt built | sample=%s | round=%s/%s | prompt_chars=%s",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    len(current_prompt),
+                )
+                LOGGER.info(
+                    "Question LLM prompt | sample=%s | round=%s/%s\n%s",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    current_prompt,
+                )
+                LOGGER.info(
+                    "Question LLM request start | sample=%s | round=%s/%s | style=%s | prompt_chars=%s",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    style,
+                    len(current_prompt),
+                )
+                generation_start = time.perf_counter()
+                response = self.llm_client.generate(current_prompt)
+                generation_ms = (time.perf_counter() - generation_start) * 1000.0
+                LOGGER.info(
+                    "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    response.attempts,
+                    len(response.text or ""),
+                    generation_ms,
+                )
+                candidate = parse_question_generation_response(
+                    response.text,
+                    raw_response=response.raw_response,
+                )
+                if self._should_force_reasoning_fallback(candidate, response):
+                    LOGGER.warning(
+                        "Question revision appears truncated; forcing SQL reasoning fallback | sample=%s | parse_error=%s",
+                        sample_tag,
+                        candidate.parse_error,
+                    )
+                    candidate = QuestionGenerationCandidate(
+                        question="",
+                        style=candidate.style,
+                        reasoning_summary=candidate.reasoning_summary,
+                        spatial_phrases=list(candidate.spatial_phrases),
+                        raw_response_text=candidate.raw_response_text,
+                        raw_response=candidate.raw_response,
+                        parse_error=candidate.parse_error or "Question-revision response appears truncated.",
+                    )
+                generation_rounds.append(
+                    {
+                        "round": revision_round,
+                        "prompt_type": "revision",
+                        "raw_response_text": candidate.raw_response_text,
+                        "parse_error": candidate.parse_error,
+                        "usage": stable_jsonify(response.usage),
+                        "attempts": response.attempts,
+                    }
+                )
+                if candidate.parse_error:
+                    LOGGER.warning(
+                        "Question revision parse degraded | sample=%s | round=%s/%s | error=%s | raw_preview=%s",
+                        sample_tag,
+                        revision_round + 1,
+                        max_revision_rounds,
+                        candidate.parse_error,
+                        (candidate.raw_response_text or "")[:400],
+                    )
+                if not candidate.question.strip():
+                    break
+                LOGGER.info(
+                    "Revised question | sample=%s | round=%s/%s\n%s",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    candidate.question,
+                )
+                validation_result = self._validate_candidate(
+                    candidate=candidate,
+                    requested_style=style,
+                    features=features,
+                    spatial_constraints=spatial_constraints,
+                )
+                LOGGER.info(
+                    "Question validation done | sample=%s | round=%s/%s | is_valid=%s | errors=%s | warnings=%s",
+                    sample_tag,
+                    revision_round + 1,
+                    max_revision_rounds,
+                    validation_result.is_valid,
+                    len(validation_result.errors),
+                    len(validation_result.warnings),
+                )
+                revision_round += 1
         else:
             fallback_question = self._build_fallback_question(
                 sql_query=sql_query,
@@ -345,6 +454,38 @@ class DiversityAwareQuestionSynthesizer:
         if not isinstance(database_context, Mapping) or not database_context.get("tables"):
             metadata["database_context"] = self._context_to_database_context_payload(context)
         return stable_jsonify(metadata)
+
+    def _validate_candidate(
+        self,
+        *,
+        candidate: QuestionGenerationCandidate,
+        requested_style: str,
+        features,
+        spatial_constraints,
+    ) -> QuestionValidationResult:
+        validation_result = self.validator.validate(
+            candidate=candidate,
+            requested_style=requested_style,
+            sql_features=features,
+            spatial_constraints=spatial_constraints,
+        )
+        if candidate.parse_error:
+            validation_result.warnings = [
+                f"Recovered from non-standard model response: {candidate.parse_error}",
+                *validation_result.warnings,
+            ]
+        return validation_result
+
+    @staticmethod
+    def _build_question_revision_feedback(validation_result: QuestionValidationResult) -> str:
+        feedback_lines: list[str] = []
+        if validation_result.errors:
+            feedback_lines.append("Fix all of the following semantic issues:")
+            feedback_lines.extend(f"- {item}" for item in validation_result.errors[:8])
+        if validation_result.warnings:
+            feedback_lines.append("If possible, also address these quality issues:")
+            feedback_lines.extend(f"- {item}" for item in validation_result.warnings[:8])
+        return "\n".join(feedback_lines).strip() or "Make the question align with the SQL exactly."
 
     def _should_force_reasoning_fallback(
         self,

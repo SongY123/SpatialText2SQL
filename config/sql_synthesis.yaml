@@ -24,13 +24,14 @@ llm:
   base_url: http://10.132.80.118:8999/v1
   api_key_env: EMPTY
   temperature: 0.2
-  max_tokens: 5000
+  max_tokens: 8192
   timeout: 120
   max_retries: 2
 
 synthesis:
   input_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/synthesized_sql_queries.jsonl
+  max_revision_rounds: 1
   # Example for all supported cities:
   # num_sql_per_database:
   #   nyc: 8
@@ -40,12 +41,12 @@ synthesis:
   #   sf: 7
   #   austin: 5
   #   phoenix: 5
-  num_sql_per_database:
-    nyc: 4
+#  num_sql_per_database:
+#    nyc: 4
   difficulty_weights:
-    easy: 1.0
-    medium: 1.0
-    hard: 1.0
+    easy: 6.0
+    medium: 4.0
+    hard: 2.0
     extra-hard: 1.0
   random_seed: 42
 

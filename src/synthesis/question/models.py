@@ -265,6 +265,8 @@ class SpatialRelationConstraint:
 class SQLFeatureSummary:
     tables: list[str] = field(default_factory=list)
     columns: list[str] = field(default_factory=list)
+    selected_output_columns: list[str] = field(default_factory=list)
+    select_expression_count: int = 0
     postgis_functions: list[str] = field(default_factory=list)
     aggregates: list[str] = field(default_factory=list)
     group_by_columns: list[str] = field(default_factory=list)
@@ -273,6 +275,8 @@ class SQLFeatureSummary:
     spatial_predicates: list[str] = field(default_factory=list)
     distance_thresholds: list[str] = field(default_factory=list)
     filters: list[str] = field(default_factory=list)
+    has_distinct: bool = False
+    returns_geometry: bool = False
     has_cte: bool = False
     has_subquery: bool = False
 
@@ -280,6 +284,8 @@ class SQLFeatureSummary:
         return {
             "tables": list(self.tables),
             "columns": list(self.columns),
+            "selected_output_columns": list(self.selected_output_columns),
+            "select_expression_count": self.select_expression_count,
             "postgis_functions": list(self.postgis_functions),
             "aggregates": list(self.aggregates),
             "group_by_columns": list(self.group_by_columns),
@@ -288,6 +294,8 @@ class SQLFeatureSummary:
             "spatial_predicates": list(self.spatial_predicates),
             "distance_thresholds": list(self.distance_thresholds),
             "filters": list(self.filters),
+            "has_distinct": self.has_distinct,
+            "returns_geometry": self.returns_geometry,
             "has_cte": self.has_cte,
             "has_subquery": self.has_subquery,
         }

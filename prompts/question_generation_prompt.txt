@@ -7,6 +7,9 @@ The question must preserve the SQL meaning exactly while sounding natural and di
 ## SQL Query
 {{sql_query}}
 
+## SQL Feature Summary
+{{sql_feature_block}}
+
 ## Database Context
 - database_id: {{database_id}}
 - city: {{city}}
@@ -29,6 +32,14 @@ Use the following PostGIS function descriptions as authoritative guidance for th
 - Preserve the exact SQL semantics. Do not broaden or narrow the meaning.
 - Preserve table/entity roles, containment direction, ranking direction, grouping logic, aggregate semantics, filters, and limit semantics.
 - Preserve every explicit distance threshold, count threshold, date filter, comparison operator, and top-k value.
+- Preserve the output shape implied by the SQL.
+- If the SQL projects one scalar aggregate, ask for one value, not a list of details.
+- If the SQL projects one non-aggregate field, ask for that field only; do not imply extra attributes or full records.
+- If the SQL projects two or three fields, mention the output attributes naturally, especially for grouped aggregates such as “which X and how many/what total”.
+- If the SQL returns geometry/shape output, mention geometry, shape, boundary, centroid, or coordinates explicitly. If it does not return geometry, do not ask for geometric output.
+- If the SQL uses DISTINCT, preserve the deduplication intent with wording such as distinct, unique, or equivalents when natural.
+- If the SQL includes ORDER BY or LIMIT, make the ranking/top-k intent explicit in the question. Do not hide a top-k query behind a generic “list all” request.
+- If the SQL is limited to one row because of ranking, nearest, or top-k logic, prefer singular/top-1 phrasing over plural listing language.
 - Rephrase spatial functions into natural language. Do not expose raw SQL or PostGIS function names.
 - Only describe relations supported by the SQL. Do not invent entities, columns, filters, joins, or assumptions.
 - If the SQL depends on geometry or geography columns, keep the wording consistent with the actual spatial meaning and do not confuse geometry with geography.

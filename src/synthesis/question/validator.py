@@ -27,6 +27,8 @@ AGGREGATE_MARKERS: dict[str, list[str]] = {
 
 RANKING_MARKERS = ["top", "highest", "lowest", "largest", "smallest", "nearest", "farthest", "rank", "first"]
 GROUPING_MARKERS = ["for each", "per", "by", "for every"]
+OUTPUT_SHAPE_MARKERS = ["respectively", "for each", "per", "each", "and how many", "and the", "along with"]
+GEOMETRY_OUTPUT_MARKERS = ["geometry", "shape", "boundary", "centroid", "coordinates", "coordinate", "wgs 84"]
 COMPARATIVE_MARKERS = ["compare", "difference", "more than", "less than", "higher than", "lower than", "versus"]
 EXPLORATORY_MARKERS = ["analyze", "explore", "pattern", "relationship", "distribution"]
 STYLE_MARKERS: dict[str, list[str]] = {
@@ -98,19 +100,32 @@ class QuestionValidator:
                 detected_style_markers.extend(marker for marker in markers if marker in lowered)
 
         if sql_features.group_by_columns and not any(marker in lowered for marker in GROUPING_MARKERS):
-            warnings.append("Question may be missing explicit grouping language.")
+            if sql_features.aggregates:
+                errors.append("Question does not clearly express grouped aggregate semantics.")
+            else:
+                warnings.append("Question may be missing explicit grouping language.")
         else:
             detected_style_markers.extend(marker for marker in GROUPING_MARKERS if marker in lowered)
 
         if sql_features.order_by or sql_features.limit is not None:
             if not any(marker in lowered for marker in RANKING_MARKERS):
-                warnings.append("Question may be missing explicit ranking language.")
+                errors.append("Question does not clearly express ranking or top-k semantics.")
             else:
                 detected_style_markers.extend(marker for marker in RANKING_MARKERS if marker in lowered)
             if sql_features.limit is not None:
                 limit_variants = _normalize_numeric_token(str(sql_features.limit))
                 if not any(variant in question for variant in limit_variants):
-                    warnings.append(f"Question may be missing the LIMIT/top-k value {sql_features.limit}.")
+                    errors.append(f"Question does not preserve the LIMIT/top-k value {sql_features.limit}.")
+
+        if sql_features.aggregates and sql_features.group_by_columns:
+            if not any(marker in lowered for marker in OUTPUT_SHAPE_MARKERS):
+                warnings.append("Question may not make the grouped output shape explicit enough.")
+
+        if sql_features.returns_geometry:
+            if not any(marker in lowered for marker in GEOMETRY_OUTPUT_MARKERS):
+                warnings.append("Question may be missing explicit geometry/shape output wording.")
+        elif any(marker in lowered for marker in GEOMETRY_OUTPUT_MARKERS):
+            warnings.append("Question may imply geometry output that the SQL does not project.")
 
         style_markers = STYLE_MARKERS.get(requested_style, [])
         if requested_style == "concise":

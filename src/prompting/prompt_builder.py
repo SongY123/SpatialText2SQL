@@ -41,6 +41,7 @@ class PromptBuilder:
             "sql_synthesis": self.project_root / "prompts" / "sql_synthesis_prompt.txt",
             "sql_revision": self.project_root / "prompts" / "sql_revision_prompt.txt",
             "question_generation": self.project_root / "prompts" / "question_generation_prompt.txt",
+            "question_revision": self.project_root / "prompts" / "question_revision_prompt.txt",
             "quality_control": self.project_root / "prompts" / "quality_control_prompt.txt",
         }
     
@@ -175,6 +176,69 @@ class PromptBuilder:
                 "representative_values_block": self._stable_json_text(representative_values),
                 "original_sql": self._stringify_value(original_sql),
                 "execution_error": self._stringify_value(execution_error or "unknown execution error"),
+            },
+        )
+
+    def build_question_revision_prompt(
+        self,
+        *,
+        sql_query: Any,
+        database_context: Dict[str, Any],
+        sql_features: Dict[str, Any],
+        current_question: str,
+        style_constraint: Dict[str, Any],
+        spatial_relation_constraints: List[Dict[str, Any]],
+        revision_feedback: str,
+    ) -> str:
+        schema_lines = self._build_question_schema_lines(database_context)
+        execution_results = self._prepare_question_execution_results(
+            getattr(sql_query, "execution_result", {}) or {}
+        )
+        used_function_names = {
+            str(name).strip().upper()
+            for name in (
+                getattr(sql_query, "used_spatial_functions", None)
+                or sql_features.get("postgis_functions", [])
+                or []
+            )
+            if str(name).strip()
+        }
+        function_docs = []
+        raw_constraints = getattr(sql_query, "spatial_function_constraints", None) or spatial_relation_constraints
+        for item in raw_constraints or []:
+            if not isinstance(item, dict):
+                continue
+            function_name = self._stringify_value(item.get("function_name")).upper()
+            if used_function_names and function_name and function_name not in used_function_names:
+                continue
+            function_docs.append(
+                {
+                    "function_name": item.get("function_name"),
+                    "signature": item.get("signature"),
+                    "description": self._truncate_text(item.get("description"), 320),
+                    "example_usages": [
+                        self._truncate_text(example, 180)
+                        for example in (item.get("example_usages") or [])[:1]
+                        if self._truncate_text(example, 180)
+                    ],
+                }
+            )
+        template_text = self._load_named_template_text("question_revision")
+        return self._render_template(
+            template_text,
+            {
+                "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
+                "current_question": self._stringify_value(current_question),
+                "sql_feature_block": self._stable_json_text(sql_features),
+                "database_id": self._stringify_value(database_context.get("database_id")),
+                "city": self._stringify_value(database_context.get("city")),
+                "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),
+                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
+                "execution_results_block": self._stable_json_text(execution_results),
+                "style_constraint_block": self._stable_json_text(style_constraint),
+                "spatial_relation_block": self._stable_json_text(function_docs),
+                "revision_feedback_block": self._stringify_value(revision_feedback),
+                "style_name": self._stringify_value(style_constraint.get("style")),
             },
         )
 
@@ -442,6 +506,7 @@ class PromptBuilder:
             template_text,
             {
                 "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
+                "sql_feature_block": self._stable_json_text(sql_features),
                 "database_id": self._stringify_value(database_context.get("database_id")),
                 "city": self._stringify_value(database_context.get("city")),
                 "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),

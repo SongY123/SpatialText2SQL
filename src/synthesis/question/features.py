@@ -27,6 +27,7 @@ SPATIAL_PREDICATE_FUNCTIONS = {
     "st_coveredby",
     "st_disjoint",
 }
+OUTPUT_GEOMETRY_TOKENS = ("geom", "geometry", "geography", "shape", "the_geom", "location", "centroid")
 
 
 def _strip_string_literals(sql: str) -> str:
@@ -89,6 +90,9 @@ class SQLFeatureExtractor:
             return SQLFeatureSummary()
 
         tables, columns, group_by_columns, order_by, limit = self._extract_schema_features(sql_text)
+        selected_output_columns, select_expression_count, has_distinct, returns_geometry = self._extract_projection_features(
+            sql_text
+        )
         functions = sorted(set(match.group(1).upper() for match in re.finditer(r"\b(ST_[A-Za-z0-9_]+)\s*\(", sql_text, re.I)))
         aggregates = self._extract_aggregates(sql_text)
         spatial_predicates = [name for name in functions if name.lower() in SPATIAL_PREDICATE_FUNCTIONS]
@@ -98,6 +102,8 @@ class SQLFeatureExtractor:
         return SQLFeatureSummary(
             tables=tables,
             columns=columns,
+            selected_output_columns=selected_output_columns,
+            select_expression_count=select_expression_count,
             postgis_functions=functions,
             aggregates=aggregates,
             group_by_columns=group_by_columns,
@@ -106,6 +112,8 @@ class SQLFeatureExtractor:
             spatial_predicates=spatial_predicates,
             distance_thresholds=distance_thresholds,
             filters=filters,
+            has_distinct=has_distinct,
+            returns_geometry=returns_geometry,
             has_cte=lowered.lstrip().startswith("with "),
             has_subquery=bool(re.search(r"\(\s*select\b", lowered)),
         )
@@ -196,6 +204,62 @@ class SQLFeatureExtractor:
             order_by,
             limit,
         )
+
+    def _extract_projection_features(
+        self,
+        sql_text: str,
+    ) -> tuple[list[str], int, bool, bool]:
+        try:  # pragma: no cover - optional dependency path
+            expression = sqlglot.parse_one(sql_text, read="postgres")
+            select_node = expression if isinstance(expression, exp.Select) else expression.find(exp.Select)
+            if select_node is None:
+                return [], 0, False, False
+            output_columns: list[str] = []
+            returns_geometry = False
+            for item in select_node.expressions:
+                alias = to_text(getattr(item, "alias_or_name", None))
+                if alias:
+                    output_columns.append(alias)
+                elif isinstance(item, exp.Column):
+                    column_name = to_text(item.name)
+                    if column_name:
+                        output_columns.append(column_name)
+                else:
+                    first_column = next(iter(item.find_all(exp.Column)), None)
+                    if first_column is not None and to_text(first_column.name):
+                        output_columns.append(to_text(first_column.name))
+                    else:
+                        output_columns.append(item.sql(dialect="postgres"))
+                item_sql = item.sql(dialect="postgres").lower()
+                if any(token in item_sql for token in OUTPUT_GEOMETRY_TOKENS):
+                    returns_geometry = True
+            has_distinct = select_node.args.get("distinct") is not None
+            return output_columns, len(select_node.expressions), has_distinct, returns_geometry
+        except Exception:
+            return self._extract_projection_features_regex(sql_text)
+
+    @staticmethod
+    def _extract_projection_features_regex(sql_text: str) -> tuple[list[str], int, bool, bool]:
+        cleaned = _strip_string_literals(sql_text)
+        match = re.search(r"^\s*select\s+(distinct\s+)?(.+?)\s+from\b", cleaned, re.I | re.S)
+        if not match:
+            return [], 0, False, False
+        has_distinct = bool(match.group(1))
+        select_body = match.group(2).strip()
+        expressions = _split_top_level_commas(select_body)
+        output_columns: list[str] = []
+        returns_geometry = False
+        for item in expressions:
+            alias_match = re.search(r"\bas\s+([a-zA-Z_][\w]*)\s*$", item, re.I)
+            if alias_match:
+                output_columns.append(alias_match.group(1))
+            else:
+                column_match = re.search(r"([a-zA-Z_][\w]*)\s*$", item)
+                output_columns.append(column_match.group(1) if column_match else item.strip())
+            lowered = item.lower()
+            if any(token in lowered for token in OUTPUT_GEOMETRY_TOKENS):
+                returns_geometry = True
+        return output_columns, len(expressions), has_distinct, returns_geometry
 
     @staticmethod
     def _extract_aggregates(sql_text: str) -> list[str]:

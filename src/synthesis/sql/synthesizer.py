@@ -466,15 +466,23 @@ class ConstraintGuidedSQLSynthesizer:
         sample_success = self._is_sample_success(
             has_sql=has_sql,
             has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
+            validation_ok=validation_result.is_valid,
             execution_result=execution_result,
         )
         minor_revision_applied = False
-        if not sample_success and self._should_attempt_minor_revision(execution_result):
+        if not sample_success and self._should_attempt_minor_revision(
+            validation_result=validation_result,
+            execution_result=execution_result,
+        ):
             involved_tables = candidate.used_tables or validation_result.detected_tables
+            revision_feedback = self._build_sql_revision_feedback(
+                validation_result=validation_result,
+                execution_result=execution_result,
+            )
             minor_revision_prompt = self.prompt_builder.build_sql_revision_prompt(
                 database=database,
                 original_sql=candidate.sql,
-                execution_error=execution_result.error_message,
+                execution_error=revision_feedback,
                 used_tables=involved_tables,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
             )
@@ -594,19 +602,10 @@ class ConstraintGuidedSQLSynthesizer:
             sample_success = self._is_sample_success(
                 has_sql=has_sql,
                 has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
+                validation_ok=validation_result.is_valid,
                 execution_result=execution_result,
             )
         if sample_success:
-            retained_with_warning = (
-                not validation_result.is_valid
-            )
-            if retained_with_warning:
-                LOGGER.warning(
-                    "Sample retained with warning | sample=%s | validation_ok=%s | execution_ok=%s",
-                    sample_tag,
-                    validation_result.is_valid,
-                    execution_result.success,
-                )
             LOGGER.info(
                 "Sample succeeded | sample=%s | round=%s\n%s",
                 sample_tag,
@@ -659,7 +658,7 @@ class ConstraintGuidedSQLSynthesizer:
                 "required_function_signatures": [to_text(item.get("signature")) for item in required_functions],
                 "generation_rounds": generation_rounds,
                 "minor_revision_applied": minor_revision_applied,
-                "retained_with_warning": not validation_result.is_valid,
+                "retained_with_warning": False,
                 "success": sample_success,
             },
         )
@@ -929,11 +928,14 @@ class ConstraintGuidedSQLSynthesizer:
         *,
         has_sql: bool,
         has_dangerous_sql: bool,
+        validation_ok: bool,
         execution_result: SQLExecutionResult,
     ) -> bool:
         if not has_sql:
             return False
         if has_dangerous_sql:
+            return False
+        if not validation_ok:
             return False
         if not self.config.execution.enable_execution_check or self.config.execution.dry_run:
             return True
@@ -946,9 +948,32 @@ class ConstraintGuidedSQLSynthesizer:
             return False
         return "timeout" in lowered or "timed out" in lowered
 
-    def _should_attempt_minor_revision(self, execution_result: SQLExecutionResult) -> bool:
+    @staticmethod
+    def _build_sql_revision_feedback(
+        *,
+        validation_result: SQLValidationResult,
+        execution_result: SQLExecutionResult,
+    ) -> str:
+        feedback_lines: list[str] = []
+        if validation_result.errors:
+            feedback_lines.append("Fix all of the following validation issues:")
+            feedback_lines.extend(f"- {item}" for item in validation_result.errors[:10])
+        if execution_result.error_message:
+            feedback_lines.append("Also fix this execution issue:")
+            feedback_lines.append(f"- {execution_result.error_message}")
+        return "\n".join(feedback_lines).strip() or "Make the SQL valid and executable."
+
+    def _should_attempt_minor_revision(
+        self,
+        *,
+        validation_result: SQLValidationResult,
+        execution_result: SQLExecutionResult,
+    ) -> bool:
         return (
-            execution_result.executed
-            and not execution_result.success
-            and not self._is_timeout_error(execution_result.error_message)
+            not validation_result.is_valid
+            or (
+                execution_result.executed
+                and not execution_result.success
+                and not self._is_timeout_error(execution_result.error_message)
+            )
         )
