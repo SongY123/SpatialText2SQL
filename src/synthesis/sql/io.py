@@ -9,7 +9,7 @@ from typing import Mapping
 from src.synthesis.database.io import load_synthesized_databases
 from src.synthesis.database.models import SynthesizedSpatialDatabase
 
-from .models import SynthesizedSQLQuery
+from .models import DiscardedSQLQuery, SynthesizedSQLQuery
 
 
 def load_input_databases(input_path: str) -> list[SynthesizedSpatialDatabase]:
@@ -23,6 +23,12 @@ def initialize_sql_output(output_path: str) -> None:
 
 
 def ensure_sql_output(output_path: str) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+
+
+def ensure_discard_sql_output(output_path: str) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
@@ -63,6 +69,14 @@ def load_existing_sql_id_offsets(output_path: str) -> dict[str, int]:
 
 
 def append_sql_query(output_path: str, row: SynthesizedSQLQuery) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row.to_dict(), ensure_ascii=False))
+        handle.write("\n")
+
+
+def append_discarded_sql_query(output_path: str, row: DiscardedSQLQuery) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

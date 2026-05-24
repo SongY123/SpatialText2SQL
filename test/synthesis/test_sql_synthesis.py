@@ -1548,6 +1548,35 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(len(rows), 0)
         self.assertEqual(len(generator.prompts), 1)
 
+    def test_discarded_sql_rows_include_database_sql_and_reason(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=1)
+        generator = MockSQLGenerator(
+            responses=['{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}']
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [SQLExecutionResult(executed=True, success=False, error_message="execution failed")]
+            ),
+        )
+        discarded_rows = []
+        rows = synthesizer.synthesize_for_database(
+            database,
+            on_row_discarded=discarded_rows.append,
+        )
+        self.assertEqual(len(rows), 0)
+        self.assertEqual(len(discarded_rows), 1)
+        self.assertEqual(discarded_rows[0].database_id, database.database_id)
+        self.assertIn("SELECT ST_Buffer", discarded_rows[0].sql)
+        self.assertIn("execution failed", discarded_rows[0].discard_reason)
+
     def test_synthesizer_run_stats_track_generated_and_retained_counts(self):
         library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
         database_1 = _make_database(table_count=1, database_id="nyc_0001")

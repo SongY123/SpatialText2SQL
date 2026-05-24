@@ -31,6 +31,7 @@ llm:
 synthesis:
   input_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/synthesized_sql_queries.jsonl
+  discard_output_path: data/processed/discard_sql.jsonl
   max_revision_rounds: 1
   # Example for all supported cities:
   # num_sql_per_database:

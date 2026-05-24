@@ -59,6 +59,7 @@ class SQLExecutionCheckConfig:
 class SQLSynthesisRunConfig:
     input_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
     output_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
+    discard_output_path: str = str(_project_root() / "data" / "processed" / "discard_sql.jsonl")
     num_sql_per_database: dict[str, int] = field(default_factory=lambda: {"default": 5})
     fixed_difficulty: str = ""
     difficulty_weights: dict[str, float] = field(
@@ -288,6 +289,11 @@ def _build_sql_synthesis_config_from_payload(
         synthesis=SQLSynthesisRunConfig(
             input_path=_resolve_path(synthesis_section.get("input_path"), path, default_syn.input_path),
             output_path=_resolve_path(synthesis_section.get("output_path"), path, default_syn.output_path),
+            discard_output_path=_resolve_path(
+                synthesis_section.get("discard_output_path"),
+                path,
+                default_syn.discard_output_path,
+            ),
             num_sql_per_database=_normalize_num_sql_per_database(
                 synthesis_section.get("num_sql_per_database"),
                 default_syn.num_sql_per_database,

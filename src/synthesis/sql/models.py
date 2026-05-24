@@ -186,3 +186,17 @@ class SynthesizedSQLQuery:
             "revision_rounds": self.revision_rounds,
             "generation_metadata": stable_jsonify(self.generation_metadata),
         }
+
+
+@dataclass
+class DiscardedSQLQuery:
+    database_id: str
+    sql: str
+    discard_reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "database_id": self.database_id,
+            "sql": self.sql,
+            "discard_reason": self.discard_reason,
+        }

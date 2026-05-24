@@ -22,8 +22,10 @@ from .generator import (
     build_sql_generator,
 )
 from .io import (
+    append_discarded_sql_query,
     append_sql_queries,
     append_sql_query,
+    ensure_discard_sql_output,
     ensure_sql_output,
     initialize_sql_output,
     load_input_databases,
@@ -31,6 +33,7 @@ from .io import (
     write_sql_queries,
 )
 from .models import (
+    DiscardedSQLQuery,
     DIFFICULTY_LEVELS,
     PostGISFunction,
     SQLExecutionResult,
@@ -46,6 +49,7 @@ from .validator import SQLValidator, contains_dangerous_sql
 
 __all__ = [
     "DEFAULT_SQL_SYNTHESIS_CONFIG_PATH",
+    "DiscardedSQLQuery",
     "DIFFICULTY_LEVELS",
     "ConstraintGuidedSQLSynthesizer",
     "MockSQLGenerator",
@@ -73,7 +77,9 @@ __all__ = [
     "infer_function_categories",
     "append_sql_queries",
     "append_sql_query",
+    "append_discarded_sql_query",
     "build_create_table_ddl_query",
+    "ensure_discard_sql_output",
     "ensure_sql_output",
     "initialize_sql_output",
     "load_input_databases",

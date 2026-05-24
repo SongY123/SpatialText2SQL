@@ -14,7 +14,14 @@ from .config import DEFAULT_SQL_SYNTHESIS_CONFIG_PATH, load_sql_synthesis_config
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary
 from .generator import build_sql_generator
-from .io import append_sql_query, ensure_sql_output, load_existing_sql_id_offsets, load_input_databases
+from .io import (
+    append_discarded_sql_query,
+    append_sql_query,
+    ensure_discard_sql_output,
+    ensure_sql_output,
+    load_existing_sql_id_offsets,
+    load_input_databases,
+)
 from .prompt_metadata import PostGISPromptMetadataProvider
 from .synthesizer import ConstraintGuidedSQLSynthesizer
 from .validator import SQLValidator
@@ -29,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=str(DEFAULT_SQL_SYNTHESIS_CONFIG_PATH))
     parser.add_argument("--input")
     parser.add_argument("--output")
+    parser.add_argument("--discard-output")
     parser.add_argument("--num-sql-per-database")
     parser.add_argument("--difficulty")
     parser.add_argument("--difficulty-weights")
@@ -99,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         synthesis={key: value for key, value in {
             "input_path": args.input,
             "output_path": args.output,
+            "discard_output_path": args.discard_output,
             "num_sql_per_database": args.num_sql_per_database,
             "difficulty": args.difficulty,
             "difficulty_weights": args.difficulty_weights,
@@ -136,11 +145,12 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | execution_check=%s | dry_run=%s",
+        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | discard_output=%s | execution_check=%s | dry_run=%s",
         config.llm.provider,
         config.llm.model,
         config.synthesis.input_path,
         config.synthesis.output_path,
+        config.synthesis.discard_output_path,
         config.execution.enable_execution_check,
         config.execution.dry_run,
     )
@@ -181,12 +191,20 @@ def main(argv: list[str] | None = None) -> int:
     output_path = Path(config.synthesis.output_path)
     had_existing_output = output_path.exists() and output_path.stat().st_size > 0
     ensure_sql_output(config.synthesis.output_path)
+    discard_output_path = Path(config.synthesis.discard_output_path)
+    had_existing_discard_output = discard_output_path.exists() and discard_output_path.stat().st_size > 0
+    ensure_discard_sql_output(config.synthesis.discard_output_path)
     existing_sql_id_offsets = load_existing_sql_id_offsets(config.synthesis.output_path)
     logging.info(
         "Prepared SQL output file | output=%s | mode=%s | existing_databases=%s",
         config.synthesis.output_path,
         "append" if had_existing_output else "create",
         len(existing_sql_id_offsets),
+    )
+    logging.info(
+        "Prepared discarded SQL output file | output=%s | mode=%s",
+        config.synthesis.discard_output_path,
+        "append" if had_existing_discard_output else "create",
     )
     synthesizer = ConstraintGuidedSQLSynthesizer(
         config=config,
@@ -199,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         existing_sql_id_offsets=existing_sql_id_offsets,
     )
     written_count = 0
+    discarded_count = 0
 
     def _append_row(row):
         nonlocal written_count
@@ -211,7 +230,22 @@ def main(argv: list[str] | None = None) -> int:
             row.sql_id,
         )
 
-    synthesizer.synthesize_all(databases, on_row_generated=_append_row)
+    def _append_discarded_row(row):
+        nonlocal discarded_count
+        append_discarded_sql_query(config.synthesis.discard_output_path, row)
+        discarded_count += 1
+        logging.info(
+            "Appended discarded SQL sample | output=%s | discarded_count=%s | database_id=%s",
+            config.synthesis.discard_output_path,
+            discarded_count,
+            row.database_id,
+        )
+
+    synthesizer.synthesize_all(
+        databases,
+        on_row_generated=_append_row,
+        on_row_discarded=_append_discarded_row,
+    )
     run_stats = synthesizer.get_run_stats()
     logging.info(
         "SQL synthesis difficulty stats | generated=%s | retained=%s",
@@ -224,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
         run_stats["retained_total"],
     )
     logging.info("Appended %s SQL samples to %s", written_count, config.synthesis.output_path)
+    logging.info(
+        "Appended %s discarded SQL samples to %s",
+        discarded_count,
+        config.synthesis.discard_output_path,
+    )
     return 0
 
 

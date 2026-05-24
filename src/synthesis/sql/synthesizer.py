@@ -19,6 +19,7 @@ from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary, build_required_function_constraints
 from .generator import SQLGenerator
 from .models import (
+    DiscardedSQLQuery,
     DIFFICULTY_LEVELS,
     SQLExecutionResult,
     SQLGenerationCandidate,
@@ -208,17 +209,25 @@ class ConstraintGuidedSQLSynthesizer:
         self,
         databases: Sequence[SynthesizedSpatialDatabase],
         on_row_generated: Callable[[SynthesizedSQLQuery], None] | None = None,
+        on_row_discarded: Callable[[DiscardedSQLQuery], None] | None = None,
     ) -> list[SynthesizedSQLQuery]:
         self.last_run_stats = self._empty_run_stats()
         rows: list[SynthesizedSQLQuery] = []
         for database in databases:
-            rows.extend(self.synthesize_for_database(database, on_row_generated=on_row_generated))
+            rows.extend(
+                self.synthesize_for_database(
+                    database,
+                    on_row_generated=on_row_generated,
+                    on_row_discarded=on_row_discarded,
+                )
+            )
         return rows
 
     def synthesize_for_database(
         self,
         database: SynthesizedSpatialDatabase,
         on_row_generated: Callable[[SynthesizedSQLQuery], None] | None = None,
+        on_row_discarded: Callable[[DiscardedSQLQuery], None] | None = None,
     ) -> list[SynthesizedSQLQuery]:
         if not database.spatial_fields:
             LOGGER.warning("Skipping database %s because it has no spatial fields.", database.database_id)
@@ -247,6 +256,11 @@ class ConstraintGuidedSQLSynthesizer:
                 planned_difficulty=planned_difficulty,
             )
             if not sampled_functions:
+                discarded = DiscardedSQLQuery(
+                    database_id=database.database_id,
+                    sql="",
+                    discard_reason=f"No compatible spatial functions for planned difficulty '{planned_difficulty}'.",
+                )
                 LOGGER.warning(
                     "SQL synthesis progress %s/%s | city=%s | schema_id=%s | planned_difficulty=%s | spatial_functions=<none> | status=no-compatible-functions",
                     sample_index + 1,
@@ -255,6 +269,8 @@ class ConstraintGuidedSQLSynthesizer:
                     database.database_id,
                     planned_difficulty,
                 )
+                if on_row_discarded is not None:
+                    on_row_discarded(discarded)
                 continue
             prompt_database = self._select_prompt_database(database, difficulty_level)
             database_runtime_metadata = None
@@ -291,7 +307,7 @@ class ConstraintGuidedSQLSynthesizer:
                     len(prompt_database.selected_tables),
                 )
             structural_constraints = self._build_structural_constraints(difficulty_level, prompt_database)
-            row = self._synthesize_single_query(
+            row, discarded_row = self._synthesize_single_query(
                 database=prompt_database,
                 sample_index=sample_index,
                 difficulty_level=difficulty_level,
@@ -313,6 +329,8 @@ class ConstraintGuidedSQLSynthesizer:
                 output_rows.append(row)
                 if on_row_generated is not None:
                     on_row_generated(row)
+            elif discarded_row is not None and on_row_discarded is not None:
+                on_row_discarded(discarded_row)
         return output_rows
 
     def _synthesize_single_query(
@@ -325,7 +343,7 @@ class ConstraintGuidedSQLSynthesizer:
         sampled_functions: Sequence[Any],
         database_runtime_metadata: Mapping[str, Any] | None,
         source_database_table_count: int,
-    ) -> SynthesizedSQLQuery | None:
+    ) -> tuple[SynthesizedSQLQuery | None, DiscardedSQLQuery | None]:
         sample_tag = self._sample_tag(database, sample_index)
         result_window_profile = self._sample_result_window_profile(difficulty_level)
         expected_limit = result_window_profile["expected_limit"]
@@ -641,7 +659,16 @@ class ConstraintGuidedSQLSynthesizer:
             )
 
         if not sample_success:
-            return None
+            return None, self._build_discarded_sql_row(
+                database,
+                candidate_sql=candidate.sql,
+                discard_reason=self._build_discard_reason(
+                    has_sql=has_sql,
+                    has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
+                    validation_result=validation_result,
+                    execution_result=execution_result,
+                ),
+            )
 
         synthesized = SynthesizedSQLQuery(
             sql_id=self._next_sql_id(database.database_id),
@@ -684,7 +711,42 @@ class ConstraintGuidedSQLSynthesizer:
                 "success": sample_success,
             },
         )
-        return synthesized
+        return synthesized, None
+
+    @staticmethod
+    def _build_discarded_sql_row(
+        database: SynthesizedSpatialDatabase,
+        *,
+        candidate_sql: str,
+        discard_reason: str,
+    ) -> DiscardedSQLQuery:
+        return DiscardedSQLQuery(
+            database_id=database.database_id,
+            sql=to_text(candidate_sql).strip(),
+            discard_reason=to_text(discard_reason),
+        )
+
+    @staticmethod
+    def _build_discard_reason(
+        *,
+        has_sql: bool,
+        has_dangerous_sql: bool,
+        validation_result: SQLValidationResult,
+        execution_result: SQLExecutionResult,
+    ) -> str:
+        if not has_sql:
+            if validation_result.errors:
+                return validation_result.errors[0]
+            return "Generated SQL is empty."
+        if has_dangerous_sql:
+            return "Generated SQL is not read-only or contains dangerous operations."
+        if validation_result.errors:
+            return " | ".join(validation_result.errors)
+        if execution_result.error_message:
+            return execution_result.error_message
+        if execution_result.executed and not execution_result.success:
+            return "Execution check failed."
+        return "Sample failed synthesis validation."
 
     @staticmethod
     def _empty_run_stats() -> dict[str, Any]:
