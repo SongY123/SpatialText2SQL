@@ -27,7 +27,7 @@ llm:
 
 run:
   input_path: data/processed/synthesized_questions.jsonl
-  schema_context_path: data/processed/synthesized_spatial_databases.jsonl
+  schema_context_path: ata/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/nl2sql.jsonl
   alpaca_output_path: data/processed/finetune/nl2sql_alpaca.jsonl
   report_path: data/processed/quality_control_report.json

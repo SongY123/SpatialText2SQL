@@ -1,6 +1,6 @@
 ### model
 model_name_or_path: /data/llm/qwen/Qwen2.5-Coder-7B-Instruct
-trust_remote_code: false
+trust_remote_code: true
 
 ### method
 stage: sft

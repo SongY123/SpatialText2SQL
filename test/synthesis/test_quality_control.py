@@ -525,6 +525,42 @@ class QualityControlTests(unittest.TestCase):
         self.assertEqual(report.distribution_by_difficulty["medium"], 1)
         self.assertEqual(report.distribution_by_difficulty["hard"], 1)
 
+    def test_formatter_only_quality_control_deduplicates_matching_rendered_input(self):
+        shared_context = {
+            "database_context": {
+                "selected_table_names": ["parks"],
+                "schema_ddls": ["CREATE TABLE parks (\n    id integer,\n    name text\n);"],
+                "representative_values": {"parks": [{"id": 1, "name": "central park"}]},
+            }
+        }
+        samples = [
+            _sample(
+                "s1",
+                question="Which park names are available?",
+                sql="SELECT name FROM parks",
+                used_tables=["parks"],
+                used_columns=["name"],
+            ),
+            _sample(
+                "s2",
+                question="Which park names are available?",
+                sql="SELECT DISTINCT name FROM parks",
+                used_tables=["parks"],
+                used_columns=["name"],
+            ),
+        ]
+        for sample in samples:
+            sample.metadata = dict(shared_context)
+            sample.original_payload = {"metadata": dict(shared_context)}
+        retained, report = format_only_quality_control(samples)
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].sample_id, "s1")
+        self.assertEqual(report.duplicate_count, 1)
+        self.assertEqual(report.failure_reasons["input_hash_duplicate"], 1)
+        self.assertEqual(len(report.duplicate_samples), 1)
+        self.assertEqual(report.duplicate_samples[0]["dropped_sample_id"], "s2")
+        self.assertEqual(report.duplicate_samples[0]["kept_sample_id"], "s1")
+
 
 if __name__ == "__main__":
     unittest.main()

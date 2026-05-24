@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Any, Mapping
 
+from src.finetune.prompting import FinetunePromptRenderer
 from src.synthesis.sql.function_library import PostGISFunctionLibrary
 
 from .balancing import DiversityBalancer
@@ -22,28 +25,90 @@ from .validation import (
 LOGGER = logging.getLogger(__name__)
 
 
+def _build_distribution_snapshots(samples: list[NLSQLSample]) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    return (
+        build_distribution(samples, lambda sample: [sample.difficulty_level]),
+        build_distribution(samples, lambda sample: sample.used_spatial_functions),
+        build_distribution(samples, lambda sample: [sample.linguistic_style]),
+    )
+
+
+def _resolve_database_context(sample: NLSQLSample) -> dict[str, Any]:
+    if isinstance(sample.metadata.get("database_context"), Mapping):
+        return dict(sample.metadata["database_context"])
+    original_metadata = sample.original_payload.get("metadata")
+    if isinstance(original_metadata, Mapping) and isinstance(original_metadata.get("database_context"), Mapping):
+        return dict(original_metadata["database_context"])
+    return {}
+
+
+def _render_input_for_hash(sample: NLSQLSample) -> str:
+    database_context = _resolve_database_context(sample)
+    if not database_context:
+        return ""
+    prompt_renderer = FinetunePromptRenderer(task_description="", max_representative_rows=3)
+    schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+        database_context,
+        max_representative_rows=3,
+    )
+    return prompt_renderer.render_input(
+        database_id=sample.database_id,
+        question=sample.question,
+        schema_lines=schema_lines,
+        representative_values=representative_values,
+    ).strip()
+
+
+def _deduplicate_by_input_hash(samples: list[NLSQLSample]) -> tuple[list[NLSQLSample], list[dict[str, Any]]]:
+    retained: list[NLSQLSample] = []
+    duplicates: list[dict[str, Any]] = []
+    seen_by_hash: dict[str, NLSQLSample] = {}
+    for sample in samples:
+        input_text = _render_input_for_hash(sample)
+        if not input_text:
+            retained.append(sample)
+            continue
+        input_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
+        original = seen_by_hash.get(input_hash)
+        if original is None:
+            seen_by_hash[input_hash] = sample
+            retained.append(sample)
+            continue
+        duplicates.append(
+            {
+                "reason": "input_hash_duplicate",
+                "input_hash": input_hash,
+                "dropped_sample_id": sample.sample_id,
+                "dropped_sql_id": sample.sql_id,
+                "dropped_database_id": sample.database_id,
+                "dropped_question": sample.question,
+                "kept_sample_id": original.sample_id,
+                "kept_sql_id": original.sql_id,
+                "kept_database_id": original.database_id,
+                "kept_question": original.question,
+            }
+        )
+    return retained, duplicates
+
+
 def format_only_quality_control(
     samples: list[NLSQLSample],
 ) -> tuple[list[NLSQLSample], QualityControlReport]:
-    retained = list(samples)
+    retained, input_hash_duplicates = _deduplicate_by_input_hash(list(samples))
+    difficulty_distribution, spatial_distribution, style_distribution = _build_distribution_snapshots(retained)
+    failure_reasons = {}
+    if input_hash_duplicates:
+        failure_reasons["input_hash_duplicate"] = len(input_hash_duplicates)
     report = QualityControlReport(
         total_samples=len(samples),
         passed_samples=len(retained),
-        failed_samples=0,
-        failure_reasons={},
-        duplicate_count=0,
-        distribution_by_difficulty=build_distribution(
-            retained,
-            lambda sample: [sample.difficulty_level],
-        ),
-        distribution_by_spatial_function=build_distribution(
-            retained,
-            lambda sample: sample.used_spatial_functions,
-        ),
-        distribution_by_linguistic_style=build_distribution(
-            retained,
-            lambda sample: [sample.linguistic_style],
-        ),
+        failed_samples=len(samples) - len(retained),
+        failure_reasons=failure_reasons,
+        duplicate_count=len(input_hash_duplicates),
+        duplicate_samples=input_hash_duplicates,
+        distribution_by_difficulty=difficulty_distribution,
+        distribution_by_spatial_function=spatial_distribution,
+        distribution_by_linguistic_style=style_distribution,
     )
     return retained, report
 
@@ -146,18 +211,24 @@ class QualityControlPipeline:
         for reason in duplicate_result.duplicate_reasons:
             failure_reasons[reason] += 1
 
-        balanced_samples, dropped_by_balance = DiversityBalancer(config.balancing).run(duplicate_result.retained)
+        input_deduped_samples, input_hash_duplicates = _deduplicate_by_input_hash(duplicate_result.retained)
+        if input_hash_duplicates:
+            failure_reasons["input_hash_duplicate"] += len(input_hash_duplicates)
+
+        balanced_samples, dropped_by_balance = DiversityBalancer(config.balancing).run(input_deduped_samples)
         for _sample_id in dropped_by_balance:
             failure_reasons["balancing_drop"] += 1
 
+        difficulty_distribution, spatial_distribution, style_distribution = _build_distribution_snapshots(balanced_samples)
         report = QualityControlReport(
             total_samples=len(samples),
             passed_samples=len(balanced_samples),
             failed_samples=len(samples) - len(balanced_samples),
             failure_reasons=dict(failure_reasons),
-            duplicate_count=duplicate_result.duplicate_count,
-            distribution_by_difficulty=build_distribution(balanced_samples, lambda sample: [sample.difficulty_level]),
-            distribution_by_spatial_function=build_distribution(balanced_samples, lambda sample: sample.used_spatial_functions),
-            distribution_by_linguistic_style=build_distribution(balanced_samples, lambda sample: [sample.linguistic_style]),
+            duplicate_count=duplicate_result.duplicate_count + len(input_hash_duplicates),
+            duplicate_samples=input_hash_duplicates,
+            distribution_by_difficulty=difficulty_distribution,
+            distribution_by_spatial_function=spatial_distribution,
+            distribution_by_linguistic_style=style_distribution,
         )
         return balanced_samples, report

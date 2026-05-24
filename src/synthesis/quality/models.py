@@ -313,6 +313,7 @@ class QualityControlReport:
     failed_samples: int
     failure_reasons: dict[str, int] = field(default_factory=dict)
     duplicate_count: int = 0
+    duplicate_samples: list[dict[str, Any]] = field(default_factory=list)
     distribution_by_difficulty: dict[str, int] = field(default_factory=dict)
     distribution_by_spatial_function: dict[str, int] = field(default_factory=dict)
     distribution_by_linguistic_style: dict[str, int] = field(default_factory=dict)
@@ -324,6 +325,7 @@ class QualityControlReport:
             "failed_samples": self.failed_samples,
             "failure_reasons": dict(self.failure_reasons),
             "duplicate_count": self.duplicate_count,
+            "duplicate_samples": stable_jsonify(self.duplicate_samples),
             "distribution_by_difficulty": dict(self.distribution_by_difficulty),
             "distribution_by_spatial_function": dict(self.distribution_by_spatial_function),
             "distribution_by_linguistic_style": dict(self.distribution_by_linguistic_style),
