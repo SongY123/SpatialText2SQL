@@ -12,7 +12,7 @@ generation:
   sql_input_path: data/processed/synthesized_sql_queries.jsonl
   database_context_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/synthesized_questions.jsonl
-  num_questions_per_sql: 2
+  num_questions_per_sql: 1
   max_revision_rounds: 1
   style_weights:
     conversational: 1.0

@@ -67,7 +67,7 @@ class SQLSynthesisRunConfig:
     random_seed: int = 42
     keep_invalid: bool = False
     keep_failed_execution: bool = False
-    max_revision_rounds: int = 2
+    max_revision_rounds: int = 1
 
 
 @dataclass(frozen=True)
