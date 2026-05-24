@@ -1446,13 +1446,12 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(rows1[0].spatial_function_constraints, rows2[0].spatial_function_constraints)
         self.assertEqual(generator_1.prompts[0], generator_2.prompts[0])
 
-    def test_validation_mismatches_trigger_revision_and_unfixed_queries_are_discarded(self):
+    def test_validation_mismatches_do_not_trigger_discard_when_execution_succeeds(self):
         library = _load_library(_sample_function_json_payload()[:3], "## spatialsql_pg\nST_Buffer\n")
         database = _make_database(table_count=1)
         invalid_generator = MockSQLGenerator(
             responses=[
                 '{"sql":"SELECT ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Union"],"reasoning_summary":"off-constraint but executable"}',
-                '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 5","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"fixed to allowed function"}',
             ]
         )
         from src.synthesis.sql.models import SQLExecutionResult
@@ -1471,10 +1470,9 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         kept_warning = synth_warning.synthesize_for_database(database)
         self.assertEqual(len(kept_warning), 1)
-        self.assertTrue(kept_warning[0].validation_result["is_valid"])
-        self.assertTrue(kept_warning[0].generation_metadata["minor_revision_applied"])
-        self.assertFalse(kept_warning[0].generation_metadata["retained_with_warning"])
-        self.assertEqual(len(invalid_generator.prompts), 2)
+        self.assertFalse(kept_warning[0].validation_result["is_valid"])
+        self.assertFalse(kept_warning[0].generation_metadata["minor_revision_applied"])
+        self.assertEqual(len(invalid_generator.prompts), 1)
 
         failed_exec_generator = MockSQLGenerator(
             responses=[

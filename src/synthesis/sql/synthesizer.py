@@ -256,11 +256,6 @@ class ConstraintGuidedSQLSynthesizer:
                 planned_difficulty=planned_difficulty,
             )
             if not sampled_functions:
-                discarded = DiscardedSQLQuery(
-                    database_id=database.database_id,
-                    sql="",
-                    discard_reason=f"No compatible spatial functions for planned difficulty '{planned_difficulty}'.",
-                )
                 LOGGER.warning(
                     "SQL synthesis progress %s/%s | city=%s | schema_id=%s | planned_difficulty=%s | spatial_functions=<none> | status=no-compatible-functions",
                     sample_index + 1,
@@ -269,8 +264,6 @@ class ConstraintGuidedSQLSynthesizer:
                     database.database_id,
                     planned_difficulty,
                 )
-                if on_row_discarded is not None:
-                    on_row_discarded(discarded)
                 continue
             prompt_database = self._select_prompt_database(database, difficulty_level)
             database_runtime_metadata = None
@@ -496,13 +489,12 @@ class ConstraintGuidedSQLSynthesizer:
 
         sample_success = self._is_sample_success(
             has_sql=has_sql,
-            has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
-            validation_ok=validation_result.is_valid,
             execution_result=execution_result,
         )
         minor_revision_applied = False
         if not sample_success and self._should_attempt_minor_revision(
-            validation_result=validation_result,
+            has_sql=has_sql,
+            has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
             execution_result=execution_result,
         ):
             involved_tables = candidate.used_tables or validation_result.detected_tables
@@ -638,8 +630,6 @@ class ConstraintGuidedSQLSynthesizer:
                 )
             sample_success = self._is_sample_success(
                 has_sql=has_sql,
-                has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
-                validation_ok=validation_result.is_valid,
                 execution_result=execution_result,
             )
         if sample_success:
@@ -659,16 +649,21 @@ class ConstraintGuidedSQLSynthesizer:
             )
 
         if not sample_success:
-            return None, self._build_discarded_sql_row(
-                database,
+            if self._should_record_discarded_sql(
                 candidate_sql=candidate.sql,
-                discard_reason=self._build_discard_reason(
-                    has_sql=has_sql,
-                    has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
-                    validation_result=validation_result,
-                    execution_result=execution_result,
-                ),
-            )
+                execution_result=execution_result,
+            ):
+                return None, self._build_discarded_sql_row(
+                    database,
+                    candidate_sql=candidate.sql,
+                    discard_reason=self._build_discard_reason(
+                        has_sql=has_sql,
+                        has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
+                        validation_result=validation_result,
+                        execution_result=execution_result,
+                    ),
+                )
+            return None, None
 
         synthesized = SynthesizedSQLQuery(
             sql_id=self._next_sql_id(database.database_id),
@@ -747,6 +742,14 @@ class ConstraintGuidedSQLSynthesizer:
         if execution_result.executed and not execution_result.success:
             return "Execution check failed."
         return "Sample failed synthesis validation."
+
+    @staticmethod
+    def _should_record_discarded_sql(
+        *,
+        candidate_sql: str,
+        execution_result: SQLExecutionResult,
+    ) -> bool:
+        return bool(to_text(candidate_sql).strip()) and execution_result.executed and not execution_result.success
 
     @staticmethod
     def _empty_run_stats() -> dict[str, Any]:
@@ -1043,15 +1046,9 @@ class ConstraintGuidedSQLSynthesizer:
         self,
         *,
         has_sql: bool,
-        has_dangerous_sql: bool,
-        validation_ok: bool,
         execution_result: SQLExecutionResult,
     ) -> bool:
         if not has_sql:
-            return False
-        if has_dangerous_sql:
-            return False
-        if not validation_ok:
             return False
         if not self.config.execution.enable_execution_check or self.config.execution.dry_run:
             return True
@@ -1082,11 +1079,13 @@ class ConstraintGuidedSQLSynthesizer:
     def _should_attempt_minor_revision(
         self,
         *,
-        validation_result: SQLValidationResult,
+        has_sql: bool,
+        has_dangerous_sql: bool,
         execution_result: SQLExecutionResult,
     ) -> bool:
         return (
-            not validation_result.is_valid
+            not has_sql
+            or has_dangerous_sql
             or (
                 execution_result.executed
                 and not execution_result.success
