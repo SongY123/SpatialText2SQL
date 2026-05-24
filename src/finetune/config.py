@@ -20,8 +20,7 @@ DEFAULT_TRL_FINETUNE_CONFIG_PATH = _project_root() / "config" / "finetune.yaml"
 
 @dataclass(frozen=True)
 class FinetuneDataConfig:
-    input_path: str = str(_project_root() / "data" / "processed" / "nl2sql.jsonl")
-    alpaca_output_path: str = str(_project_root() / "data" / "processed" / "finetune" / "nl2sql_alpaca.jsonl")
+    input_path: str = str(_project_root() / "data" / "processed" / "finetune" / "nl2sql_alpaca.jsonl")
     task_description: str = (
         "Translate the spatial question into one executable PostgreSQL/PostGIS SQL query "
         "using the provided schema and representative values."
@@ -219,11 +218,6 @@ def _build_trl_finetune_config_from_payload(
     return SpatialText2SQLFinetuneConfig(
         data=FinetuneDataConfig(
             input_path=_resolve_path(data_section.get("input_path"), path, default_data.input_path),
-            alpaca_output_path=_resolve_path(
-                data_section.get("alpaca_output_path"),
-                path,
-                default_data.alpaca_output_path,
-            ),
             task_description=_as_text(data_section.get("task_description"), default_data.task_description),
             eval_ratio=_as_float(data_section.get("eval_ratio"), default_data.eval_ratio),
             question_id_start=_as_non_negative_int(data_section.get("question_id_start"), default_data.question_id_start),

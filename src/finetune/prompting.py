@@ -10,14 +10,9 @@ from .utils import stable_jsonify, to_text
 
 
 class FinetunePromptRenderer:
-    INSTRUCTION_HEADER = "You are an expert spatial Text-to-SQL model."
-    RESPONSE_HEADER = "## Response"
-    RESPONSE_REQUIREMENTS = (
-        "Return one executable PostgreSQL/PostGIS SQL query inside a single ```sql``` code block.",
-        "Use only the listed tables and columns.",
-        "Preserve the question semantics exactly.",
-        "Generate one read-only PostgreSQL/PostGIS SQL query only.",
-        "Do not add any extra explanation outside the SQL code block.",
+    INSTRUCTION_HEADER = (
+        "You are a PostgreSQL/PostGIS expert. Read and understand the following database schema, "
+        "and use PostgreSQL/PostGIS knowledge to generate a SQL query that answers the user question."
     )
 
     def __init__(
@@ -30,33 +25,27 @@ class FinetunePromptRenderer:
         self.max_representative_rows = max(int(max_representative_rows), 1)
 
     def render_instruction(self) -> str:
-        lines = [
-            self.INSTRUCTION_HEADER,
-            "",
-            "## Task Description",
-            self.task_description,
-            "",
-            "## Response Requirements",
-            *[f"- {line}" for line in self.RESPONSE_REQUIREMENTS],
-        ]
-        return "\n".join(lines).strip()
+        return self.INSTRUCTION_HEADER
 
     def render_input(
         self,
         *,
+        database_id: str = "",
         question: str,
         schema_lines: Sequence[str],
         representative_values: Mapping[str, Any],
     ) -> str:
+        del representative_values
         sections = [
-            "## Schema",
+            "[Database Schema]",
+            f"[DB_ID] {to_text(database_id)}" if to_text(database_id) else "[DB_ID]",
+            "[Schema]",
             "\n".join(schema_lines) if schema_lines else "No schema available.",
             "",
-            "## Representative Values",
-            self._stable_json_text(representative_values),
-            "",
-            "## Question",
+            "[User Question]",
             to_text(question),
+            "",
+            "```sql",
         ]
         return "\n".join(sections).strip()
 
@@ -70,6 +59,7 @@ class FinetunePromptRenderer:
         return self.compose_prompt(
             self.render_instruction(),
             self.render_input(
+                database_id="",
                 question=question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,
@@ -83,15 +73,12 @@ class FinetunePromptRenderer:
         prompt_body = instruction_text or input_block
         if instruction_text and input_block:
             prompt_body = f"{instruction_text}\n\n{input_block}"
-        if not prompt_body:
-            return FinetunePromptRenderer.RESPONSE_HEADER + "\n"
-        return f"{prompt_body}\n\n{FinetunePromptRenderer.RESPONSE_HEADER}\n"
+        return prompt_body if prompt_body else ""
 
     def render_output(self, reasoning_summary: str, sql: str) -> str:
+        del reasoning_summary
         sql_text = to_text(sql).strip()
-        if not sql_text:
-            return ""
-        return f"```sql\n{sql_text}\n```"
+        return sql_text
 
     @staticmethod
     def build_runtime_prompt_context(
@@ -118,7 +105,10 @@ class FinetunePromptRenderer:
                         geometry_columns=set(),
                         limit=max_representative_rows,
                     )
-            return schema_ddls, representative_values
+            return (
+                FinetunePromptRenderer._build_schema_blocks_from_schema_ddls(schema_ddls, representative_values),
+                representative_values,
+            )
 
         included = {
             to_text(table_name)
@@ -142,20 +132,204 @@ class FinetunePromptRenderer:
                 column_name = to_text(column.get("column_name"))
                 column_type = to_text(column.get("column_type") or column.get("data_type") or "text")
                 if column_name:
-                    columns.append(f"{column_name} {column_type}")
-            schema_lines.append(f"- {table_name}({', '.join(columns)})")
+                    columns.append({"column_name": column_name, "column_type": column_type})
             geometry_columns = {
                 to_text(field.get("column_name") or field.get("canonical_name")).lower()
                 for field in table_meta.get("spatial_fields", [])
                 if isinstance(field, Mapping) and to_text(field.get("column_name") or field.get("canonical_name"))
             }
             table_rep_values = table_meta.get("representative_values") or {}
-            representative_values[table_name] = FinetunePromptRenderer._prepare_representative_rows(
+            prepared_rows = FinetunePromptRenderer._prepare_representative_rows(
                 table_rep_values,
                 geometry_columns=geometry_columns,
                 limit=max_representative_rows,
             )
+            representative_values[table_name] = prepared_rows
+            schema_lines.append(
+                FinetunePromptRenderer._render_schema_block(
+                    table_name=table_name,
+                    columns=columns,
+                    representative_rows=prepared_rows,
+                    primary_key_columns=set(),
+                )
+            )
         return schema_lines, representative_values
+
+    @staticmethod
+    def _build_schema_blocks_from_schema_ddls(
+        schema_ddls: Sequence[str],
+        representative_values: Mapping[str, Any],
+    ) -> list[str]:
+        schema_blocks: list[str] = []
+        for ddl in schema_ddls:
+            parsed = FinetunePromptRenderer._parse_create_table_ddl(ddl)
+            if not parsed:
+                cleaned = to_text(ddl).strip()
+                if cleaned:
+                    schema_blocks.append(cleaned)
+                continue
+            table_name = to_text(parsed.get("table_name"))
+            columns = list(parsed.get("columns") or [])
+            primary_key_columns = {
+                to_text(name)
+                for name in (parsed.get("primary_key_columns") or [])
+                if to_text(name)
+            }
+            representative_rows = []
+            if table_name:
+                representative_rows = list(representative_values.get(table_name) or [])
+            schema_blocks.append(
+                FinetunePromptRenderer._render_schema_block(
+                    table_name=table_name,
+                    columns=columns,
+                    representative_rows=representative_rows,
+                    primary_key_columns=primary_key_columns,
+                )
+            )
+        return schema_blocks
+
+    @staticmethod
+    def _render_schema_block(
+        *,
+        table_name: str,
+        columns: Sequence[Mapping[str, Any]],
+        representative_rows: Sequence[Mapping[str, Any]],
+        primary_key_columns: set[str],
+    ) -> str:
+        lines = [f"# Table: {table_name}", "["]
+        rendered_columns: list[str] = []
+        for column in columns:
+            if not isinstance(column, Mapping):
+                continue
+            column_name = to_text(column.get("column_name"))
+            column_type = to_text(column.get("column_type") or column.get("data_type") or "TEXT")
+            if not column_name:
+                continue
+            fragments = [f"{column_name}:{column_type}"]
+            if column_name in primary_key_columns:
+                fragments.append("Primary Key")
+            examples = FinetunePromptRenderer._collect_example_values(column_name, representative_rows)
+            if examples:
+                fragments.append(f"Examples: [{', '.join(examples)}]")
+            rendered_columns.append(f"  ({', '.join(fragments)})")
+        if rendered_columns:
+            rendered_columns[-1] = rendered_columns[-1]
+        for index, rendered in enumerate(rendered_columns):
+            suffix = "," if index < len(rendered_columns) - 1 else ""
+            lines.append(f"{rendered}{suffix}")
+        lines.append("]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _collect_example_values(column_name: str, representative_rows: Sequence[Mapping[str, Any]]) -> list[str]:
+        examples: list[str] = []
+        seen: set[str] = set()
+        for row in representative_rows:
+            if not isinstance(row, Mapping) or column_name not in row:
+                continue
+            value = row.get(column_name)
+            rendered = FinetunePromptRenderer._format_example_value(value)
+            if not rendered or rendered in seen:
+                continue
+            seen.add(rendered)
+            examples.append(rendered)
+        return examples
+
+    @staticmethod
+    def _format_example_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            rendered = value.strip()
+        else:
+            rendered = str(value).strip()
+        return rendered
+
+    @staticmethod
+    def _parse_create_table_ddl(ddl: str) -> dict[str, Any] | None:
+        ddl_text = to_text(ddl).strip()
+        if not ddl_text:
+            return None
+        match = re.search(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>[^\s(]+)\s*\((?P<body>.*)\)\s*;?\s*$",
+            ddl_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        raw_table_name = match.group("name").strip()
+        table_name = raw_table_name.split(".")[-1].strip('"')
+        body = match.group("body")
+        entries = FinetunePromptRenderer._split_sql_entries(body)
+        columns: list[dict[str, str]] = []
+        primary_key_columns: set[str] = set()
+        for entry in entries:
+            cleaned = entry.strip()
+            if not cleaned:
+                continue
+            upper = cleaned.upper()
+            if "PRIMARY KEY" in upper and (
+                upper.startswith("CONSTRAINT") or upper.startswith("PRIMARY KEY")
+            ):
+                primary_key_columns.update(FinetunePromptRenderer._parse_primary_key_columns(cleaned))
+                continue
+            parsed_column = FinetunePromptRenderer._parse_column_definition(cleaned)
+            if not parsed_column:
+                continue
+            columns.append(parsed_column)
+            if "PRIMARY KEY" in upper:
+                primary_key_columns.add(parsed_column["column_name"])
+        return {
+            "table_name": table_name,
+            "columns": columns,
+            "primary_key_columns": sorted(primary_key_columns),
+        }
+
+    @staticmethod
+    def _split_sql_entries(body: str) -> list[str]:
+        items: list[str] = []
+        current: list[str] = []
+        depth = 0
+        for char in body:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            if char == "," and depth == 0:
+                items.append("".join(current).strip())
+                current = []
+                continue
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    @staticmethod
+    def _parse_primary_key_columns(entry: str) -> set[str]:
+        match = re.search(r"PRIMARY\s+KEY\s*\((?P<columns>[^)]+)\)", entry, flags=re.IGNORECASE)
+        if not match:
+            return set()
+        return {
+            to_text(item).strip().strip('"')
+            for item in match.group("columns").split(",")
+            if to_text(item).strip()
+        }
+
+    @staticmethod
+    def _parse_column_definition(entry: str) -> dict[str, str] | None:
+        match = re.match(r'^\s*"?(?P<name>[A-Za-z0-9_]+)"?\s+(?P<rest>.+?)\s*$', entry, flags=re.DOTALL)
+        if not match:
+            return None
+        column_name = to_text(match.group("name")).strip()
+        remainder = match.group("rest").strip()
+        constraint_match = re.search(
+            r"\s+(?:NOT\s+NULL|NULL|DEFAULT|PRIMARY\s+KEY|UNIQUE|REFERENCES|CHECK|CONSTRAINT)\b",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+        column_type = remainder[: constraint_match.start()].strip() if constraint_match else remainder
+        return {"column_name": column_name, "column_type": column_type}
 
     @staticmethod
     def _prepare_representative_rows(

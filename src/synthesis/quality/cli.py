@@ -16,6 +16,7 @@ from .config import (
     override_quality_control_config,
 )
 from .io import (
+    write_alpaca_finetune_samples,
     load_nl_sql_samples,
     load_sql_context_by_sql_id,
     write_nl_sql_samples,
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input")
     parser.add_argument("--schema-context-path")
     parser.add_argument("--output")
+    parser.add_argument("--alpaca-output")
     parser.add_argument("--report-path")
     parser.add_argument("--allow-empty-result", action="store_true")
     parser.add_argument("--semantic-mode")
@@ -170,11 +172,18 @@ def _load_live_database_contexts(samples, config):
         )
     )
     contexts: dict[str, dict] = {}
+    database_requests: dict[str, str] = {}
     for sample in samples:
         database_id = str(sample.database_id).strip()
-        if not database_id or database_id in contexts:
+        if not database_id or database_id in database_requests:
             continue
         city = str(sample.original_payload.get("city") or sample.metadata.get("city") or "").strip()
+        database_requests[database_id] = city
+    logging.info(
+        "Loading live database context once per unique database_id | databases=%s",
+        len(database_requests),
+    )
+    for database_id, city in database_requests.items():
         context = provider.load_database_metadata_by_id(database_id=database_id, city=city)
         if not isinstance(context, dict):
             raise RuntimeError(f"Failed to load live database context for {database_id}.")
@@ -224,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             "input_path": args.input,
             "schema_context_path": args.schema_context_path,
             "output_path": args.output,
+            "alpaca_output_path": args.alpaca_output,
             "report_path": args.report_path,
             "allow_empty_result": args.allow_empty_result if args.allow_empty_result else None,
             "max_result_rows": args.max_result_rows,
@@ -252,10 +262,11 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "Quality control config loaded | input=%s | schema_context=%s | output=%s | report=%s",
+        "Quality control config loaded | input=%s | schema_context=%s | output=%s | alpaca_output=%s | report=%s",
         config.run.input_path,
         config.run.schema_context_path,
         config.run.output_path,
+        config.run.alpaca_output_path,
         config.run.report_path,
     )
 
@@ -269,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     # retained, report = _run_full_quality_control(samples, config)
     retained, report = format_only_quality_control(samples)
     write_nl_sql_samples(config.run.output_path, retained)
+    write_alpaca_finetune_samples(config.run.alpaca_output_path, retained)
     write_quality_control_report(config.run.report_path, report)
     logging.info(
         "Quality control finished | total=%s | retained=%s | failed=%s | duplicates=%s",

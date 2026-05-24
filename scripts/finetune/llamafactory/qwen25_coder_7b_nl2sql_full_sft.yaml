@@ -22,7 +22,7 @@ dataloader_num_workers: 0
 output_dir: /data/llm/finetuned/qwen/Qwen2.5-Coder-7B-Instruct-2026-05-24
 logging_steps: 10
 save_steps: 200
-save_total_limit: 5
+save_total_limit: 4
 plot_loss: true
 overwrite_output_dir: false
 save_only_model: false

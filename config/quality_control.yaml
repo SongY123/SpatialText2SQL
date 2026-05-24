@@ -1,5 +1,5 @@
 database:
-  host: localhost
+  host: localhosy
   port: 54321
   database: synthesis
   user: postgres
@@ -18,7 +18,7 @@ functions:
 llm:
   provider: openai_compatible
   model: gemma-4-31B-it
-  base_url: http://10.132.80.118:8999/v1
+  base_url: http://localhost:8999/v1
   api_key_env: EMPTY
   temperature: 0.2
   max_tokens: 80
@@ -29,6 +29,7 @@ run:
   input_path: data/processed/synthesized_questions.jsonl
   schema_context_path: data/processed/synthesized_spatial_databases.jsonl
   output_path: data/processed/nl2sql.jsonl
+  alpaca_output_path: data/processed/finetune/nl2sql_alpaca.jsonl
   report_path: data/processed/quality_control_report.json
   allow_empty_result: true
   max_result_rows: 5

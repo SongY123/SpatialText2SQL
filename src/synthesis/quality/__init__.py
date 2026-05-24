@@ -27,6 +27,7 @@ from .generator import (
     build_quality_control_llm,
 )
 from .io import (
+    write_alpaca_finetune_samples,
     load_nl_sql_samples,
     load_sql_context_by_sql_id,
     load_schema_registry_from_contexts,
@@ -93,6 +94,7 @@ __all__ = [
     "normalize_question",
     "normalize_sql",
     "override_quality_control_config",
+    "write_alpaca_finetune_samples",
     "write_nl_sql_samples",
     "write_quality_control_report",
 ]

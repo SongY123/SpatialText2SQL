@@ -37,6 +37,7 @@ class SpatialText2SQLDatasetBuilder:
             )
             instruction = row.instruction or self.prompt_renderer.render_instruction()
             input_text = row.input_text or self.prompt_renderer.render_input(
+                database_id=row.database_id,
                 question=row.question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,

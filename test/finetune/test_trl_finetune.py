@@ -76,8 +76,6 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertIn(config.runtime.dynamo_backend, command)
         self.assertIn("--input", command)
         self.assertIn(config.data.input_path, command)
-        self.assertIn("--alpaca-output", command)
-        self.assertIn(config.data.alpaca_output_path, command)
         self.assertIn("--num_processes", command)
         self.assertIn("2", command)
         self.assertIn("--nvidia-gpu-indices", command)
@@ -126,21 +124,31 @@ class TRLFinetuneTests(unittest.TestCase):
         )
         instruction = renderer.render_instruction()
         input_text = renderer.render_input(
+            database_id="nyc_0001",
             question="Which parks intersect schools?",
-            schema_lines=["- parks(id integer, geom geometry(Point,4326))"],
+            schema_lines=[
+                "\n".join(
+                    [
+                        "# Table: parks",
+                        "[",
+                        "  (id:integer, Primary Key, Examples: [1])",
+                        "  (geom:geometry(Point,4326), Examples: [POINT])",
+                        "]",
+                    ]
+                )
+            ],
             representative_values={"parks": [{"id": 1, "geom": "POINT"}]},
         )
         prompt = renderer.compose_prompt(instruction, input_text)
-        self.assertIn("## Task Description", instruction)
-        self.assertIn("## Response Requirements", instruction)
-        self.assertIn("```sql``` code block", instruction)
-        self.assertNotIn("reasoning summary", instruction)
-        self.assertIn("## Schema", input_text)
-        self.assertIn("## Representative Values", input_text)
-        self.assertIn("## Question", input_text)
-        self.assertNotIn("## Spatial Field Metadata", prompt)
+        self.assertIn("PostgreSQL/PostGIS expert", instruction)
+        self.assertNotIn("Response Requirements", instruction)
+        self.assertIn("【Database Schema】", input_text)
+        self.assertIn("【DB_ID】 nyc_0001", input_text)
+        self.assertIn("# Table: parks", input_text)
+        self.assertIn("Examples: [1]", input_text)
+        self.assertEqual(input_text.count("User Question"), 1)
         self.assertIn("Which parks intersect schools?", prompt)
-        self.assertTrue(prompt.endswith("## Response\n"))
+        self.assertTrue(prompt.endswith("```sql"))
 
     def test_alpaca_formatter_splits_instruction_input_and_output(self):
         runtime_metadata = {
@@ -168,7 +176,6 @@ class TRLFinetuneTests(unittest.TestCase):
         formatter = NL2SQLAlpacaFormatter(
             data_config=FinetuneDataConfig(
                 input_path="",
-                alpaca_output_path="",
                 task_description="Translate to SQL.",
                 question_id_start=0,
                 max_representative_rows=3,
@@ -194,19 +201,16 @@ class TRLFinetuneTests(unittest.TestCase):
         rows = formatter.format_samples([raw])
         self.assertEqual(len(rows), 1)
         self.assertIsInstance(rows[0], AlpacaFinetuneSample)
-        self.assertIn("## Task Description", rows[0].instruction)
-        self.assertIn("## Schema", rows[0].input_text)
-        self.assertNotIn("## Spatial Field Metadata", rows[0].input_text)
-        self.assertEqual(rows[0].output_text.strip(), "```sql\nSELECT name FROM parks LIMIT 5\n```")
-        self.assertIn("```sql", rows[0].output_text)
-        self.assertIn("SELECT name FROM parks LIMIT 5", rows[0].output_text)
+        self.assertIn("PostgreSQL/PostGIS expert", rows[0].instruction)
+        self.assertIn("【Database Schema】", rows[0].input_text)
+        self.assertIn("# Table: parks", rows[0].input_text)
+        self.assertEqual(rows[0].output_text.strip(), "SELECT name FROM parks LIMIT 5")
         self.assertEqual(set(rows[0].to_dict().keys()), {"instruction", "input", "output"})
 
     def test_alpaca_formatter_uses_full_database_context_not_used_tables_subset(self):
         formatter = NL2SQLAlpacaFormatter(
             data_config=FinetuneDataConfig(
                 input_path="",
-                alpaca_output_path="",
                 task_description="Translate to SQL.",
                 question_id_start=0,
                 max_representative_rows=3,
@@ -238,16 +242,75 @@ class TRLFinetuneTests(unittest.TestCase):
         )
         rows = formatter.format_samples([raw])
         self.assertEqual(len(rows), 1)
-        self.assertIn("CREATE TABLE parks", rows[0].input_text)
-        self.assertIn("CREATE TABLE schools", rows[0].input_text)
-        self.assertIn('"parks"', rows[0].input_text)
-        self.assertIn('"schools"', rows[0].input_text)
+        self.assertIn("# Table: parks", rows[0].input_text)
+        self.assertIn("# Table: schools", rows[0].input_text)
+        self.assertIn("Examples: [alpha]", rows[0].input_text)
+        self.assertIn("Examples: [ps 1]", rows[0].input_text)
+
+    def test_alpaca_formatter_keeps_zero_in_examples(self):
+        formatter = NL2SQLAlpacaFormatter(
+            data_config=FinetuneDataConfig(
+                input_path="",
+                task_description="Translate to SQL.",
+                question_id_start=0,
+                max_representative_rows=3,
+            ),
+        )
+        raw = RawFinetuneSample.from_dict(
+            {
+                "question_id": "nyc_0001_0004",
+                "database_id": "nyc_0001",
+                "city": "new york",
+                "question": "Which parks should be returned?",
+                "sql": "SELECT id FROM parks LIMIT 5",
+                "source_difficulty_level": "easy",
+                "metadata": {
+                    "database_context": {
+                        "schema_ddls": [
+                            "CREATE TABLE parks (\n    user_subscriber integer,\n    id integer\n);",
+                        ],
+                        "representative_values": {
+                            "parks": [{"user_subscriber": 0, "id": 1}, {"user_subscriber": 1, "id": 2}],
+                        },
+                    }
+                },
+            }
+        )
+        rows = formatter.format_samples([raw])
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Examples: [0, 1]", rows[0].input_text)
+
+    def test_alpaca_formatter_prefers_prefilled_prompt_fields(self):
+        formatter = NL2SQLAlpacaFormatter(
+            data_config=FinetuneDataConfig(
+                input_path="",
+                task_description="Translate to SQL.",
+                question_id_start=0,
+                max_representative_rows=3,
+            ),
+        )
+        raw = RawFinetuneSample(
+            question_id="nyc_0001_0003",
+            database_id="nyc_0001",
+            city="new york",
+            sql="SELECT 1",
+            question="dummy",
+            difficulty="easy",
+            instruction="custom instruction",
+            input_text="custom input",
+            output_text="SELECT 1",
+        )
+        rows = formatter.format_samples([raw])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].instruction, "custom instruction")
+        self.assertEqual(rows[0].input_text, "custom input")
+        self.assertEqual(rows[0].output_text, "SELECT 1")
 
     def test_alpaca_writer_emits_instruction_input_output_only(self):
         row = AlpacaFinetuneSample(
             instruction="Do the task.",
-            input_text="## Schema\n- parks(id integer)\n\n## Representative Values\n{}\n\n## Question\nWhich parks?",
-            output_text="```sql\nSELECT id FROM parks\n```",
+            input_text="【Database Schema】\n# Table: parks\n[\n  (id:integer)\n]\n\n【User Question】\nWhich parks?\n\n```sql",
+            output_text="SELECT id FROM parks",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "alpaca.jsonl"
@@ -425,7 +488,6 @@ class TRLFinetuneTests(unittest.TestCase):
         builder = SpatialText2SQLDatasetBuilder(
             data_config=FinetuneDataConfig(
                 input_path="",
-                alpaca_output_path="",
                 task_description="Translate to SQL.",
                 question_id_start=0,
                 max_representative_rows=3,
@@ -441,6 +503,7 @@ class TRLFinetuneTests(unittest.TestCase):
             instruction="Do the task.",
             input_text="## Schema\n- table_1(id integer, name text, geom geometry(Point,4326))\n\n## Representative Values\n{}\n\n## Question\nWhich names should be returned?",
             output_text="Return the names.\n\n```sql\nSELECT name FROM table_1 LIMIT 5\n```",
+            
             sql_reasoning_summary="Return the names.",
             used_tables=["table_1"],
             used_columns=["name"],
@@ -452,12 +515,11 @@ class TRLFinetuneTests(unittest.TestCase):
         self.assertEqual(len(prepared), 1)
         self.assertEqual(prepared[0].question_id, 0)
         self.assertEqual(prepared[0].difficulty, "medium")
-        self.assertIn("```sql", prepared[0].completion)
+        self.assertIn("SELECT name FROM table_1 LIMIT 5", prepared[0].completion)
         self.assertEqual(prepared[0].sql_reasoning_summary, "Return the names.")
         self.assertEqual(prepared[0].instruction, "Do the task.")
         self.assertIn("## Schema", prepared[0].input_text)
-        self.assertIn("## Representative Values", prepared[0].prompt)
-        self.assertNotIn("## Spatial Field Metadata", prepared[0].prompt)
+        self.assertTrue(prepared[0].prompt.endswith("```sql"))
 
     def test_dataset_builder_uses_embedded_nl2sql_metadata_only(self):
         runtime_metadata = {
@@ -485,7 +547,6 @@ class TRLFinetuneTests(unittest.TestCase):
         builder = SpatialText2SQLDatasetBuilder(
             data_config=FinetuneDataConfig(
                 input_path="",
-                alpaca_output_path="",
                 task_description="Translate to SQL.",
                 question_id_start=0,
                 max_representative_rows=3,
@@ -510,15 +571,14 @@ class TRLFinetuneTests(unittest.TestCase):
         )
         prepared = builder.prepare_samples([raw])
         self.assertEqual(len(prepared), 1)
-        self.assertIn("- parks(id integer, name text, geom geometry(Point,4326))", prepared[0].prompt)
-        self.assertNotIn("## Spatial Field Metadata", prepared[0].prompt)
-        self.assertIn("```sql", prepared[0].completion)
+        self.assertIn("# Table: parks", prepared[0].prompt)
+        self.assertIn("Examples: [alpha]", prepared[0].prompt)
+        self.assertEqual(prepared[0].completion, "SELECT name FROM parks LIMIT 5")
 
     def test_dataset_builder_does_not_fallback_to_database_when_metadata_missing(self):
         builder = SpatialText2SQLDatasetBuilder(
             data_config=FinetuneDataConfig(
                 input_path="",
-                alpaca_output_path="",
                 task_description="Translate to SQL.",
                 question_id_start=0,
                 max_representative_rows=3,
@@ -540,8 +600,8 @@ class TRLFinetuneTests(unittest.TestCase):
         prepared = builder.prepare_samples([raw])
         self.assertEqual(len(prepared), 1)
         self.assertIn("No schema available.", prepared[0].prompt)
-        self.assertIn("{}", prepared[0].prompt)
-        self.assertIn("```sql", prepared[0].completion)
+        self.assertIn("【Database Schema】", prepared[0].prompt)
+        self.assertEqual(prepared[0].completion, "SELECT name FROM parks LIMIT 5")
 
 
 if __name__ == "__main__":

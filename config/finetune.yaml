@@ -1,8 +1,6 @@
 data:
-  # Source nl2sql rows consumed by the standalone formatter step.
-  input_path: data/processed/nl2sql.jsonl
-  # Alpaca-format JSONL produced by scripts/finetune/format_nl2sql.sh and consumed by train.sh.
-  alpaca_output_path: data/processed/finetune/nl2sql_alpaca.jsonl
+  # Alpaca-format JSONL produced during quality control and consumed directly by train.sh.
+  input_path: data/processed/finetune/nl2sql_alpaca.jsonl
   task_description: Translate the spatial question into one executable PostgreSQL/PostGIS SQL query using the provided schema and representative values.
   eval_ratio: 0.02
   question_id_start: 0

@@ -346,7 +346,7 @@ scripts/finetune/train.sh
 Typical usage:
 
 ```bash
-# Train from the default nl2sql input with a different base model
+# Train from the default Alpaca input with a different base model
 scripts/finetune/train.sh \
   --model-name-or-path Qwen/Qwen2.5-7B-Instruct \
   --output-dir outputs/finetune/qwen25_7b_full
@@ -357,17 +357,15 @@ scripts/finetune/train.sh --nvidia-gpu-indices 0,1,2,3,4,5,6,7
 # Restrict training to two NVIDIA GPUs by physical index
 scripts/finetune/train.sh --nvidia-gpu-indices 0,1
 
-# Override the nl2sql input or Alpaca output path
+# Override the Alpaca input path
 scripts/finetune/train.sh \
-  --input data/processed/nl2sql.jsonl \
-  --alpaca-output data/processed/finetune/nl2sql_alpaca.jsonl
+  --input data/processed/finetune/nl2sql_alpaca.jsonl
 ```
 
 Default settings:
 
 - Config file: `config/finetune.yaml`
-- Input NL2SQL file: `data/processed/nl2sql.jsonl`
-- Alpaca training file: `data/processed/finetune/nl2sql_alpaca.jsonl`
+- Input Alpaca file: `data/processed/finetune/nl2sql_alpaca.jsonl`
 - Shell entrypoint: `scripts/finetune/train.sh`
 - Python CLI: `src/finetune/cli.py`
 - Prompt instruction layout is built directly in `src/finetune/prompting.py`
@@ -380,13 +378,11 @@ Default settings:
 
 Training data behavior:
 
-- The fine-tuning loader reads `question`, `sql`, `database_id`, `question_id`, `source_difficulty_level`, `used_tables`, `used_columns`, `used_spatial_functions`, and `sql_features` directly from `nl2sql.jsonl`.
-- Fine-tuning only uses the embedded `metadata.database_context` carried by each `nl2sql` row.
-- If embedded metadata is missing, prompt assembly keeps the sample and leaves schema / representative-value sections empty; it does not connect back to PostgreSQL/PostGIS.
-- `scripts/finetune/train.sh` first formats `nl2sql.jsonl` into `nl2sql_alpaca.jsonl`, then trains from that Alpaca file.
+- The fine-tuning loader reads Alpaca rows directly from `nl2sql_alpaca.jsonl`.
+- `nl2sql_alpaca.jsonl` is generated during the quality-control step, alongside `nl2sql.jsonl`.
 - The generated Alpaca file contains only three fields per row: `instruction`, `input`, and `output`.
 - When `runtime.nvidia_gpu_indices` is set, the fine-tune CLI exports `CUDA_VISIBLE_DEVICES` and `NVIDIA_VISIBLE_DEVICES` before importing the trainer stack.
-- When more than one visible GPU is configured and `runtime.distributed_backend=accelerate`, the CLI formats once on the parent process and then relaunches training with `accelerate launch` against the generated Alpaca file.
+- When more than one visible GPU is configured and `runtime.distributed_backend=accelerate`, the CLI relaunches training with `accelerate launch` against the existing Alpaca file.
 - The default DeepSpeed config uses ZeRO-3, which shards model parameters, gradients, and optimizer states across ranks to lower per-GPU memory usage. This is model-state sharding, not tensor parallelism.
 - If `training.deepspeed_config_path` is provided, the Hugging Face trainer passes that DeepSpeed config through to TRL/HF training under the same `accelerate` launch flow.
 

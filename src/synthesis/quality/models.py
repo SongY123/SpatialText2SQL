@@ -265,6 +265,22 @@ class NLSQLSample:
             if representative_values:
                 row["representative_values"] = representative_values
 
+            from src.finetune.prompting import FinetunePromptRenderer
+
+            prompt_renderer = FinetunePromptRenderer(task_description="", max_representative_rows=3)
+            schema_lines, prompt_representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+                database_context_payload,
+                max_representative_rows=3,
+            )
+            row["instruction"] = prompt_renderer.render_instruction()
+            row["input"] = prompt_renderer.render_input(
+                database_id=self.database_id,
+                question=self.question,
+                schema_lines=schema_lines,
+                representative_values=prompt_representative_values,
+            )
+            row["output"] = prompt_renderer.render_output(self.sql_reasoning_summary, self.sql)
+
         return stable_jsonify(row)
 
 

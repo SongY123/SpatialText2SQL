@@ -22,6 +22,7 @@ from src.synthesis.quality import (
     format_only_quality_control,
     load_quality_control_config,
     load_nl_sql_samples,
+    write_alpaca_finetune_samples,
     write_nl_sql_samples,
 )
 from src.synthesis.quality.models import ColumnSchema
@@ -463,6 +464,37 @@ class QualityControlTests(unittest.TestCase):
             self.assertIn("CREATE TABLE parks", row["schema_ddls"][0])
             self.assertEqual(row["representative_values"]["parks"]["name"], ["central park"])
             self.assertNotIn("tables", row["metadata"]["database_context"])
+            self.assertIn("PostgreSQL/PostGIS expert", row["instruction"])
+            self.assertIn("【Database Schema】", row["input"])
+            self.assertIn("# Table: parks", row["input"])
+            self.assertTrue(row["input"].endswith("```sql"))
+            self.assertEqual(row["output"], "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)")
+
+    def test_alpaca_writer_outputs_instruction_input_output_only(self):
+        samples = [
+            _sample(
+                "s1",
+                question="Which parks are within 100 units of neighborhoods?",
+                sql="SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)",
+                used_tables=["parks", "neighborhoods"],
+            )
+        ]
+        samples[0].metadata = {
+            "database_context": {
+                "selected_table_names": ["parks"],
+                "schema_ddls": ["CREATE TABLE parks (\n    id integer,\n    name text\n);"],
+                "representative_values": {"parks": [{"id": 1, "name": "central park"}]},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "alpaca.jsonl"
+            write_alpaca_finetune_samples(str(output_path), samples)
+            payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(set(payload.keys()), {"instruction", "input", "output"})
+        self.assertIn("PostgreSQL/PostGIS expert", payload["instruction"])
+        self.assertIn("# Table: parks", payload["input"])
+        self.assertTrue(payload["input"].endswith("```sql"))
+        self.assertEqual(payload["output"], "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100)")
 
     def test_formatter_only_quality_control_keeps_all_samples_for_finetune(self):
         samples = [

@@ -29,6 +29,15 @@ class NL2SQLAlpacaFormatter:
     def format_samples(self, rows: Sequence[RawFinetuneSample]) -> list[AlpacaFinetuneSample]:
         formatted_rows: list[AlpacaFinetuneSample] = []
         for row in rows:
+            if row.instruction and row.input_text and row.output_text:
+                formatted_rows.append(
+                    AlpacaFinetuneSample(
+                        instruction=row.instruction,
+                        input_text=row.input_text,
+                        output_text=row.output_text,
+                    )
+                )
+                continue
             metadata = self._load_embedded_metadata(row)
             schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
                 metadata,
@@ -36,6 +45,7 @@ class NL2SQLAlpacaFormatter:
             )
             instruction = self.prompt_renderer.render_instruction()
             input_text = self.prompt_renderer.render_input(
+                database_id=row.database_id,
                 question=row.question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,

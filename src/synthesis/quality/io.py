@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from src.finetune.models import AlpacaFinetuneSample
 from src.synthesis.database.io import load_synthesized_databases
 from src.synthesis.database.models import SynthesizedSpatialDatabase
 
@@ -61,6 +62,21 @@ def write_nl_sql_samples(output_path: str, samples: list[NLSQLSample]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for sample in samples:
             handle.write(json.dumps(sample.to_output_dict(), ensure_ascii=False))
+            handle.write("\n")
+
+
+def write_alpaca_finetune_samples(output_path: str, samples: list[NLSQLSample]) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for sample in samples:
+            payload = sample.to_output_dict()
+            alpaca_row = AlpacaFinetuneSample(
+                instruction=str(payload.get("instruction") or "").strip(),
+                input_text=str(payload.get("input") or "").strip(),
+                output_text=str(payload.get("output") or "").strip(),
+            )
+            handle.write(json.dumps(alpaca_row.to_dict(), ensure_ascii=False))
             handle.write("\n")
 
 

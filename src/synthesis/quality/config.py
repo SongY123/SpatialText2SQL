@@ -93,6 +93,7 @@ class QualityControlRunConfig:
     sql_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
     schema_context_path: str = str(_project_root() / "data" / "processed" / "synthesized_spatial_databases.jsonl")
     output_path: str = str(_project_root() / "data" / "processed" / "nl2sql.jsonl")
+    alpaca_output_path: str = str(_project_root() / "data" / "processed" / "finetune" / "nl2sql_alpaca.jsonl")
     report_path: str = str(_project_root() / "data" / "processed" / "quality_control_report.json")
     allow_empty_result: bool = True
     max_result_rows: int = 5
@@ -299,6 +300,11 @@ def _build_quality_control_config_from_payload(
                 default_run.schema_context_path,
             ),
             output_path=_resolve_path(run_section.get("output_path"), path, default_run.output_path),
+            alpaca_output_path=_resolve_path(
+                run_section.get("alpaca_output_path"),
+                path,
+                default_run.alpaca_output_path,
+            ),
             report_path=_resolve_path(run_section.get("report_path"), path, default_run.report_path),
             allow_empty_result=_as_bool(run_section.get("allow_empty_result"), default_run.allow_empty_result),
             max_result_rows=_as_int(run_section.get("max_result_rows"), default_run.max_result_rows, minimum=1),
