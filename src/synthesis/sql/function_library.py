@@ -133,7 +133,11 @@ def build_required_function_constraints(
     merged: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
-    def _normalize_item(item: Mapping[str, Any] | PostGISFunction) -> dict[str, Any]:
+    def _normalize_item(
+        item: Mapping[str, Any] | PostGISFunction,
+        *,
+        sampling_role: str,
+    ) -> dict[str, Any]:
         if isinstance(item, PostGISFunction):
             payload = item.to_dict()
         else:
@@ -148,12 +152,13 @@ def build_required_function_constraints(
             "function_name": to_text(payload.get("function_name")),
             "signature": to_text(payload.get("signature")),
             "categories": stable_jsonify(payload.get("categories")) or [],
+            "sampling_role": sampling_role,
             "description": to_text(payload.get("description")),
             "example_usages": stable_jsonify(payload.get("example_usages")) or [],
         }
 
-    def _add_item(item: Mapping[str, Any] | PostGISFunction) -> None:
-        normalized = _normalize_item(item)
+    def _add_item(item: Mapping[str, Any] | PostGISFunction, *, sampling_role: str) -> None:
+        normalized = _normalize_item(item, sampling_role=sampling_role)
         function_name = normalized["function_name"]
         if not function_name:
             return
@@ -164,11 +169,11 @@ def build_required_function_constraints(
         merged.append(normalized)
 
     for item in sampled_functions:
-        _add_item(item)
+        _add_item(item, sampling_role="sampled")
 
     if difficulty_level in {"medium", "hard", "extra-hard"}:
         for item in FIXED_SPATIAL_JOIN_FUNCTION_SPECS:
-            _add_item(item)
+            _add_item(item, sampling_role="fallback_fixed_join")
 
     return merged
 
@@ -439,12 +444,11 @@ class PostGISFunctionLibrary:
         if not candidates:
             return []
 
-        desired_count = {
-            "easy": 1,
-            "medium": 2,
-            "hard": min(3, max(2, len(database.selected_tables))),
-            "extra-hard": min(4, max(2, len(database.selected_tables))),
-        }[difficulty_level]
+        desired_count = self._sample_desired_function_count(
+            difficulty_level=difficulty_level,
+            candidate_count=len(candidates),
+            rng=rng,
+        )
         desired_count = min(desired_count, len(candidates))
         preferred_candidates = [item for item in candidates if self._prefer_st_function_source(item)]
         fallback_candidates = [item for item in candidates if not self._prefer_st_function_source(item)]
@@ -457,6 +461,38 @@ class PostGISFunctionLibrary:
             selected.extend(sampled)
             remaining = desired_count - len(selected)
         return selected
+
+    @staticmethod
+    def _sample_desired_function_count(
+        *,
+        difficulty_level: str,
+        candidate_count: int,
+        rng: np.random.Generator,
+    ) -> int:
+        """
+        Sample a small function-set size rather than fixing one number per difficulty.
+
+        The ranges are intentionally conservative:
+        - SpatialQueryQA is dominated by one function, with two-function combinations common
+          and larger combinations rare.
+        - FloodSQL-Bench is centered around two to three unique spatial functions.
+        - SpatialSQL keeps SQL compact overall, so we avoid over-provisioning functions.
+        """
+        distributions: dict[str, tuple[list[int], list[float]]] = {
+            "easy": ([1, 2, 3], [0.65, 0.25, 0.10]),
+            "medium": ([1, 2, 3], [0.20, 0.55, 0.25]),
+            "hard": ([2, 3, 4], [0.20, 0.55, 0.25]),
+            "extra-hard": ([2, 3, 4], [0.15, 0.45, 0.40]),
+        }
+        values, probs = distributions[difficulty_level]
+        feasible_values = [value for value in values if value <= max(candidate_count, 1)]
+        if not feasible_values:
+            return min(max(candidate_count, 1), values[0])
+        if len(feasible_values) == 1:
+            return feasible_values[0]
+        feasible_probs = np.array(probs[: len(feasible_values)], dtype=float)
+        feasible_probs = feasible_probs / feasible_probs.sum()
+        return int(rng.choice(feasible_values, p=feasible_probs))
 
     @staticmethod
     def _sampling_weight(item: PostGISFunction) -> float:

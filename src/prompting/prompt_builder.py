@@ -108,6 +108,7 @@ class PromptBuilder:
         structural_constraints: Dict[str, Any],
         sampled_functions: List[Dict[str, Any]],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
+        bounded_limit_value: int = 5,
     ) -> str:
         schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
             database,
@@ -121,6 +122,7 @@ class PromptBuilder:
                     "function_name": item.get("function_name"),
                     "signature": item.get("signature"),
                     "categories": item.get("categories"),
+                    "sampling_role": item.get("sampling_role"),
                     "description": item.get("description"),
                     "example_usages": item.get("example_usages"),
                 }
@@ -142,6 +144,7 @@ class PromptBuilder:
                     structural_constraints,
                 ),
                 "required_function_block": self._stable_json_text(functions_payload),
+                "bounded_limit_value": self._stringify_value(bounded_limit_value),
             },
         )
 
@@ -153,6 +156,7 @@ class PromptBuilder:
         execution_error: str,
         used_tables: List[str],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
+        bounded_limit_value: int = 5,
     ) -> str:
         included_tables = {
             str(table_name).strip()
@@ -176,6 +180,7 @@ class PromptBuilder:
                 "representative_values_block": self._stable_json_text(representative_values),
                 "original_sql": self._stringify_value(original_sql),
                 "execution_error": self._stringify_value(execution_error or "unknown execution error"),
+                "bounded_limit_value": self._stringify_value(bounded_limit_value),
             },
         )
 
@@ -707,13 +712,11 @@ class PromptBuilder:
         min_tables = structural_constraints.get("min_tables")
         max_tables = structural_constraints.get("max_tables")
         lines = [f"Difficulty tier: {difficulty_level}"]
-        summary = str(structural_constraints.get("difficulty_summary") or "").strip()
-        if summary:
-            lines.append(f"- Summary: {summary}")
 
         if difficulty_level == "easy":
             lines.extend(
                 [
+                    "- Authoritative rule: easy = one-table spatial filter or lookup.",
                     "- Use exactly 1 table.",
                     "- Keep the SQL as a single-table spatial filter, lookup, or ranking query.",
                     "- Do not use joins, subqueries, or CTEs.",
@@ -722,6 +725,7 @@ class PromptBuilder:
         elif difficulty_level == "medium":
             lines.extend(
                 [
+                    "- Authoritative rule: medium = two tables with one spatial join.",
                     "- Use exactly 2 tables.",
                     "- Include exactly 1 spatial join connecting those two tables.",
                     "- Keep the query flat. Do not use subqueries or CTEs.",
@@ -730,6 +734,7 @@ class PromptBuilder:
         elif difficulty_level == "hard":
             lines.extend(
                 [
+                    "- Authoritative rule: hard = three tables with two spatial joins.",
                     "- Use exactly 3 tables.",
                     "- Include exactly 2 spatial joins connecting the three tables.",
                     "- Keep the logic flat and direct. Do not use nested subqueries or CTEs.",
@@ -738,16 +743,15 @@ class PromptBuilder:
         else:
             lines.extend(
                 [
+                    "- Authoritative rule: extra-hard = three to four tables, at least one spatial join, and total spatial joins plus nested queries between two and four.",
                     f"- Use between {min_tables} and {max_tables} tables.",
                     "- Include at least 1 spatial join.",
                     "- Count each spatial join and each nested query (subquery or CTE) as one advanced operation.",
                     "- Keep the total number of spatial joins plus nested queries between 2 and 4.",
                     "- Prefer the simplest executable SQL that satisfies the tier instead of making the query harder for its own sake.",
+                    "- Use nested structure only when it is semantically necessary.",
                 ]
             )
-
-        lines.append("Structured constraints:")
-        lines.append(self._stable_json_text(structural_constraints))
         return "\n".join(lines)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:

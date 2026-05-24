@@ -429,6 +429,48 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertTrue(any("SELECT *" in item for item in result.errors))
         self.assertTrue(any("LIMIT must stay between 1 and 5" in item for item in result.errors))
 
+    def test_sql_validator_rejects_limit_mismatch_with_sampled_row_cap(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        validator = SQLValidator(library)
+        result = validator.validate(
+            sql="SELECT ST_Buffer(t.geom, 10) FROM table_1 t LIMIT 3",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+            expected_limit=5,
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("sampled bounded row cap 5" in item for item in result.errors))
+
+    def test_sql_validator_rejects_non_aggregate_query_without_limit(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        validator = SQLValidator(library)
+        result = validator.validate(
+            sql="SELECT ST_Buffer(t.geom, 10) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Buffer"],
+            difficulty_level="easy",
+            expected_limit=4,
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must include LIMIT" in item for item in result.errors))
+
+    def test_sql_validator_rejects_aggregate_query_with_limit(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        database = _make_database(table_count=1)
+        validator = SQLValidator(library)
+        result = validator.validate(
+            sql="SELECT COUNT(*), ST_Union(t.geom, t.geom) FROM table_1 t LIMIT 2",
+            database=database,
+            sampled_functions=["ST_Union"],
+            difficulty_level="easy",
+            expected_limit=2,
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must not use LIMIT" in item for item in result.errors))
+
     def test_ollama_generator_uses_openai_style_client(self):
         generator = OllamaSQLGenerator(
             model="qwen2.5:14b",
@@ -532,9 +574,29 @@ class SQLSynthesisTests(unittest.TestCase):
 
         db = _make_database(table_count=1)
         sampled = library.sample_functions(db, "easy", np.random.default_rng(11))
-        self.assertEqual(len(sampled), 1)
-        self.assertEqual(sampled[0].function_name, "ST_Buffer")
-        self.assertIn("ST_Function.md", sampled[0].source)
+        self.assertGreaterEqual(len(sampled), 1)
+        self.assertLessEqual(len(sampled), 3)
+        self.assertIn("ST_Buffer", [item.function_name for item in sampled])
+        self.assertTrue(any("ST_Function.md" in item.source for item in sampled))
+
+    def test_function_sampling_uses_small_difficulty_specific_count_ranges(self):
+        library = _load_library(_sample_function_json_payload()[:4], _sample_function_markdown())
+        import numpy as np
+
+        db_easy = _make_database(table_count=1)
+        db_medium = _make_database(table_count=2)
+        db_hard = _make_database(table_count=3)
+
+        easy_samples = library.sample_functions(db_easy, "easy", np.random.default_rng(1))
+        medium_samples = library.sample_functions(db_medium, "medium", np.random.default_rng(2))
+        hard_samples = library.sample_functions(db_hard, "hard", np.random.default_rng(3))
+
+        self.assertGreaterEqual(len(easy_samples), 1)
+        self.assertLessEqual(len(easy_samples), 3)
+        self.assertGreaterEqual(len(medium_samples), 1)
+        self.assertLessEqual(len(medium_samples), 3)
+        self.assertGreaterEqual(len(hard_samples), 2)
+        self.assertLessEqual(len(hard_samples), 4)
 
     def test_function_library_matches_markdown_entries_by_function_id(self):
         payload = [
@@ -631,10 +693,12 @@ class SQLSynthesisTests(unittest.TestCase):
                     "function_name": "ST_DWithin",
                     "signature": "ST_DWithin(geometry, geometry, double precision)",
                     "categories": ["spatial_join"],
+                    "sampling_role": "sampled",
                     "description": "Returns true if geometries are within distance.",
                     "example_usages": ["SELECT ST_DWithin(a.geom, b.geom, 100)"],
                 }
             ],
+            bounded_limit_value=4,
         )
         self.assertIn("Representative Values", prompt)
         self.assertNotIn("Spatial Field Metadata", prompt)
@@ -643,8 +707,10 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("used_spatial_functions", prompt)
         self.assertIn("Return a JSON object only", prompt)
         self.assertIn("do not use `SELECT *`", prompt)
-        self.assertIn("choose a random row cap `k` between 1 and 5", prompt)
-        self.assertIn("do not always use 5", prompt)
+        self.assertIn('sampling_role": "sampled"', prompt)
+        self.assertIn("sampled_bounded_limit: 4", prompt)
+        self.assertIn("If the query uses a scalar aggregate or any GROUP BY, do not use LIMIT.", prompt)
+        self.assertIn("Otherwise, the query must use `LIMIT 4` exactly.", prompt)
 
     def test_minor_revision_prompt_contains_error_and_involved_table_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})
@@ -685,11 +751,15 @@ class SQLSynthesisTests(unittest.TestCase):
             execution_error="operator does not exist",
             used_tables=["table_1"],
             database_runtime_metadata=runtime_metadata,
+            bounded_limit_value=2,
         )
         self.assertIn("operator does not exist", prompt)
         self.assertIn("table_1(id integer, name text, shape geography(Point,4326))", prompt)
         self.assertIn('"hydrant"', prompt)
         self.assertNotIn("table_2(id integer)", prompt)
+        self.assertIn("sampled_bounded_limit: 2", prompt)
+        self.assertIn("If the query uses a scalar aggregate or any GROUP BY, remove LIMIT.", prompt)
+        self.assertIn("Otherwise, the query must use `LIMIT 2` exactly.", prompt)
 
     def test_prompt_builder_renders_explicit_difficulty_tier_guidance(self):
         builder = PromptBuilder({"project_root": Path.cwd()})

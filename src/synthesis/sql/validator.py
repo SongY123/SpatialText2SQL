@@ -405,6 +405,7 @@ class SQLValidator:
         sampled_functions: Sequence[str],
         difficulty_level: str,
         database_runtime_metadata: Mapping[str, object] | None = None,
+        expected_limit: int | None = None,
     ) -> SQLValidationResult:
         sql_text = to_text(sql)
         errors: list[str] = []
@@ -495,12 +496,24 @@ class SQLValidator:
             errors.append("SQL must not use SELECT * or table.* projections.")
         if int(projection_features["select_expression_count"]) > 3:
             errors.append("SQL must project at most three output expressions.")
+        uses_aggregate_or_group_by = (
+            int(projection_features["aggregate_projection_count"]) > 0
+            or bool(difficulty_features.get("has_group_by"))
+        )
         if difficulty_features.get("has_limit"):
             limit_match = re.search(r"\blimit\s+(\d+)", sql_text, re.I)
             if limit_match:
                 limit_number = int(limit_match.group(1))
                 if limit_number < 1 or limit_number > 5:
                     errors.append("SQL LIMIT must stay between 1 and 5.")
+                if uses_aggregate_or_group_by:
+                    errors.append("Aggregate or GROUP BY queries must not use LIMIT.")
+                elif expected_limit is not None and limit_number != int(expected_limit):
+                    errors.append(
+                        f"SQL LIMIT must equal the sampled bounded row cap {int(expected_limit)}."
+                    )
+        elif not uses_aggregate_or_group_by:
+            errors.append("Non-aggregate queries must include LIMIT.")
         if (
             int(projection_features["aggregate_projection_count"]) > 0
             and not bool(difficulty_features.get("has_group_by"))

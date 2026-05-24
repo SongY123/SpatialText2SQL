@@ -16,25 +16,22 @@ Prefer the simplest coherent query that satisfies the difficulty requirement and
 ## Difficulty Constraint
 {{difficulty_constraint_block}}
 
-Treat the difficulty block as authoritative.
-Interpret the difficulty tiers strictly:
-- easy = one-table spatial filter or lookup
-- medium = two tables with one spatial join
-- hard = three tables with two spatial joins
-- extra-hard = three to four tables, at least one spatial join, and total spatial joins plus nested queries between two and four
-
-When the difficulty requires an exact number of tables or spatial joins, do not underuse or overuse them.
-For extra-hard, use nested structure only when it is semantically necessary; do not add gratuitous joins or nesting.
-
 ## Required PostGIS Function Constraints
 {{required_function_block}}
 
 Use only PostGIS functions listed in the required function block.
-Use at least one compatible sampled function when possible.
+Functions with `sampling_role: "sampled"` are the primary target functions for this sample.
+Functions with `sampling_role: "fallback_fixed_join"` are helper options added only to keep the requested difficulty feasible.
+Prefer using at least one compatible `sampled` function when possible; do not default to `fallback_fixed_join` functions if a sampled function can be used naturally.
 Select the minimum compatible subset needed for one coherent executable SQL query.
+You do not need to use every provided function. Use only the subset whose semantics fit the query naturally.
 A function is compatible only if its argument types, argument order, and spatial intent match the available schema.
 Do not introduce, substitute, recommend, or use any PostGIS function that is not explicitly provided.
 If no sampled function can be used naturally or safely, generate the simplest executable query supported by the schema without inventing additional PostGIS functions.
+If a sampled function is a validity or quality-check function such as ST_IsValid, ST_IsValidReason, or ST_IsValidDetail, use it meaningfully as a filter, boolean projection, or diagnostic condition instead of ignoring it in favor of a more common spatial join.
+
+## Sampled Row Cap
+- sampled_bounded_limit: {{bounded_limit_value}}
 
 ## SQL Construction Requirements
 - Use only schema-listed tables and columns.
@@ -54,9 +51,8 @@ If no sampled function can be used naturally or safely, generate the simplest ex
   - return geometry columns only when the intended task is explicitly about geometry, shape, boundary, centroid, coordinates, or spatial output
 - Keep the projected column count small. Prefer at most three output expressions.
 - If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
-- Return at most 5 rows.
-- For bounded ranked/result-list queries, choose a random row cap `k` between 1 and 5 and express it with `LIMIT <k>`; do not always use 5.
-- Omit LIMIT only when the query is guaranteed to return a single row, such as a scalar aggregate or primary-key lookup.
+- If the query uses a scalar aggregate or any GROUP BY, do not use LIMIT.
+- Otherwise, the query must use `LIMIT {{bounded_limit_value}}` exactly.
 
 ## PostGIS Semantics Requirements
 - Respect geometry/geography types and function signatures exactly.

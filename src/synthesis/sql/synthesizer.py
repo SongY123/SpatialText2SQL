@@ -327,13 +327,15 @@ class ConstraintGuidedSQLSynthesizer:
         source_database_table_count: int,
     ) -> SynthesizedSQLQuery | None:
         sample_tag = self._sample_tag(database, sample_index)
+        bounded_limit_value = int(self.rng.integers(1, 6))
         prompt_build_start = time.perf_counter()
         LOGGER.info(
-            "SQL synthesis start | sample=%s | difficulty=%s | prompt_tables=%s | candidate_functions=%s",
+            "SQL synthesis start | sample=%s | difficulty=%s | prompt_tables=%s | candidate_functions=%s | bounded_limit=%s",
             sample_tag,
             difficulty_level,
             len(database.selected_tables),
             self._format_function_names(sampled_functions),
+            bounded_limit_value,
         )
         required_functions = build_required_function_constraints(sampled_functions, difficulty_level)
         prompt = self.prompt_builder.build_sql_synthesis_prompt(
@@ -342,6 +344,7 @@ class ConstraintGuidedSQLSynthesizer:
             structural_constraints=dict(structural_constraints),
             sampled_functions=required_functions,
             database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+            bounded_limit_value=bounded_limit_value,
         )
         prompt_build_ms = (time.perf_counter() - prompt_build_start) * 1000.0
         LOGGER.info(
@@ -420,6 +423,7 @@ class ConstraintGuidedSQLSynthesizer:
                 sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                 difficulty_level=difficulty_level,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+                expected_limit=bounded_limit_value,
             )
             validation_ms = (time.perf_counter() - validation_start) * 1000.0
             LOGGER.info(
@@ -485,6 +489,7 @@ class ConstraintGuidedSQLSynthesizer:
                 execution_error=revision_feedback,
                 used_tables=involved_tables,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+                bounded_limit_value=bounded_limit_value,
             )
             minor_revision_prompts.append(minor_revision_prompt)
             minor_revision_applied = True
@@ -564,6 +569,7 @@ class ConstraintGuidedSQLSynthesizer:
                     sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                     difficulty_level=difficulty_level,
                     database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+                    expected_limit=bounded_limit_value,
                 )
                 validation_ms = (time.perf_counter() - validation_start) * 1000.0
                 LOGGER.info(
@@ -656,6 +662,7 @@ class ConstraintGuidedSQLSynthesizer:
                 "sampled_function_signatures": [item.signature for item in sampled_functions],
                 "required_function_names": [to_text(item.get("function_name")) for item in required_functions],
                 "required_function_signatures": [to_text(item.get("signature")) for item in required_functions],
+                "bounded_limit_value": bounded_limit_value,
                 "generation_rounds": generation_rounds,
                 "minor_revision_applied": minor_revision_applied,
                 "retained_with_warning": False,
