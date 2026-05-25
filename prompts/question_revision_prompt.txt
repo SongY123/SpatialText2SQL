@@ -39,13 +39,18 @@ Use the following PostGIS function descriptions as authoritative guidance for th
 - If the SQL projects one scalar aggregate, ask for one value, not a list of details.
 - If the SQL projects one non-aggregate field, ask for that field only.
 - If the SQL projects two or three fields, mention the output attributes naturally.
-- If the SQL returns geometry/shape output, mention geometry, shape, boundary, centroid, or coordinates explicitly.
-- If the SQL does not return geometry, do not ask for geometric output.
+- If the SQL returns geometry, shape, boundary, centroid, or coordinates, mention that output explicitly. Otherwise do not ask for geometric output.
 - If the SQL uses DISTINCT, preserve the deduplication intent naturally.
 - If the SQL includes ORDER BY or LIMIT, make the ranking or top-k intent explicit.
 - If the SQL is limited to one row because of ranking, nearest, or top-k logic, prefer singular/top-1 phrasing over plural listing language.
 - Rephrase spatial functions into natural language. Do not expose raw SQL or PostGIS function names.
+- Translate coordinate or extent accessors into natural geographic wording when possible, such as west/east or south/north extent, longitude/latitude thresholds, or westernmost/easternmost.
+- Keep benchmark-like surface forms:
+  - short direct question openings such as "What", "Which", "How many", "List", "Find", "Return", or "Show"
+  - short parenthetical disambiguation when needed
+  - one short clarification sentence only when the SQL meaning depends on a definition, identifier rule, segmented named feature, or output restriction
 - Do not mention SQL, PostGIS, databases, schemas, field names, aliases, CTE names, or implementation details.
+- Keep the revision compact. Prefer one sentence, but a short second sentence is allowed when it preserves meaning more faithfully.
 - Return exactly one revised question only.
 
 ## Output Format

@@ -31,12 +31,12 @@ generation:
   num_questions_per_sql: 1
   max_revision_rounds: 0
   style_weights:
-    conversational: 0.0
-    formal: 0.0
-    direct: 2.0
+    conversational: 0.5
+    formal: 0.8
+    direct: 2.2
     concise: 2.0
-    polite: 0.0
-    analytical: 0.0
+    polite: 0.3
+    analytical: 0.8
   random_seed: 42
 
 logging:

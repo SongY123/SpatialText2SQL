@@ -11,12 +11,12 @@ from .models import QUESTION_STYLES, SQLFeatureSummary, SpatialRelationConstrain
 
 
 STYLE_DESCRIPTIONS: dict[str, str] = {
-    "conversational": "Use plain natural English, but keep it task-oriented and avoid filler.",
-    "formal": "Use precise professional wording while keeping the phrasing short and task-focused.",
-    "direct": "Use a straightforward task-oriented request, typically starting with What, Which, How many, List, or Find.",
-    "concise": "Keep the wording compact and benchmark-like while preserving the full SQL meaning.",
-    "polite": "Use mildly courteous wording only if needed, without adding extra filler or softening the task intent.",
-    "analytical": "Use an investigative but still compact task-oriented question without changing the SQL semantics.",
+    "conversational": "Use plain benchmark-like English. A light first-person request such as 'I want to know ...' is allowed when natural.",
+    "formal": "Use precise professional wording such as 'What is', 'Which', 'Return', or 'Determine', while staying short.",
+    "direct": "Use a straightforward benchmark-style request, usually starting with What, Which, How many, List, Find, Return, or Show.",
+    "concise": "Keep the wording compact and benchmark-like. Prefer one sentence unless a short clarification is needed.",
+    "polite": "Use mild courtesy such as 'Could you' or 'Please', but keep the request brief and task-focused.",
+    "analytical": "Use compact investigative wording such as 'For each', 'Compare', or 'What is the average ...' without adding commentary.",
 }
 
 
