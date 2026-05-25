@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import sys
 from pathlib import Path
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--statement-timeout", type=int)
     parser.add_argument("--random-seed", type=int)
     parser.add_argument("--max-revision-rounds", type=int)
+    parser.add_argument("--parallel-workers", type=int)
     parser.add_argument("--enable-execution-check", dest="enable_execution_check", action="store_true")
     parser.add_argument("--disable-execution-check", dest="enable_execution_check", action="store_false")
     parser.set_defaults(enable_execution_check=None)
@@ -112,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             "difficulty": args.difficulty,
             "difficulty_weights": args.difficulty_weights,
             "random_seed": args.random_seed,
+            "parallel_workers": args.parallel_workers,
             "keep_invalid": args.keep_invalid if args.keep_invalid else None,
             "keep_failed_execution": args.keep_failed_execution if args.keep_failed_execution else None,
             "max_revision_rounds": args.max_revision_rounds,
@@ -145,12 +148,13 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | discard_output=%s | execution_check=%s | dry_run=%s",
+        "SQL synthesis config loaded | provider=%s | model=%s | input=%s | output=%s | discard_output=%s | parallel_workers=%s | execution_check=%s | dry_run=%s",
         config.llm.provider,
         config.llm.model,
         config.synthesis.input_path,
         config.synthesis.output_path,
         config.synthesis.discard_output_path,
+        config.synthesis.parallel_workers,
         config.execution.enable_execution_check,
         config.execution.dry_run,
     )
@@ -176,16 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         config.functions.postgis_function_json_path,
         config.functions.st_function_markdown_path,
     )
-    generator = build_sql_generator(config=config.llm)
-    logging.info(
-        "Initialized SQL generator | provider=%s | model=%s | timeout=%ss | max_retries=%s",
-        config.llm.provider,
-        config.llm.model,
-        config.llm.timeout,
-        config.llm.max_retries,
-    )
     prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[3]})
-    validator = SQLValidator(function_library)
     execution_checker = SQLExecutionChecker(config.database, config.execution)
     prompt_metadata_provider = PostGISPromptMetadataProvider(config.database)
     output_path = Path(config.synthesis.output_path)
@@ -206,23 +201,81 @@ def main(argv: list[str] | None = None) -> int:
         config.synthesis.discard_output_path,
         "append" if had_existing_discard_output else "create",
     )
-    synthesizer = ConstraintGuidedSQLSynthesizer(
-        config=config,
-        function_library=function_library,
-        sql_generator=generator,
-        prompt_builder=prompt_builder,
-        validator=validator,
-        execution_checker=execution_checker,
-        prompt_metadata_provider=prompt_metadata_provider,
-        existing_sql_id_offsets=existing_sql_id_offsets,
+    logging.info(
+        "Initialized shared SQL synthesis components | provider=%s | model=%s | timeout=%ss | max_retries=%s | pool_max_size=%s",
+        config.llm.provider,
+        config.llm.model,
+        config.llm.timeout,
+        config.llm.max_retries,
+        config.database.pool_max_size,
     )
-    written_count = 0
-    discarded_count = 0
 
-    def _append_row(row):
-        nonlocal written_count
+    parallel_workers = max(1, int(config.synthesis.parallel_workers))
+    all_rows = []
+    all_discarded_rows = []
+    aggregate_stats = {
+        "generated_total": 0,
+        "retained_total": 0,
+        "generated_by_difficulty": {level: 0 for level in ("easy", "medium", "hard", "extra-hard")},
+        "retained_by_difficulty": {level: 0 for level in ("easy", "medium", "hard", "extra-hard")},
+    }
+
+    def _run_database_task(task_index, database):
+        local_config = override_sql_synthesis_config(
+            config,
+            synthesis={"random_seed": int(config.synthesis.random_seed) + task_index},
+        )
+        local_generator = build_sql_generator(config=local_config.llm)
+        local_synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=local_config,
+            function_library=function_library,
+            sql_generator=local_generator,
+            prompt_builder=prompt_builder,
+            validator=SQLValidator(function_library),
+            execution_checker=execution_checker,
+            prompt_metadata_provider=prompt_metadata_provider,
+            existing_sql_id_offsets={
+                database.database_id: existing_sql_id_offsets.get(database.database_id, 0),
+            },
+        )
+        discarded_rows = []
+        rows = local_synthesizer.synthesize_for_database(
+            database,
+            on_row_discarded=discarded_rows.append,
+        )
+        return rows, discarded_rows, local_synthesizer.get_run_stats()
+
+    with ThreadPoolExecutor(max_workers=min(parallel_workers, len(databases))) as executor:
+        future_map = {
+            executor.submit(_run_database_task, task_index, database): (task_index, database)
+            for task_index, database in enumerate(databases)
+        }
+        for future in as_completed(future_map):
+            task_index, database = future_map[future]
+            try:
+                rows, discarded_rows, run_stats = future.result()
+            except Exception as exc:
+                logging.exception(
+                    "SQL synthesis database task failed | task_index=%s | database_id=%s | error=%s",
+                    task_index,
+                    database.database_id,
+                    exc,
+                )
+                continue
+            all_rows.extend(rows)
+            all_discarded_rows.extend(discarded_rows)
+            aggregate_stats["generated_total"] += int(run_stats["generated_total"])
+            aggregate_stats["retained_total"] += int(run_stats["retained_total"])
+            for level, count in run_stats["generated_by_difficulty"].items():
+                aggregate_stats["generated_by_difficulty"][level] += int(count)
+            for level, count in run_stats["retained_by_difficulty"].items():
+                aggregate_stats["retained_by_difficulty"][level] += int(count)
+
+    all_rows.sort(key=lambda row: row.sql_id)
+    all_discarded_rows.sort(key=lambda row: (row.database_id, row.sql, row.discard_reason))
+
+    for written_count, row in enumerate(all_rows, start=1):
         append_sql_query(config.synthesis.output_path, row)
-        written_count += 1
         logging.info(
             "Appended SQL sample | output=%s | written_count=%s | sql_id=%s",
             config.synthesis.output_path,
@@ -230,10 +283,8 @@ def main(argv: list[str] | None = None) -> int:
             row.sql_id,
         )
 
-    def _append_discarded_row(row):
-        nonlocal discarded_count
+    for discarded_count, row in enumerate(all_discarded_rows, start=1):
         append_discarded_sql_query(config.synthesis.discard_output_path, row)
-        discarded_count += 1
         logging.info(
             "Appended discarded SQL sample | output=%s | discarded_count=%s | database_id=%s",
             config.synthesis.discard_output_path,
@@ -241,12 +292,7 @@ def main(argv: list[str] | None = None) -> int:
             row.database_id,
         )
 
-    synthesizer.synthesize_all(
-        databases,
-        on_row_generated=_append_row,
-        on_row_discarded=_append_discarded_row,
-    )
-    run_stats = synthesizer.get_run_stats()
+    run_stats = aggregate_stats
     logging.info(
         "SQL synthesis difficulty stats | generated=%s | retained=%s",
         run_stats["generated_by_difficulty"],
@@ -257,10 +303,10 @@ def main(argv: list[str] | None = None) -> int:
         run_stats["generated_total"],
         run_stats["retained_total"],
     )
-    logging.info("Appended %s SQL samples to %s", written_count, config.synthesis.output_path)
+    logging.info("Appended %s SQL samples to %s", len(all_rows), config.synthesis.output_path)
     logging.info(
         "Appended %s discarded SQL samples to %s",
-        discarded_count,
+        len(all_discarded_rows),
         config.synthesis.discard_output_path,
     )
     return 0

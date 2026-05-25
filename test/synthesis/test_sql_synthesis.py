@@ -235,6 +235,29 @@ class RecordingCursor:
     def execute(self, query, params=None):
         self.calls.append((query, params))
 
+    def fetchmany(self, _size):
+        return [{"QUERY PLAN": "Seq Scan"}]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class RecordingConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.rollback_calls = 0
+        self.autocommit = False
+
+    def cursor(self, cursor_factory=None):
+        del cursor_factory
+        return self._cursor
+
+    def rollback(self):
+        self.rollback_calls += 1
+
 
 class SQLSynthesisTests(unittest.TestCase):
     def test_config_loading_and_override(self):
@@ -275,6 +298,9 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertEqual(overridden.llm.model, "override-model")
         self.assertTrue(overridden.synthesis.output_path.endswith("override.jsonl"))
         self.assertEqual(loaded.synthesis.num_sql_per_database, {"nyc": 8, "sf": 4})
+        self.assertEqual(loaded.synthesis.parallel_workers, 10)
+        self.assertTrue(loaded.execution.explain_only)
+        self.assertEqual(loaded.execution.execution_timeout, 5)
 
     def test_sql_output_is_appended_incrementally(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1103,14 +1129,19 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertTrue(result.is_valid)
         self.assertIn("shape", result.detected_columns)
 
-    def test_execution_checker_rejects_write_operations(self):
+    def test_execution_checker_uses_explain_for_write_like_sql_without_pre_rejecting(self):
         checker = SQLExecutionChecker(
             SQLSynthesisDBConfig(),
             SQLExecutionCheckConfig(enable_execution_check=True, require_non_empty_result=False),
         )
+        cursor = RecordingCursor()
+        connection = RecordingConnection(cursor)
+        checker._acquire_connection = lambda actual_database: connection  # type: ignore[attr-defined]
+        checker._release_connection = lambda conn: None  # type: ignore[attr-defined]
         result = checker.check("INSERT INTO x VALUES (1)", _make_database(table_count=1))
-        self.assertFalse(result.success)
-        self.assertFalse(result.executed)
+        self.assertTrue(result.success)
+        self.assertTrue(result.executed)
+        self.assertEqual(cursor.calls[3], ("EXPLAIN INSERT INTO x VALUES (1)", None))
 
     def test_execution_checker_sets_schema_search_path_before_execution_settings(self):
         checker = SQLExecutionChecker(
@@ -1127,6 +1158,29 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("'public'", repr(cursor.calls[0][0]))
         self.assertEqual(cursor.calls[1], ("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY", None))
         self.assertEqual(cursor.calls[2], ("SET statement_timeout = %s", (12000,)))
+
+    def test_execution_checker_keeps_sql_when_explain_times_out(self):
+        checker = SQLExecutionChecker(
+            SQLSynthesisDBConfig(),
+            SQLExecutionCheckConfig(enable_execution_check=True, require_non_empty_result=False, execution_timeout=5),
+        )
+
+        class TimeoutCursor(RecordingCursor):
+            def execute(self, query, params=None):
+                super().execute(query, params)
+                if isinstance(query, str) and query.startswith("EXPLAIN "):
+                    raise RuntimeError("canceling statement due to statement timeout")
+
+        cursor = TimeoutCursor()
+        connection = RecordingConnection(cursor)
+        checker._acquire_connection = lambda actual_database: connection  # type: ignore[attr-defined]
+        checker._release_connection = lambda conn: None  # type: ignore[attr-defined]
+
+        result = checker.check("SELECT 1", _make_database(table_count=1))
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.executed)
+        self.assertIn("statement timeout", result.error_message)
 
     def test_prompt_metadata_provider_sets_schema_search_path_before_execution_settings(self):
         provider = PostGISPromptMetadataProvider(SQLSynthesisDBConfig(search_path="custom", statement_timeout=3456))

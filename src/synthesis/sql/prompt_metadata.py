@@ -7,9 +7,10 @@ import logging
 import math
 from datetime import date, datetime, time
 from decimal import Decimal
+from threading import Lock
 from typing import Any, Mapping, Sequence
 
-import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2 import sql as pg_sql
 from psycopg2.extras import RealDictCursor
 
@@ -33,6 +34,8 @@ class PostGISPromptMetadataProvider:
     def __init__(self, db_config: SQLSynthesisDBConfig) -> None:
         self.db_config = db_config
         self._cache: dict[str, dict[str, Any] | None] = {}
+        self._pool: ThreadedConnectionPool | None = None
+        self._pool_lock = Lock()
 
     def load_database_metadata(
         self,
@@ -70,8 +73,10 @@ class PostGISPromptMetadataProvider:
 
         schema_name = normalize_postgres_identifier(database_id, prefix="schema")
         catalog_name = normalize_postgres_identifier(self.db_config.database, prefix="catalog") or self.db_config.database
+        conn = None
         try:
-            with self._connect(catalog_name) as conn:
+            conn = self._acquire_connection(catalog_name)
+            with conn:
                 resolved_tables = list(normalized_tables) or self._fetch_table_names(conn, schema_name)
                 if not resolved_tables:
                     LOGGER.warning("Prompt metadata provider found no tables | schema_id=%s", database_id)
@@ -92,6 +97,9 @@ class PostGISPromptMetadataProvider:
             )
             self._cache[cache_key] = None
             return None
+        finally:
+            if conn is not None:
+                self._release_connection(conn)
 
         self._cache[cache_key] = metadata
         return stable_jsonify(metadata)
@@ -115,15 +123,39 @@ class PostGISPromptMetadataProvider:
                 if isinstance(row, Mapping) and to_text(row.get("table_name"))
             ]
 
-    def _connect(self, catalog_name: str):
-        return psycopg2.connect(
-            host=self.db_config.host,
-            port=self.db_config.port,
-            dbname=catalog_name,
-            user=self.db_config.user,
-            password=self.db_config.password,
-            connect_timeout=self.db_config.connect_timeout,
-        )
+    def _acquire_connection(self, catalog_name: str):
+        pool = self._get_pool(catalog_name)
+        conn = pool.getconn()
+        conn.autocommit = False
+        return conn
+
+    def _release_connection(self, conn) -> None:
+        if self._pool is None:
+            conn.close()
+            return
+        try:
+            conn.rollback()
+        except Exception:
+            self._pool.putconn(conn, close=True)
+            return
+        self._pool.putconn(conn)
+
+    def _get_pool(self, catalog_name: str) -> ThreadedConnectionPool:
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ThreadedConnectionPool(
+                    minconn=int(self.db_config.pool_min_size),
+                    maxconn=int(self.db_config.pool_max_size),
+                    host=self.db_config.host,
+                    port=self.db_config.port,
+                    dbname=catalog_name,
+                    user=self.db_config.user,
+                    password=self.db_config.password,
+                    connect_timeout=self.db_config.connect_timeout,
+                )
+        return self._pool
 
     def _load_metadata(
         self,

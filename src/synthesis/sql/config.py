@@ -31,6 +31,8 @@ class SQLSynthesisDBConfig:
     search_path: str = "public"
     connect_timeout: int = 10
     statement_timeout: int = 60000
+    pool_min_size: int = 1
+    pool_max_size: int = 50
 
 
 @dataclass(frozen=True)
@@ -50,9 +52,9 @@ class SQLExecutionCheckConfig:
     enable_execution_check: bool = True
     require_non_empty_result: bool = False
     max_result_rows_for_check: int = 20
-    execution_timeout: int = 60
+    execution_timeout: int = 5
     dry_run: bool = False
-    explain_only: bool = False
+    explain_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class SQLSynthesisRunConfig:
     output_path: str = str(_project_root() / "data" / "processed" / "synthesized_sql_queries.jsonl")
     discard_output_path: str = str(_project_root() / "data" / "processed" / "discard_sql.jsonl")
     num_sql_per_database: dict[str, int] = field(default_factory=lambda: {"default": 5})
+    parallel_workers: int = 10
     fixed_difficulty: str = ""
     difficulty_weights: dict[str, float] = field(
         default_factory=lambda: {level: 1.0 for level in DIFFICULTY_LEVELS}
@@ -277,6 +280,14 @@ def _build_sql_synthesis_config_from_payload(
             search_path=_as_text(db_section.get("search_path") or db_section.get("schema"), default_db.search_path),
             connect_timeout=_as_positive_int(db_section.get("connect_timeout"), default_db.connect_timeout),
             statement_timeout=_as_positive_int(db_section.get("statement_timeout"), default_db.statement_timeout),
+            pool_min_size=_as_positive_int(
+                (db_section.get("pool") or {}).get("min_size") if isinstance(db_section.get("pool"), Mapping) else db_section.get("pool_min_size"),
+                default_db.pool_min_size,
+            ),
+            pool_max_size=_as_positive_int(
+                (db_section.get("pool") or {}).get("max_size") if isinstance(db_section.get("pool"), Mapping) else db_section.get("pool_max_size"),
+                default_db.pool_max_size,
+            ),
         ),
         llm=build_llm_config_from_section(
             llm_section,
@@ -297,6 +308,10 @@ def _build_sql_synthesis_config_from_payload(
             num_sql_per_database=_normalize_num_sql_per_database(
                 synthesis_section.get("num_sql_per_database"),
                 default_syn.num_sql_per_database,
+            ),
+            parallel_workers=_as_positive_int(
+                synthesis_section.get("parallel_workers"),
+                default_syn.parallel_workers,
             ),
             fixed_difficulty=_normalize_difficulty(synthesis_section.get("difficulty") or synthesis_section.get("fixed_difficulty")),
             difficulty_weights=_normalize_weights(synthesis_section.get("difficulty_weights", default_syn.difficulty_weights)),
