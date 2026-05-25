@@ -16,12 +16,12 @@ from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary
 from .generator import build_sql_generator
 from .io import (
-    append_discarded_sql_query,
-    append_sql_query,
     ensure_discard_sql_output,
     ensure_sql_output,
     load_existing_sql_id_offsets,
     load_input_databases,
+    merge_discarded_sql_queries_with_lock,
+    merge_sql_queries_with_lock,
 )
 from .prompt_metadata import PostGISPromptMetadataProvider
 from .synthesizer import ConstraintGuidedSQLSynthesizer
@@ -211,8 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parallel_workers = max(1, int(config.synthesis.parallel_workers))
-    all_rows = []
-    all_discarded_rows = []
+    written_count = 0
+    discarded_count = 0
     aggregate_stats = {
         "generated_total": 0,
         "retained_total": 0,
@@ -262,35 +262,30 @@ def main(argv: list[str] | None = None) -> int:
                     exc,
                 )
                 continue
-            all_rows.extend(rows)
-            all_discarded_rows.extend(discarded_rows)
+            merge_sql_queries_with_lock(config.synthesis.output_path, rows)
+            merge_discarded_sql_queries_with_lock(config.synthesis.discard_output_path, discarded_rows)
+            written_count += len(rows)
+            discarded_count += len(discarded_rows)
+            for row in rows:
+                logging.info(
+                    "Merged SQL sample batch row | output=%s | written_count=%s | sql_id=%s",
+                    config.synthesis.output_path,
+                    written_count,
+                    row.sql_id,
+                )
+            for row in discarded_rows:
+                logging.info(
+                    "Merged discarded SQL batch row | output=%s | discarded_count=%s | database_id=%s",
+                    config.synthesis.discard_output_path,
+                    discarded_count,
+                    row.database_id,
+                )
             aggregate_stats["generated_total"] += int(run_stats["generated_total"])
             aggregate_stats["retained_total"] += int(run_stats["retained_total"])
             for level, count in run_stats["generated_by_difficulty"].items():
                 aggregate_stats["generated_by_difficulty"][level] += int(count)
             for level, count in run_stats["retained_by_difficulty"].items():
                 aggregate_stats["retained_by_difficulty"][level] += int(count)
-
-    all_rows.sort(key=lambda row: row.sql_id)
-    all_discarded_rows.sort(key=lambda row: (row.database_id, row.sql, row.discard_reason))
-
-    for written_count, row in enumerate(all_rows, start=1):
-        append_sql_query(config.synthesis.output_path, row)
-        logging.info(
-            "Appended SQL sample | output=%s | written_count=%s | sql_id=%s",
-            config.synthesis.output_path,
-            written_count,
-            row.sql_id,
-        )
-
-    for discarded_count, row in enumerate(all_discarded_rows, start=1):
-        append_discarded_sql_query(config.synthesis.discard_output_path, row)
-        logging.info(
-            "Appended discarded SQL sample | output=%s | discarded_count=%s | database_id=%s",
-            config.synthesis.discard_output_path,
-            discarded_count,
-            row.database_id,
-        )
 
     run_stats = aggregate_stats
     logging.info(
@@ -303,10 +298,10 @@ def main(argv: list[str] | None = None) -> int:
         run_stats["generated_total"],
         run_stats["retained_total"],
     )
-    logging.info("Appended %s SQL samples to %s", len(all_rows), config.synthesis.output_path)
+    logging.info("Appended %s SQL samples to %s", written_count, config.synthesis.output_path)
     logging.info(
         "Appended %s discarded SQL samples to %s",
-        len(all_discarded_rows),
+        discarded_count,
         config.synthesis.discard_output_path,
     )
     return 0

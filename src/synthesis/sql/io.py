@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Mapping
+
+import fcntl
 
 from src.synthesis.database.io import load_synthesized_databases
 from src.synthesis.database.models import SynthesizedSpatialDatabase
@@ -32,6 +36,45 @@ def ensure_discard_sql_output(output_path: str) -> None:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
+
+
+def _locked_file_merge_jsonl(
+    output_path: str,
+    *,
+    new_rows: list[dict],
+    sort_key,
+) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            existing_rows: list[dict] = []
+            if path.is_file():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        existing_rows.append(json.loads(stripped))
+            merged_rows = existing_rows + list(new_rows)
+            merged_rows.sort(key=sort_key)
+            fd, temp_path = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+            os.close(fd)
+            temp_file = Path(temp_path)
+            try:
+                with temp_file.open("w", encoding="utf-8") as handle:
+                    for row in merged_rows:
+                        handle.write(json.dumps(row, ensure_ascii=False))
+                        handle.write("\n")
+                temp_file.replace(path)
+            finally:
+                if temp_file.exists():
+                    temp_file.unlink()
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def load_existing_sql_id_offsets(output_path: str) -> dict[str, int]:
@@ -98,3 +141,27 @@ def append_sql_queries(output_path: str, rows: list[SynthesizedSQLQuery]) -> Non
 def write_sql_queries(output_path: str, rows: list[SynthesizedSQLQuery]) -> None:
     initialize_sql_output(output_path)
     append_sql_queries(output_path, rows)
+
+
+def merge_sql_queries_with_lock(output_path: str, rows: list[SynthesizedSQLQuery]) -> None:
+    if not rows:
+        return
+    _locked_file_merge_jsonl(
+        output_path,
+        new_rows=[row.to_dict() for row in rows],
+        sort_key=lambda item: str(item.get("sql_id") or ""),
+    )
+
+
+def merge_discarded_sql_queries_with_lock(output_path: str, rows: list[DiscardedSQLQuery]) -> None:
+    if not rows:
+        return
+    _locked_file_merge_jsonl(
+        output_path,
+        new_rows=[row.to_dict() for row in rows],
+        sort_key=lambda item: (
+            str(item.get("database_id") or ""),
+            str(item.get("sql") or ""),
+            str(item.get("discard_reason") or ""),
+        ),
+    )

@@ -111,6 +111,17 @@ class DiversityAwareQuestionSynthesizer:
                 on_row_generated(row)
         return rows
 
+    def run_for_sql_group(
+        self,
+        sql_queries: Sequence[SQLQuestionSource],
+        context: QuestionGenerationContext,
+        on_row_generated: Callable[[SynthesizedQuestion], None] | None = None,
+    ) -> list[SynthesizedQuestion]:
+        rows: list[SynthesizedQuestion] = []
+        for sql_query in sql_queries:
+            rows.extend(self.run_for_sql(sql_query, context, on_row_generated=on_row_generated))
+        return rows
+
     def _next_question_id(self, database_id: str) -> str:
         next_value = self._question_id_offsets.get(database_id, 0) + 1
         self._question_id_offsets[database_id] = next_value

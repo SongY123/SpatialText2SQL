@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.prompting.prompt_builder import PromptBuilder
@@ -18,12 +19,12 @@ from .config import (
 from .synthesizer import DiversityAwareQuestionSynthesizer
 from .generator import build_question_llm
 from .io import (
-    append_synthesized_question,
     build_question_generation_contexts_from_sql_sources,
     ensure_question_output,
     load_existing_question_id_offsets,
     load_question_generation_contexts,
     load_sql_question_sources,
+    merge_synthesized_questions_with_lock,
 )
 
 
@@ -33,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sql-input")
     parser.add_argument("--database-context-path")
     parser.add_argument("--output")
+    parser.add_argument("--parallel-workers", type=int)
     parser.add_argument("--num-questions-per-sql", type=int)
     parser.add_argument("--max-revision-rounds", type=int)
     parser.add_argument("--style")
@@ -71,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             "sql_input_path": args.sql_input,
             "database_context_path": args.database_context_path,
             "output_path": args.output,
+            "parallel_workers": args.parallel_workers,
             "num_questions_per_sql": args.num_questions_per_sql,
             "max_revision_rounds": args.max_revision_rounds,
             "style": args.style,
@@ -93,12 +96,13 @@ def main(argv: list[str] | None = None) -> int:
         handlers=log_handlers,
     )
     logging.info(
-        "Question generation config loaded | provider=%s | model=%s | sql_input=%s | context_input=%s | output=%s | num_questions_per_sql=%s",
+        "Question generation config loaded | provider=%s | model=%s | sql_input=%s | context_input=%s | output=%s | parallel_workers=%s | num_questions_per_sql=%s",
         config.llm.provider,
         config.llm.model,
         config.generation.sql_input_path,
         config.generation.database_context_path,
         config.generation.output_path,
+        config.generation.parallel_workers,
         config.generation.num_questions_per_sql,
     )
 
@@ -135,20 +139,61 @@ def main(argv: list[str] | None = None) -> int:
         len(existing_question_id_offsets),
     )
 
-    llm_client = build_question_llm(config=config.llm)
     prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[3]})
-    generator = DiversityAwareQuestionSynthesizer(
-        config=config,
-        llm_client=llm_client,
-        prompt_builder=prompt_builder,
-        existing_question_id_offsets=existing_question_id_offsets,
-    )
-    rows = generator.run(
-        sql_queries,
-        contexts,
-        on_row_generated=lambda row: append_synthesized_question(config.generation.output_path, row),
-    )
-    logging.info("Appended %s synthesized questions to %s", len(rows), config.generation.output_path)
+    parallel_workers = max(1, int(config.generation.parallel_workers))
+    grouped_sql_queries: dict[str, list] = {}
+    for row in sql_queries:
+        grouped_sql_queries.setdefault(row.database_id, []).append(row)
+
+    written_count = 0
+
+    def _run_database_task(task_index, database_id, rows_for_db):
+        local_config = override_question_generation_config(
+            config,
+            generation={"random_seed": int(config.generation.random_seed) + task_index},
+        )
+        local_llm_client = build_question_llm(config=local_config.llm)
+        local_generator = DiversityAwareQuestionSynthesizer(
+            config=local_config,
+            llm_client=local_llm_client,
+            prompt_builder=prompt_builder,
+            existing_question_id_offsets={
+                database_id: existing_question_id_offsets.get(database_id, 0),
+            },
+        )
+        context = contexts.get(database_id)
+        if context is None:
+            logging.warning("Skipping database_id=%s because question context is missing.", database_id)
+            return []
+        return local_generator.run_for_sql_group(rows_for_db, context)
+
+    with ThreadPoolExecutor(max_workers=min(parallel_workers, len(grouped_sql_queries) or 1)) as executor:
+        future_map = {
+            executor.submit(_run_database_task, task_index, database_id, rows_for_db): database_id
+            for task_index, (database_id, rows_for_db) in enumerate(grouped_sql_queries.items())
+        }
+        for future in as_completed(future_map):
+            database_id = future_map[future]
+            try:
+                rows = future.result()
+            except Exception as exc:
+                logging.exception(
+                    "Question generation database task failed | database_id=%s | error=%s",
+                    database_id,
+                    exc,
+                )
+                continue
+            merge_synthesized_questions_with_lock(config.generation.output_path, rows)
+            written_count += len(rows)
+            for row in rows:
+                logging.info(
+                    "Merged question batch row | output=%s | written_count=%s | question_id=%s",
+                    config.generation.output_path,
+                    written_count,
+                    row.question_id,
+                )
+
+    logging.info("Appended %s synthesized questions to %s", written_count, config.generation.output_path)
     return 0
 
 
