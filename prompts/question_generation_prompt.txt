@@ -3,6 +3,7 @@ You are generating one natural-language question from an PostgreSQL/PostGIS SQL 
 ## Task Goal
 Rewrite the SQL into exactly one English question that is semantically equivalent to the SQL.
 The question must preserve the SQL meaning exactly while sounding natural and diverse.
+Prefer a neutral task-oriented question style that resembles how analysts or benchmark users ask for SQL answers.
 
 ## SQL Query
 {{sql_query}}
@@ -32,21 +33,29 @@ Use the following PostGIS function descriptions as authoritative guidance for th
 - Preserve the exact SQL semantics. Do not broaden or narrow the meaning.
 - Preserve table/entity roles, containment direction, ranking direction, grouping logic, aggregate semantics, filters, and limit semantics.
 - Preserve every explicit distance threshold, count threshold, date filter, comparison operator, and top-k value.
+- Prefer a neutral benchmark-like question form: usually a direct "What/Which/How many/List/Find" request without politeness markers or conversational filler.
+- Prefer concise benchmark-like openings such as "Which ...", "What ...", "How many ...", "List ...", or "Find ...".
+- If the SQL asks for one entity name, title, or identifier field, prefer "Which ..." or "List ..." phrasing over verbose forms like "What are the names of ...".
+- If the SQL projects a name, title, or identifier field, refer to the underlying entity naturally when possible, such as "Which artwork ...", "Which street network ...", or "Which district ...", rather than repeating the literal field label like "artwork title" unless the title/name itself is the main concept.
+- If the SQL asks for a count, prefer "How many ...".
 - Preserve the output shape implied by the SQL.
 - If the SQL projects one scalar aggregate, ask for one value, not a list of details.
 - If the SQL projects one non-aggregate field, ask for that field only; do not imply extra attributes or full records.
-- If the SQL projects two or three fields, mention the output attributes naturally, especially for grouped aggregates such as “which X and how many/what total”.
+- If the SQL projects two or three fields, mention all output attributes naturally, especially for grouped aggregates such as “for each X, how many Y” or “which X and what total Y”.
 - If the SQL returns geometry/shape output, mention geometry, shape, boundary, centroid, or coordinates explicitly. If it does not return geometry, do not ask for geometric output.
 - If the SQL uses DISTINCT, preserve the deduplication intent with wording such as distinct, unique, or equivalents when natural.
 - If the SQL includes ORDER BY or LIMIT, make the ranking/top-k intent explicit in the question. Do not hide a top-k query behind a generic “list all” request.
 - If the SQL is limited to one row because of ranking, nearest, or top-k logic, prefer singular/top-1 phrasing over plural listing language.
+- If the SQL ranks by distance, length, area, perimeter, size, or count, prefer natural comparative wording such as closest, nearest, longest, largest, smallest, highest, or lowest rather than awkward field-name repetitions like "longest shape length".
 - Rephrase spatial functions into natural language. Do not expose raw SQL or PostGIS function names.
+- When the SQL uses coordinate or extent accessors, express them naturally. For example, translate X maxima/minima into east/west extent or longitude thresholds, and Y maxima/minima into north/south extent or latitude thresholds when possible, instead of repeating raw accessor wording.
+- Prefer short spatial relation wording such as within, inside, intersecting, crossing, touching, nearest to, or closest to. Avoid stiff phrasing like "located within" or "contained within" when a simpler equivalent preserves the same meaning.
 - Only describe relations supported by the SQL. Do not invent entities, columns, filters, joins, or assumptions.
 - If the SQL depends on geometry or geography columns, keep the wording consistent with the actual spatial meaning and do not confuse geometry with geography.
 - Do not mention SQL, PostGIS, databases, schemas, field names, aliases, CTE names, or implementation details.
 - Generate exactly one question, not a question set.
 - Do not show analysis, drafts, bullet points, self-checks, or alternative phrasings.
-- Keep the question concise and natural. Prefer one sentence and avoid long explanatory clauses.
+- Keep the question concise and natural. Prefer one sentence, avoid long explanatory clauses or stacked relative clauses, and avoid courteous fillers such as "please", "could you", or "would you" unless the requested style explicitly requires them.
 
 ## Output Format
 Return a JSON object with exactly these fields:

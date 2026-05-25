@@ -28,6 +28,10 @@ Keep the same task intent and touched tables. Make the smallest possible SQL fix
 - Use only the listed tables and columns.
 - Keep result columns semantically meaningful; do not use `SELECT *`.
 - Preserve the intended result shape with as few output expressions as necessary.
+- Prefer exactly one answer column whenever possible; use two columns mainly for grouped results or a natural label-plus-metric pair.
+- Avoid geometry-valued outputs and helper ranking metrics unless they are part of the intended answer.
+- Do not use geometry-valued expressions as ORDER BY keys; rank by scalar metrics or distances only.
+- Avoid self-joins and duplicate use of the same base table unless they are clearly necessary.
 - Fix syntax, alias, column, type, cast, or function-signature issues only.
 - Return one executable read-only SQL query.
 

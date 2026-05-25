@@ -16,6 +16,7 @@ from .config import (
     load_question_generation_config,
     override_question_generation_config,
 )
+from .execution import QuestionExecutionResultFetcher
 from .synthesizer import DiversityAwareQuestionSynthesizer
 from .generator import build_question_llm
 from .io import (
@@ -140,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     prompt_builder = PromptBuilder({"project_root": Path(__file__).resolve().parents[3]})
+    execution_result_fetcher = QuestionExecutionResultFetcher(
+        db_config=config.database,
+        execution_config=config.execution,
+    )
     parallel_workers = max(1, int(config.generation.parallel_workers))
     grouped_sql_queries: dict[str, list] = {}
     for row in sql_queries:
@@ -157,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             config=local_config,
             llm_client=local_llm_client,
             prompt_builder=prompt_builder,
+            execution_result_fetcher=execution_result_fetcher,
             existing_question_id_offsets={
                 database_id: existing_question_id_offsets.get(database_id, 0),
             },

@@ -1,3 +1,13 @@
+database:
+  host: 10.132.80.118
+  port: 54321
+  database: synthesis
+  user: postgres
+  password: "123456"
+  connect_timeout: 10
+  pool_min_size: 1
+  pool_max_size: 50
+
 llm:
   provider: openai_compatible
   model: gemma-4-31B-it
@@ -8,6 +18,11 @@ llm:
   timeout: 120
   max_retries: 2
 
+execution:
+  enable_result_fetch: true
+  execution_timeout: 30
+  max_result_rows: 3
+
 generation:
   sql_input_path: data/processed/synthesized_sql_queries.jsonl
   database_context_path: data/processed/synthesized_spatial_databases.jsonl
@@ -16,12 +31,12 @@ generation:
   num_questions_per_sql: 1
   max_revision_rounds: 0
   style_weights:
-    conversational: 1.0
-    formal: 1.0
-    direct: 1.0
-    concise: 1.0
-    polite: 1.0
-    analytical: 1.0
+    conversational: 0.0
+    formal: 0.0
+    direct: 2.0
+    concise: 2.0
+    polite: 0.0
+    analytical: 0.0
   random_seed: 42
 
 logging:

@@ -1,5 +1,5 @@
 database:
-  host: localhost
+  host: 10.132.80.118
   port: 54321
   database: synthesis
   user: postgres

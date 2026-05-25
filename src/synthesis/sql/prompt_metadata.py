@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from datetime import date, datetime, time
 from decimal import Decimal
 from threading import Lock
@@ -41,21 +42,36 @@ class PostGISPromptMetadataProvider:
         self,
         database: SynthesizedSpatialDatabase,
     ) -> dict[str, Any] | None:
-        requested_tables = [
-            to_text(name)
-            for name in (getattr(database, "selected_table_names", None) or [])
-            if to_text(name)
-        ]
+        requested_table_specs = []
+        for table in getattr(database, "selected_tables", []) or []:
+            table_name = to_text(getattr(table, "table_name", ""))
+            if not table_name:
+                continue
+            source_columns = [
+                to_text(column.get("canonical_name") or column.get("name"))
+                for column in (getattr(table, "normalized_schema", None) or [])
+                if isinstance(column, Mapping) and to_text(column.get("canonical_name") or column.get("name"))
+            ]
+            requested_table_specs.append(
+                {
+                    "table_name": table_name,
+                    "source_columns": source_columns,
+                }
+            )
+        requested_tables = [to_text(item.get("table_name")) for item in requested_table_specs if to_text(item.get("table_name"))]
         if not requested_tables:
             requested_tables = [
-                to_text(getattr(table, "table_name", ""))
-                for table in getattr(database, "selected_tables", [])
-                if to_text(getattr(table, "table_name", ""))
+                to_text(name)
+                for name in (getattr(database, "selected_table_names", None) or [])
+                if to_text(name)
             ]
+        if not requested_table_specs and requested_tables:
+            requested_table_specs = [{"table_name": table_name, "source_columns": []} for table_name in requested_tables]
         return self.load_database_metadata_by_id(
             database_id=database.database_id,
             city=database.city,
             requested_tables=requested_tables,
+            requested_table_specs=requested_table_specs,
         )
 
     def load_database_metadata_by_id(
@@ -64,9 +80,10 @@ class PostGISPromptMetadataProvider:
         database_id: str,
         city: str = "",
         requested_tables: Sequence[str] | None = None,
+        requested_table_specs: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        normalized_tables = [to_text(name) for name in (requested_tables or []) if to_text(name)]
-        cache_suffix = "|".join(normalized_tables) if normalized_tables else "*"
+        requested_table_names = [to_text(name) for name in (requested_tables or []) if to_text(name)]
+        cache_suffix = "|".join(requested_table_names) if requested_table_names else "*"
         cache_key = f"{database_id}|{cache_suffix}"
         if cache_key in self._cache:
             return stable_jsonify(self._cache[cache_key])
@@ -77,7 +94,16 @@ class PostGISPromptMetadataProvider:
         try:
             conn = self._acquire_connection(catalog_name)
             with conn:
-                resolved_tables = list(normalized_tables) or self._fetch_table_names(conn, schema_name)
+                available_table_names = self._fetch_table_names(conn, schema_name)
+                resolved_tables = self._resolve_requested_table_specs(
+                    conn,
+                    schema_name=schema_name,
+                    requested_table_specs=requested_table_specs or [
+                        {"table_name": name, "source_columns": []}
+                        for name in requested_table_names
+                    ],
+                    available_table_names=available_table_names,
+                ) or list(available_table_names)
                 if not resolved_tables:
                     LOGGER.warning("Prompt metadata provider found no tables | schema_id=%s", database_id)
                     self._cache[cache_key] = None
@@ -122,6 +148,111 @@ class PostGISPromptMetadataProvider:
                 for row in (cur.fetchall() or [])
                 if isinstance(row, Mapping) and to_text(row.get("table_name"))
             ]
+
+    @staticmethod
+    def _resolve_requested_table_specs(
+        connection,
+        *,
+        schema_name: str,
+        requested_table_specs: Sequence[Mapping[str, Any]],
+        available_table_names: Sequence[str],
+    ) -> list[str]:
+        if not requested_table_specs:
+            return []
+
+        available = [to_text(name) for name in available_table_names if to_text(name)]
+        available_set = set(available)
+        columns_by_table = PostGISPromptMetadataProvider._fetch_columns_for_tables(connection, schema_name, available)
+        resolved: list[str] = []
+        seen: set[str] = set()
+
+        for spec in requested_table_specs:
+            name = to_text(spec.get("table_name")) if isinstance(spec, Mapping) else ""
+            if not name:
+                continue
+            source_columns = {
+                to_text(column).lower()
+                for column in (spec.get("source_columns", []) if isinstance(spec, Mapping) else [])
+                if to_text(column)
+            }
+            matched = ""
+            if name in available_set:
+                matched = name
+            else:
+                normalized = normalize_postgres_identifier(name, prefix="table")
+                if normalized in available_set:
+                    matched = normalized
+                else:
+                    cleaned = re.sub(r"[^a-z0-9_]+", "_", name.strip().lower())
+                    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+                    if cleaned:
+                        if cleaned[0].isdigit():
+                            cleaned = f"table_{cleaned}"
+                        candidates: list[str] = []
+                        if len(cleaned) > 63:
+                            prefix = f"{cleaned[:54].rstrip('_')}_"
+                            candidates = [candidate for candidate in available if candidate.startswith(prefix)]
+                        if not candidates:
+                            candidates = list(available)
+                        unused_candidates = [candidate for candidate in candidates if candidate not in seen]
+                        if unused_candidates:
+                            candidates = unused_candidates
+                        matched = PostGISPromptMetadataProvider._select_best_table_match(
+                            candidates,
+                            columns_by_table=columns_by_table,
+                            source_columns=source_columns,
+                        )
+            if not matched:
+                LOGGER.warning(
+                    "Prompt metadata could not resolve requested table name | requested=%s",
+                    name,
+                )
+                continue
+            if matched in seen:
+                continue
+            seen.add(matched)
+            resolved.append(matched)
+        return resolved
+
+    @staticmethod
+    def _fetch_columns_for_tables(connection, schema_name: str, table_names: Sequence[str]) -> dict[str, set[str]]:
+        if not table_names:
+            return {}
+        with connection.cursor(cursor_factory=RealDictCursor) as cur:
+            rows = PostGISPromptMetadataProvider._fetch_columns(cur, schema_name, table_names)
+        return {
+            table_name: {
+                to_text(column.get("column_name")).lower()
+                for column in columns
+                if isinstance(column, Mapping) and to_text(column.get("column_name"))
+            }
+            for table_name, columns in rows.items()
+        }
+
+    @staticmethod
+    def _select_best_table_match(
+        candidates: Sequence[str],
+        *,
+        columns_by_table: Mapping[str, set[str]],
+        source_columns: set[str],
+    ) -> str:
+        if not candidates:
+            return ""
+        if len(candidates) == 1 or not source_columns:
+            return to_text(candidates[0])
+
+        scored: list[tuple[int, int, str]] = []
+        for candidate in candidates:
+            candidate_columns = columns_by_table.get(candidate, set())
+            overlap = len(source_columns & candidate_columns)
+            size_gap = abs(len(source_columns) - len(candidate_columns))
+            scored.append((overlap, -size_gap, candidate))
+        scored.sort(reverse=True)
+        best_overlap = scored[0][0]
+        best = [candidate for overlap, _gap, candidate in scored if overlap == best_overlap]
+        if best_overlap <= 0:
+            return ""
+        return to_text(best[0]) if len(best) == 1 else ""
 
     def _acquire_connection(self, catalog_name: str):
         pool = self._get_pool(catalog_name)

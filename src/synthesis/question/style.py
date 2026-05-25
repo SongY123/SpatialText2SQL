@@ -11,12 +11,12 @@ from .models import QUESTION_STYLES, SQLFeatureSummary, SpatialRelationConstrain
 
 
 STYLE_DESCRIPTIONS: dict[str, str] = {
-    "conversational": "Use natural spoken wording, like a user asking casually in plain English.",
-    "formal": "Use precise, formal wording with a polished and professional tone.",
-    "direct": "Use a straightforward task-oriented request with minimal extra phrasing.",
-    "concise": "Keep the wording compact while preserving the full SQL meaning.",
-    "polite": "Use courteous wording such as please, could you, or would you.",
-    "analytical": "Use wording that sounds analytical or investigative without changing the SQL semantics.",
+    "conversational": "Use plain natural English, but keep it task-oriented and avoid filler.",
+    "formal": "Use precise professional wording while keeping the phrasing short and task-focused.",
+    "direct": "Use a straightforward task-oriented request, typically starting with What, Which, How many, List, or Find.",
+    "concise": "Keep the wording compact and benchmark-like while preserving the full SQL meaning.",
+    "polite": "Use mildly courteous wording only if needed, without adding extra filler or softening the task intent.",
+    "analytical": "Use an investigative but still compact task-oriented question without changing the SQL semantics.",
 }
 
 

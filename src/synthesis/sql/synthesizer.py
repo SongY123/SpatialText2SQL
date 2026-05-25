@@ -923,7 +923,25 @@ class ConstraintGuidedSQLSynthesizer:
                 idx,
             ),
         )
-        chosen_indices = sorted(ranked_indices[:target_count])
+        chosen_indices: list[int] = []
+        seen_table_names: set[str] = set()
+        for idx in ranked_indices:
+            table_name = to_text(selected_tables[idx].table_name).lower()
+            if table_name and table_name in seen_table_names:
+                continue
+            chosen_indices.append(idx)
+            if table_name:
+                seen_table_names.add(table_name)
+            if len(chosen_indices) >= target_count:
+                break
+        if len(chosen_indices) < target_count:
+            for idx in ranked_indices:
+                if idx in chosen_indices:
+                    continue
+                chosen_indices.append(idx)
+                if len(chosen_indices) >= target_count:
+                    break
+        chosen_indices = sorted(chosen_indices[:target_count])
         prompt_tables = [selected_tables[idx] for idx in chosen_indices]
         LOGGER.info(
             "Prompt table subset selected | city=%s | schema_id=%s | difficulty=%s | source_tables=%s | prompt_tables=%s | chosen=%s",

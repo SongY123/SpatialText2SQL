@@ -116,6 +116,11 @@ class PromptBuilder:
             database,
             database_runtime_metadata=database_runtime_metadata,
         )
+        selected_tables = []
+        if isinstance(database_runtime_metadata, dict):
+            selected_tables = list(database_runtime_metadata.get("selected_table_names", []) or [])
+        if not selected_tables:
+            selected_tables = list(getattr(database, "selected_table_names", []) or [])
 
         functions_payload = []
         for item in sampled_functions:
@@ -136,7 +141,7 @@ class PromptBuilder:
             {
                 "database_id": self._stringify_value(getattr(database, "database_id", "")),
                 "city": self._stringify_value(getattr(database, "city", "")),
-                "selected_tables": ", ".join(getattr(database, "selected_table_names", []) or []),
+                "selected_tables": ", ".join(selected_tables),
                 "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
                 "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
                 "representative_values_block": self._stable_json_text(representative_values),
@@ -203,13 +208,16 @@ class PromptBuilder:
         database_context: Dict[str, Any],
         sql_features: Dict[str, Any],
         current_question: str,
+        execution_result_override: Dict[str, Any] | None = None,
         style_constraint: Dict[str, Any],
         spatial_relation_constraints: List[Dict[str, Any]],
         revision_feedback: str,
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
         execution_results = self._prepare_question_execution_results(
-            getattr(sql_query, "execution_result", {}) or {}
+            execution_result_override
+            if execution_result_override is not None
+            else (getattr(sql_query, "execution_result", {}) or {})
         )
         used_function_names = {
             str(name).strip().upper()
@@ -482,12 +490,15 @@ class PromptBuilder:
         sql_query: Any,
         database_context: Dict[str, Any],
         sql_features: Dict[str, Any],
+        execution_result_override: Dict[str, Any] | None = None,
         style_constraint: Dict[str, Any],
         spatial_relation_constraints: List[Dict[str, Any]],
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
         execution_results = self._prepare_question_execution_results(
-            getattr(sql_query, "execution_result", {}) or {}
+            execution_result_override
+            if execution_result_override is not None
+            else (getattr(sql_query, "execution_result", {}) or {})
         )
         used_function_names = {
             str(name).strip().upper()
@@ -778,6 +789,8 @@ class PromptBuilder:
             lines.append("- Do not use LIMIT for this sample.")
             lines.append("- Use ORDER BY only when it is semantically necessary.")
             lines.append("- Scalar aggregates and unbounded filters/lookups are both acceptable when they fit the task.")
+            lines.append("- Prefer a compact result shape: default to exactly one answer column; use two columns only for a clear label-plus-metric result.")
+            lines.append("- Avoid returning geometry-valued expressions unless spatial output itself is the point of the query.")
             return "\n".join(lines)
 
         if expected_limit is not None:
@@ -787,11 +800,15 @@ class PromptBuilder:
             lines.append(f"- Use LIMIT {expected_limit} exactly.")
             lines.append("- Prefer this pattern for top-1 or top-k entity retrieval, ranked listings, or grouped rankings.")
             lines.append("- Do not use LIMIT for scalar aggregate queries.")
+            lines.append("- Prefer returning exactly one primary answer column; include a second label or metric only when it is essential to the answer.")
+            lines.append("- ORDER BY should use a scalar metric, scalar measurement, or distance, not a geometry-valued expression.")
+            lines.append("- Do not project helper ranking metrics or geometry-construction outputs unless they are the intended answer.")
             return "\n".join(lines)
 
         lines.append("- LIMIT is optional for this sample.")
         if require_order_by_with_limit:
             lines.append("- If you use LIMIT, include ORDER BY before it.")
+        lines.append("- Keep the output compact and benchmark-like: prefer one answer column, or two columns only for a natural label-plus-metric result.")
         return "\n".join(lines)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:
