@@ -29,7 +29,7 @@ generation:
   output_path: data/processed/synthesized_questions.jsonl
   parallel_workers: 10
   num_questions_per_sql: 1
-  max_revision_rounds: 0
+  max_revision_rounds: 1
   style_weights:
     conversational: 0.5
     formal: 0.8
