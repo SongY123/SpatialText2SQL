@@ -387,7 +387,15 @@ class ConstraintGuidedSQLSynthesizer:
             len(prompt),
         )
         generation_start = time.perf_counter()
-        generation_response = self.sql_generator.generate(prompt)
+        try:
+            generation_response = self.sql_generator.generate(prompt)
+        except Exception as exc:
+            LOGGER.warning(
+                "SQL LLM request failed; skipping sample | sample=%s | round=1/1 | error=%s",
+                sample_tag,
+                exc,
+            )
+            return None, None
         generation_ms = (time.perf_counter() - generation_start) * 1000.0
         LOGGER.info(
             "LLM request done | sample=%s | round=1/1 | attempts=%s | response_chars=%s | time_ms=%.1f",
@@ -532,7 +540,15 @@ class ConstraintGuidedSQLSynthesizer:
                 len(minor_revision_prompt),
             )
             generation_start = time.perf_counter()
-            generation_response = self.sql_generator.generate(minor_revision_prompt)
+            try:
+                generation_response = self.sql_generator.generate(minor_revision_prompt)
+            except Exception as exc:
+                LOGGER.warning(
+                    "SQL LLM revision request failed; skipping sample | sample=%s | round=2/2 | error=%s",
+                    sample_tag,
+                    exc,
+                )
+                return None, None
             generation_ms = (time.perf_counter() - generation_start) * 1000.0
             LOGGER.info(
                 "LLM request done | sample=%s | round=2/2 | attempts=%s | response_chars=%s | time_ms=%.1f",

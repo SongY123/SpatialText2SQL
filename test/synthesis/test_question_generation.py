@@ -644,6 +644,36 @@ Spatial Phrases: within 0.001 units of"""
             any("Recovered from non-standard model response" in item for item in rows[0].validation_result["warnings"])
         )
 
+    def test_question_generation_skips_only_current_sample_on_llm_error(self):
+        sql = _make_sql_source(
+            "SELECT p.name FROM parks p JOIN neighborhoods n ON ST_DWithin(p.geom, n.geom, 100) LIMIT 5"
+        )
+        context = _make_context(_make_database())
+        call_state = {"count": 0}
+
+        def _callback(_prompt):
+            call_state["count"] += 1
+            if call_state["count"] == 1:
+                raise RuntimeError("context length exceeded")
+            return json.dumps(
+                {
+                    "question": "Which 5 parks are within 100 units of neighborhoods?",
+                    "style": "direct",
+                    "reasoning_summary": "Preserved the threshold and top-k value.",
+                    "spatial_phrases": ["within 100 units of"],
+                }
+            )
+
+        llm = MockQuestionLLM(callback=_callback)
+        generator = DiversityAwareQuestionSynthesizer(
+            config=_make_config(num_questions_per_sql=2),
+            llm_client=llm,
+            prompt_builder=PromptBuilder({"project_root": Path(__file__).resolve().parents[2]}),
+        )
+        rows = generator.generate_for_sql(sql, context)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(llm.prompts), 2)
+
     def test_synthesizer_continues_question_id_from_existing_offsets(self):
         sql = _make_sql_source("SELECT p.name FROM parks p WHERE ST_DWithin(p.geom, p.geom, 100)")
         database = _make_database()

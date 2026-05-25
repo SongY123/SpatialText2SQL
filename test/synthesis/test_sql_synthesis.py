@@ -1575,6 +1575,35 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("SELECT ST_Buffer", discarded_rows[0].sql)
         self.assertIn("execution failed", discarded_rows[0].discard_reason)
 
+    def test_sql_synthesis_skips_only_current_sample_on_llm_error(self):
+        library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
+        database = _make_database(table_count=1)
+
+        call_state = {"count": 0}
+
+        def _callback(_prompt):
+            call_state["count"] += 1
+            if call_state["count"] == 1:
+                raise RuntimeError("context length exceeded")
+            return '{"sql":"SELECT ST_Buffer(t.geom, 10) FROM table_1 t","used_tables":["table_1"],"used_columns":["geom"],"used_spatial_functions":["ST_Buffer"],"reasoning_summary":"ok"}'
+
+        generator = MockSQLGenerator(callback=_callback)
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(synthesis={"num_sql_per_database": {"default": 2}}),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker(
+                [SQLExecutionResult(executed=True, success=True, row_count=1)]
+            ),
+        )
+        rows = synthesizer.synthesize_for_database(database)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(generator.prompts), 2)
+
     def test_synthesizer_run_stats_track_generated_and_retained_counts(self):
         library = _load_library([_sample_function_json_payload()[1]], "## spatialsql_pg\nST_Buffer\n")
         database_1 = _make_database(table_count=1, database_id="nyc_0001")

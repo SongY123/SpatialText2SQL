@@ -169,7 +169,17 @@ class DiversityAwareQuestionSynthesizer:
             len(current_prompt),
         )
         generation_start = time.perf_counter()
-        response = self.llm_client.generate(current_prompt)
+        try:
+            response = self.llm_client.generate(current_prompt)
+        except Exception as exc:
+            LOGGER.warning(
+                "Question LLM request failed; skipping sample | sample=%s | round=%s/%s | error=%s",
+                sample_tag,
+                1,
+                max_revision_rounds,
+                exc,
+            )
+            return None
         generation_ms = (time.perf_counter() - generation_start) * 1000.0
         LOGGER.info(
             "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
@@ -280,7 +290,17 @@ class DiversityAwareQuestionSynthesizer:
                     len(current_prompt),
                 )
                 generation_start = time.perf_counter()
-                response = self.llm_client.generate(current_prompt)
+                try:
+                    response = self.llm_client.generate(current_prompt)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Question LLM revision request failed; skipping sample | sample=%s | round=%s/%s | error=%s",
+                        sample_tag,
+                        revision_round + 1,
+                        max_revision_rounds,
+                        exc,
+                    )
+                    return None
                 generation_ms = (time.perf_counter() - generation_start) * 1000.0
                 LOGGER.info(
                     "Question LLM request done | sample=%s | round=%s/%s | attempts=%s | response_chars=%s | time_ms=%.1f",
