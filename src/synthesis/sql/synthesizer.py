@@ -871,6 +871,7 @@ class ConstraintGuidedSQLSynthesizer:
                 database=database,
                 difficulty_level=difficulty_level,
                 rng=self.rng,
+                st_function_only=self.config.functions.st_function_only,
             )
             if sampled_functions:
                 return difficulty_level, sampled_functions

@@ -45,6 +45,7 @@ class SQLSynthesisFunctionConfig:
     postgis_function_json_path: str = str(_project_root() / "data" / "postgis_extracted.json")
     st_function_markdown_path: str = str(_project_root() / "ST_Function.md")
     exclude_categories: list[str] = field(default_factory=lambda: ["raster", "topology"])
+    st_function_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -340,6 +341,10 @@ def _build_sql_synthesis_config_from_payload(
             exclude_categories=_normalize_text_list(
                 function_section.get("exclude_categories"),
                 default_func.exclude_categories,
+            ),
+            st_function_only=_as_bool(
+                function_section.get("st_function_only"),
+                default_func.st_function_only,
             ),
         ),
         execution=SQLExecutionCheckConfig(

@@ -58,6 +58,7 @@ synthesis:
 functions:
   postgis_function_json_path: data/postgis_extracted.json
   st_function_markdown_path: ST_Function.md
+  st_function_only: true
   exclude_categories:
     - raster
     - topology

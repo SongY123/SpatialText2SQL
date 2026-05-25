@@ -7,13 +7,18 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .prompt_enhancements.registry import PromptEnhancementRegistry
-from .schema_compactor import DEFAULT_PROJECT_ROOT, SchemaCompactor
-from .sample_data_provider import PostgresSampleDataProvider
+from .prompting.prompt_enhancements.registry import PromptEnhancementRegistry
+from .prompting.schema_compactor import DEFAULT_PROJECT_ROOT, SchemaCompactor
+from .prompting.sample_data_provider import PostgresSampleDataProvider
 
 
 class PromptBuilder:
     """Build prompts from a shared text template plus structured context."""
+
+    FINETUNE_ALPACA_INSTRUCTION = (
+        "You are a PostgreSQL/PostGIS expert. Read and understand the following database schema, "
+        "and use PostgreSQL/PostGIS knowledge to generate a SQL query that answers the user question."
+    )
 
     def __init__(self, config: Dict):
         self.config = config
@@ -41,7 +46,6 @@ class PromptBuilder:
             "sql_synthesis": self.project_root / "prompts" / "sql_synthesis_prompt.txt",
             "sql_revision": self.project_root / "prompts" / "sql_revision_prompt.txt",
             "question_generation": self.project_root / "prompts" / "question_generation_prompt.txt",
-            "question_revision": self.project_root / "prompts" / "question_revision_prompt.txt",
             "quality_control": self.project_root / "prompts" / "quality_control_prompt.txt",
         }
     
@@ -73,6 +77,15 @@ class PromptBuilder:
                 metadata=metadata,
                 compact_schema=compact_schema,
             )
+        if prompt_style == "finetune_alpaca":
+            return self._build_finetune_alpaca_prompt(
+                question=question,
+                schema=schema,
+                compact_schema=compact_schema,
+                sample_data_block=sample_data_block,
+                dataset_name=dataset_name,
+                metadata=metadata,
+            )
         grounding_block = self._build_grounding_block(
             dataset_name=dataset_name,
             metadata=metadata,
@@ -100,6 +113,684 @@ class PromptBuilder:
         }
         return self._render_template(template_text, placeholders)
 
+    def _build_finetune_alpaca_prompt(
+        self,
+        *,
+        question: str,
+        schema: str,
+        compact_schema: str,
+        sample_data_block: str,
+        dataset_name: Optional[str],
+        metadata: Dict[str, Any],
+    ) -> str:
+        geometry_hints = self._build_finetune_geometry_hints(
+            schema=schema,
+            compact_schema=compact_schema,
+            metadata=metadata,
+        )
+        representative_values = self._parse_sample_data_block(sample_data_block)
+        input_text = self._render_finetune_input(
+            database_id=str(dataset_name or "").strip(),
+            question=(question or "").strip(),
+            schema_lines=self._build_finetune_schema_lines(
+                compact_schema,
+                representative_values,
+                geometry_hints,
+            ),
+        )
+        return self._compose_finetune_prompt(self.FINETUNE_ALPACA_INSTRUCTION, input_text)
+
+    def _build_finetune_schema_lines(
+        self,
+        compact_schema: str,
+        representative_values: Dict[str, List[Dict[str, Any]]],
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        schema = (compact_schema or "").strip()
+        if not schema:
+            return ["No schema available."]
+        if re.search(r"\bCREATE\s+TABLE\b", schema, flags=re.I):
+            ddls = self._split_finetune_schema_ddls(schema)
+            rendered = self._build_finetune_schema_blocks_from_ddls(
+                ddls,
+                representative_values,
+                geometry_hints,
+            )
+            return rendered or [schema]
+
+        tables = self._parse_compact_schema_tables(schema)
+        if not tables:
+            return [schema]
+
+        blocks: List[str] = []
+        for table_name, columns in tables:
+            rendered_columns = [
+                {
+                    "column_name": column_name,
+                    "column_type": self._format_finetune_column_type(column_type),
+                }
+                for column_name, column_type in columns
+            ]
+            blocks.append(
+                self._render_finetune_schema_block(
+                    table_name=table_name,
+                    columns=rendered_columns,
+                    representative_rows=list(representative_values.get(table_name) or []),
+                    primary_key_columns=set(),
+                    geometry_hints=geometry_hints,
+                )
+            )
+        return blocks
+
+    @staticmethod
+    def _split_finetune_schema_ddls(schema: str) -> List[str]:
+        ddls: List[str] = []
+        parts = re.split(r";\s*(?=CREATE\s+TABLE\b)", schema, flags=re.I)
+        for part in parts:
+            cleaned = part.strip()
+            if not cleaned:
+                continue
+            if not cleaned.endswith(";"):
+                cleaned = f"{cleaned};"
+            ddls.append(cleaned)
+        return ddls
+
+    @staticmethod
+    def _format_finetune_column_type(column_type: str) -> str:
+        original = (column_type or "text").strip()
+        normalized = original.lower()
+        type_map = {
+            "double": "double precision",
+            "float": "double precision",
+            "real": "double precision",
+            "geometry": "geometry",
+            "user-defined": "geometry",
+            "numeric": "numeric",
+            "integer": "integer",
+            "int": "integer",
+            "bigint": "bigint",
+            "smallint": "smallint",
+            "boolean": "boolean",
+            "bool": "boolean",
+            "date": "date",
+            "timestamp": "timestamp",
+            "timestamptz": "timestamp with time zone",
+            "bytea": "bytea",
+            "text": "text",
+        }
+        return type_map.get(normalized, original or "text")
+
+    def _parse_compact_schema_tables(self, compact_schema: str) -> List[Tuple[str, List[Tuple[str, str]]]]:
+        tables: List[Tuple[str, List[Tuple[str, str]]]] = []
+        for raw_line in (compact_schema or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = re.match(r"^-\s+([A-Za-z0-9_]+)\((.*)\)$", line)
+            if match is None:
+                match = re.match(r"^(?:table\s+)?([A-Za-z0-9_]+)\((.*)\)$", line, re.I)
+            if match is None:
+                continue
+            table_name, raw_columns = match.groups()
+            columns = self._parse_compact_schema_columns(raw_columns)
+            if columns:
+                tables.append((table_name, columns))
+        return tables
+
+    @staticmethod
+    def _parse_compact_schema_columns(raw_columns: str) -> List[Tuple[str, str]]:
+        columns: List[Tuple[str, str]] = []
+        for raw_column in PromptBuilder._split_compact_schema_columns(raw_columns):
+            match = re.match(
+                r'^\s*"?(?P<name>[A-Za-z0-9_]+)"?\s+(?P<column_type>.+?)\s*$',
+                raw_column,
+                flags=re.DOTALL,
+            )
+            if match is None:
+                continue
+            columns.append(
+                (
+                    match.group("name").strip('"'),
+                    match.group("column_type").strip(),
+                )
+            )
+        return columns
+
+    @staticmethod
+    def _split_compact_schema_columns(raw_columns: str) -> List[str]:
+        items: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in raw_columns or "":
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    items.append(item)
+                current = []
+                continue
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    @staticmethod
+    def _render_finetune_input(
+        *,
+        database_id: str,
+        question: str,
+        schema_lines: List[str],
+    ) -> str:
+        sections = [
+            "[Database Schema]",
+            f"[DB_ID] {database_id}" if database_id else "[DB_ID]",
+            "[Schema]",
+            "\n".join(schema_lines) if schema_lines else "No schema available.",
+            "",
+            "[User Question]",
+            question,
+            "",
+            "```sql",
+        ]
+        return "\n".join(sections).strip()
+
+    @staticmethod
+    def _compose_finetune_prompt(instruction: str, input_text: str) -> str:
+        instruction_text = str(instruction or "").strip()
+        input_block = str(input_text or "").strip()
+        if instruction_text and input_block:
+            return f"{instruction_text}\n\n{input_block}"
+        return instruction_text or input_block
+
+    def _build_finetune_schema_blocks_from_ddls(
+        self,
+        schema_ddls: List[str],
+        representative_values: Dict[str, List[Dict[str, Any]]],
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        schema_blocks: List[str] = []
+        for ddl in schema_ddls:
+            parsed = self._parse_finetune_create_table_ddl(ddl)
+            if not parsed:
+                cleaned = str(ddl or "").strip()
+                if cleaned:
+                    schema_blocks.append(cleaned)
+                continue
+            table_name = str(parsed.get("table_name") or "").strip()
+            columns = list(parsed.get("columns") or [])
+            primary_key_columns = {
+                str(name).strip()
+                for name in (parsed.get("primary_key_columns") or [])
+                if str(name).strip()
+            }
+            representative_rows = list(representative_values.get(table_name) or []) if table_name else []
+            schema_blocks.append(
+                self._render_finetune_schema_block(
+                    table_name=table_name,
+                    columns=columns,
+                    representative_rows=representative_rows,
+                    primary_key_columns=primary_key_columns,
+                    geometry_hints=geometry_hints,
+                )
+            )
+        return schema_blocks
+
+    @staticmethod
+    def _render_finetune_schema_block(
+        *,
+        table_name: str,
+        columns: List[Dict[str, Any]],
+        representative_rows: List[Dict[str, Any]],
+        primary_key_columns: set[str],
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        lines = [f"# Table: {table_name}", "["]
+        rendered_columns: List[str] = []
+        for column in columns:
+            if not isinstance(column, dict):
+                continue
+            column_name = str(column.get("column_name") or "").strip()
+            raw_column_type = str(column.get("column_type") or column.get("data_type") or "text").strip()
+            if not column_name:
+                continue
+            column_type = PromptBuilder._normalize_finetune_geometry_column_type(
+                table_name,
+                column_name,
+                raw_column_type,
+                geometry_hints,
+            )
+            fragments = [f"{column_name}:{column_type}"]
+            if column_name in primary_key_columns:
+                fragments.append("Primary Key")
+            examples = PromptBuilder._collect_finetune_example_values(
+                table_name,
+                column_name,
+                column_type,
+                representative_rows,
+                geometry_hints,
+            )
+            if examples:
+                fragments.append(f"Examples: [{', '.join(examples)}]")
+            rendered_columns.append(f"  ({', '.join(fragments)})")
+        for index, rendered in enumerate(rendered_columns):
+            suffix = "," if index < len(rendered_columns) - 1 else ""
+            lines.append(f"{rendered}{suffix}")
+        lines.append("]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _collect_finetune_example_values(
+        table_name: str,
+        column_name: str,
+        column_type: str,
+        representative_rows: List[Dict[str, Any]],
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        examples: List[str] = []
+        seen: set[str] = set()
+        for row in representative_rows:
+            if not isinstance(row, dict) or column_name not in row:
+                continue
+            rendered = PromptBuilder._format_finetune_example_value(
+                table_name,
+                column_name,
+                column_type,
+                row.get(column_name),
+                geometry_hints,
+            )
+            if not rendered or rendered in seen:
+                continue
+            seen.add(rendered)
+            examples.append(rendered)
+        return examples
+
+    @staticmethod
+    def _format_finetune_example_value(
+        table_name: str,
+        column_name: str,
+        column_type: str,
+        value: Any,
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        if value is None:
+            return ""
+        hint = PromptBuilder._get_finetune_geometry_hint(geometry_hints, table_name, column_name)
+        if PromptBuilder._looks_finetune_geometry_column(column_type, hint):
+            return PromptBuilder._format_finetune_geometry_example(
+                table_name,
+                column_name,
+                column_type,
+                value,
+                hint,
+            )
+        return str(value).strip()
+
+    def _build_finetune_geometry_hints(
+        self,
+        *,
+        schema: str,
+        compact_schema: str,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        hints: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        database_context = metadata.get("database_context")
+        if isinstance(database_context, dict):
+            for ddl in database_context.get("schema_ddls", []) or []:
+                parsed = self._parse_finetune_create_table_ddl(str(ddl or ""))
+                if not parsed:
+                    continue
+                table_name = str(parsed.get("table_name") or "").strip()
+                for column in parsed.get("columns", []) or []:
+                    if not isinstance(column, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(column.get("column_name") or "").strip(),
+                        str(column.get("column_type") or "").strip(),
+                    )
+
+            for table_meta in database_context.get("tables", []) or []:
+                if not isinstance(table_meta, dict):
+                    continue
+                table_name = str(table_meta.get("table_name") or "").strip()
+                for column in table_meta.get("columns", []) or []:
+                    if not isinstance(column, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(column.get("column_name") or "").strip(),
+                        str(column.get("column_type") or column.get("data_type") or "").strip(),
+                    )
+                for field in table_meta.get("spatial_fields", []) or []:
+                    if not isinstance(field, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(field.get("column_name") or field.get("canonical_name") or "").strip(),
+                        str(field.get("column_type") or "").strip(),
+                        geometry_type=str(field.get("geometry_type") or "").strip(),
+                        srid=field.get("srid"),
+                    )
+
+        for schema_text in [schema, compact_schema]:
+            parsed_tables = self._parse_compact_schema_tables(str(schema_text or ""))
+            for table_name, columns in parsed_tables:
+                for column_name, column_type in columns:
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        column_name,
+                        column_type,
+                    )
+        return hints
+
+    def _register_finetune_geometry_hint(
+        self,
+        hints: Dict[str, Dict[str, Dict[str, Any]]],
+        table_name: str,
+        column_name: str,
+        column_type: str,
+        *,
+        geometry_type: str = "",
+        srid: Any = None,
+    ) -> None:
+        table_key = str(table_name or "").strip()
+        column_key = str(column_name or "").strip()
+        type_text = str(column_type or "").strip()
+        if not table_key or not column_key:
+            return
+        if not self._looks_geometry_like_type(type_text) and not geometry_type:
+            return
+        table_hints = hints.setdefault(table_key, {})
+        entry = table_hints.setdefault(column_key, {})
+        if type_text and not entry.get("source_type"):
+            entry["source_type"] = type_text
+        parsed_geometry_type, parsed_srid = self._parse_geometry_type_details(type_text)
+        if geometry_type and not entry.get("geometry_type"):
+            entry["geometry_type"] = self._normalize_finetune_geometry_name(geometry_type)
+        elif parsed_geometry_type and not entry.get("geometry_type"):
+            entry["geometry_type"] = self._normalize_finetune_geometry_name(parsed_geometry_type)
+        if srid not in (None, "") and not entry.get("srid"):
+            try:
+                entry["srid"] = int(srid)
+            except (TypeError, ValueError):
+                entry["srid"] = srid
+        elif parsed_srid is not None and not entry.get("srid"):
+            entry["srid"] = parsed_srid
+
+    @staticmethod
+    def _get_finetune_geometry_hint(
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+        table_name: str,
+        column_name: str,
+    ) -> Dict[str, Any]:
+        return dict((geometry_hints.get(table_name) or {}).get(column_name) or {})
+
+    @staticmethod
+    def _looks_geometry_like_type(column_type: str) -> bool:
+        normalized = str(column_type or "").strip().lower()
+        return normalized in {"geometry", "user-defined"} or normalized.startswith("geometry(")
+
+    @staticmethod
+    def _parse_geometry_type_details(column_type: str) -> Tuple[str, Optional[int]]:
+        match = re.match(
+            r"^\s*geometry\s*\(\s*([A-Za-z]+)\s*(?:,\s*(\d+)\s*)?\)\s*$",
+            str(column_type or "").strip(),
+            flags=re.I,
+        )
+        if not match:
+            return "", None
+        geometry_type = match.group(1) or ""
+        srid_text = match.group(2)
+        return geometry_type, int(srid_text) if srid_text else None
+
+    @staticmethod
+    def _normalize_finetune_geometry_name(geometry_type: str) -> str:
+        mapping = {
+            "POINT": "Point",
+            "MULTIPOINT": "MultiPoint",
+            "LINESTRING": "LineString",
+            "MULTILINESTRING": "MultiLineString",
+            "POLYGON": "Polygon",
+            "MULTIPOLYGON": "MultiPolygon",
+            "GEOMETRY": "Geometry",
+            "GEOMETRYCOLLECTION": "GeometryCollection",
+        }
+        normalized = str(geometry_type or "").strip().upper()
+        return mapping.get(normalized, str(geometry_type or "").strip() or "Geometry")
+
+    @staticmethod
+    def _infer_finetune_geometry_name(table_name: str, column_name: str) -> str:
+        name = f"{table_name} {column_name}".lower()
+        point_tokens = [
+            "poi",
+            "point",
+            "station",
+            "shelter",
+            "stop",
+            "office",
+            "library",
+            "parking",
+            "address",
+            "location",
+            "ghcn",
+        ]
+        line_tokens = [
+            "road",
+            "street",
+            "line",
+            "route",
+            "corridor",
+            "track",
+            "trail",
+            "path",
+            "rail",
+        ]
+        if any(token in name for token in point_tokens):
+            return "Point"
+        if any(token in name for token in line_tokens):
+            return "MultiLineString"
+        return "MultiPolygon"
+
+    @staticmethod
+    def _normalize_finetune_geometry_column_type(
+        table_name: str,
+        column_name: str,
+        column_type: str,
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        original = str(column_type or "text").strip()
+        normalized = original.lower()
+        type_map = {
+            "double": "double precision",
+            "float": "double precision",
+            "real": "double precision",
+            "numeric": "numeric",
+            "integer": "integer",
+            "int": "integer",
+            "bigint": "bigint",
+            "smallint": "smallint",
+            "boolean": "boolean",
+            "bool": "boolean",
+            "date": "date",
+            "timestamp": "timestamp",
+            "timestamptz": "timestamp with time zone",
+            "bytea": "bytea",
+            "text": "text",
+        }
+        hint = PromptBuilder._get_finetune_geometry_hint(geometry_hints, table_name, column_name)
+        if PromptBuilder._looks_finetune_geometry_column(original, hint):
+            srid = hint.get("srid")
+            if srid in (None, ""):
+                _parsed_geometry_type, parsed_srid = PromptBuilder._parse_geometry_type_details(original)
+                srid = parsed_srid
+            if srid in (None, ""):
+                srid = 4326
+            return f"geometry(Geometry,{srid})"
+        return type_map.get(normalized, original or "text")
+
+    @staticmethod
+    def _looks_finetune_geometry_column(column_type: str, hint: Dict[str, Any]) -> bool:
+        return PromptBuilder._looks_geometry_like_type(column_type) or bool(hint)
+
+    @staticmethod
+    def _format_finetune_geometry_example(
+        table_name: str,
+        column_name: str,
+        column_type: str,
+        value: Any,
+        hint: Dict[str, Any],
+    ) -> str:
+        text = str(value or "").strip()
+        geometry_type = ""
+        srid = hint.get("srid")
+        if isinstance(value, dict):
+            geometry_type = str(value.get("type") or "").strip()
+        elif text and text != "<geometry>":
+            upper = text.upper()
+            if upper.startswith("SRID=") and ";" in text:
+                srid_text, text = text.split(";", 1)
+                srid_match = re.search(r"SRID\s*=\s*(\d+)", srid_text, flags=re.I)
+                if srid_match:
+                    srid = int(srid_match.group(1))
+                text = text.strip()
+            match = re.match(r"^([A-Za-z]+)", text)
+            if match:
+                geometry_type = match.group(1)
+        if not geometry_type:
+            geometry_type = str(hint.get("geometry_type") or "").strip()
+        if not geometry_type:
+            _parsed_geometry_type, parsed_srid = PromptBuilder._parse_geometry_type_details(column_type)
+            geometry_type = _parsed_geometry_type
+            if srid in (None, ""):
+                srid = parsed_srid
+        normalized_geometry_type = PromptBuilder._normalize_finetune_geometry_name(geometry_type)
+        if normalized_geometry_type == "Geometry" and text in {"", "<geometry>", "GEOMETRY"}:
+            geometry_type = PromptBuilder._infer_finetune_geometry_name(table_name, column_name)
+        if not geometry_type:
+            geometry_type = PromptBuilder._infer_finetune_geometry_name(table_name, column_name)
+        geometry_display = PromptBuilder._normalize_finetune_geometry_name(geometry_type)
+        if srid in (None, ""):
+            srid = 4326
+        return f"{geometry_display} (SRID={srid})"
+
+    def _parse_finetune_create_table_ddl(self, ddl: str) -> Optional[Dict[str, Any]]:
+        ddl_text = str(ddl or "").strip()
+        if not ddl_text:
+            return None
+        match = re.search(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>[^\s(]+)\s*\((?P<body>.*)\)\s*;?\s*$",
+            ddl_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        raw_table_name = match.group("name").strip()
+        table_name = raw_table_name.split(".")[-1].strip('"')
+        body = match.group("body")
+        entries = self._split_finetune_sql_entries(body)
+        columns: List[Dict[str, str]] = []
+        primary_key_columns: set[str] = set()
+        for entry in entries:
+            cleaned = entry.strip()
+            if not cleaned:
+                continue
+            upper = cleaned.upper()
+            if "PRIMARY KEY" in upper and (
+                upper.startswith("CONSTRAINT") or upper.startswith("PRIMARY KEY")
+            ):
+                primary_key_columns.update(self._parse_finetune_primary_key_columns(cleaned))
+                continue
+            parsed_column = self._parse_finetune_column_definition(cleaned)
+            if not parsed_column:
+                continue
+            columns.append(parsed_column)
+            if "PRIMARY KEY" in upper:
+                primary_key_columns.add(parsed_column["column_name"])
+        return {
+            "table_name": table_name,
+            "columns": columns,
+            "primary_key_columns": sorted(primary_key_columns),
+        }
+
+    @staticmethod
+    def _split_finetune_sql_entries(body: str) -> List[str]:
+        items: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in body:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    items.append(item)
+                current = []
+                continue
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    @staticmethod
+    def _parse_finetune_primary_key_columns(entry: str) -> set[str]:
+        match = re.search(r"PRIMARY\s+KEY\s*\((?P<columns>[^)]+)\)", entry, flags=re.IGNORECASE)
+        if not match:
+            return set()
+        return {
+            str(item).strip().strip('"')
+            for item in match.group("columns").split(",")
+            if str(item).strip()
+        }
+
+    @staticmethod
+    def _parse_finetune_column_definition(entry: str) -> Optional[Dict[str, str]]:
+        match = re.match(r'^\s*"?(?P<name>[A-Za-z0-9_]+)"?\s+(?P<rest>.+?)\s*$', entry, flags=re.DOTALL)
+        if not match:
+            return None
+        column_name = str(match.group("name") or "").strip()
+        remainder = match.group("rest").strip()
+        constraint_match = re.search(
+            r"\s+(?:NOT\s+NULL|NULL|DEFAULT|PRIMARY\s+KEY|UNIQUE|REFERENCES|CHECK|CONSTRAINT)\b",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+        column_type = remainder[: constraint_match.start()].strip() if constraint_match else remainder
+        return {"column_name": column_name, "column_type": column_type}
+
+    @staticmethod
+    def _parse_sample_data_block(sample_data_block: str) -> Dict[str, List[Dict[str, Any]]]:
+        representative_values: Dict[str, List[Dict[str, Any]]] = {}
+        current_table: Optional[str] = None
+        for raw_line in (sample_data_block or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            table_match = re.match(r"^-\s+([A-Za-z0-9_]+)\s*$", line)
+            if table_match is not None:
+                current_table = table_match.group(1)
+                representative_values.setdefault(current_table, [])
+                continue
+            if current_table is None:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = {"value": line}
+            if isinstance(payload, dict):
+                representative_values[current_table].append(payload)
+        return representative_values
+
     def build_sql_synthesis_prompt(
         self,
         *,
@@ -108,19 +799,11 @@ class PromptBuilder:
         structural_constraints: Dict[str, Any],
         sampled_functions: List[Dict[str, Any]],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        expected_limit: int | None = None,
-        allow_limit: bool = True,
-        require_order_by_with_limit: bool = False,
     ) -> str:
         schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
             database,
             database_runtime_metadata=database_runtime_metadata,
         )
-        selected_tables = []
-        if isinstance(database_runtime_metadata, dict):
-            selected_tables = list(database_runtime_metadata.get("selected_table_names", []) or [])
-        if not selected_tables:
-            selected_tables = list(getattr(database, "selected_table_names", []) or [])
 
         functions_payload = []
         for item in sampled_functions:
@@ -129,7 +812,6 @@ class PromptBuilder:
                     "function_name": item.get("function_name"),
                     "signature": item.get("signature"),
                     "categories": item.get("categories"),
-                    "sampling_role": item.get("sampling_role"),
                     "description": item.get("description"),
                     "example_usages": item.get("example_usages"),
                 }
@@ -141,7 +823,7 @@ class PromptBuilder:
             {
                 "database_id": self._stringify_value(getattr(database, "database_id", "")),
                 "city": self._stringify_value(getattr(database, "city", "")),
-                "selected_tables": ", ".join(selected_tables),
+                "selected_tables": ", ".join(getattr(database, "selected_table_names", []) or []),
                 "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
                 "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
                 "representative_values_block": self._stable_json_text(representative_values),
@@ -151,11 +833,6 @@ class PromptBuilder:
                     structural_constraints,
                 ),
                 "required_function_block": self._stable_json_text(functions_payload),
-                "result_window_guidance_block": self._format_sql_result_window_guidance(
-                    expected_limit=expected_limit,
-                    allow_limit=allow_limit,
-                    require_order_by_with_limit=require_order_by_with_limit,
-                ),
             },
         )
 
@@ -167,9 +844,6 @@ class PromptBuilder:
         execution_error: str,
         used_tables: List[str],
         database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        expected_limit: int | None = None,
-        allow_limit: bool = True,
-        require_order_by_with_limit: bool = False,
     ) -> str:
         included_tables = {
             str(table_name).strip()
@@ -193,77 +867,6 @@ class PromptBuilder:
                 "representative_values_block": self._stable_json_text(representative_values),
                 "original_sql": self._stringify_value(original_sql),
                 "execution_error": self._stringify_value(execution_error or "unknown execution error"),
-                "result_window_guidance_block": self._format_sql_result_window_guidance(
-                    expected_limit=expected_limit,
-                    allow_limit=allow_limit,
-                    require_order_by_with_limit=require_order_by_with_limit,
-                ),
-            },
-        )
-
-    def build_question_revision_prompt(
-        self,
-        *,
-        sql_query: Any,
-        database_context: Dict[str, Any],
-        sql_features: Dict[str, Any],
-        current_question: str,
-        execution_result_override: Dict[str, Any] | None = None,
-        style_constraint: Dict[str, Any],
-        spatial_relation_constraints: List[Dict[str, Any]],
-        revision_feedback: str,
-    ) -> str:
-        schema_lines = self._build_question_schema_lines(database_context)
-        execution_results = self._prepare_question_execution_results(
-            execution_result_override
-            if execution_result_override is not None
-            else (getattr(sql_query, "execution_result", {}) or {})
-        )
-        used_function_names = {
-            str(name).strip().upper()
-            for name in (
-                getattr(sql_query, "used_spatial_functions", None)
-                or sql_features.get("postgis_functions", [])
-                or []
-            )
-            if str(name).strip()
-        }
-        function_docs = []
-        raw_constraints = getattr(sql_query, "spatial_function_constraints", None) or spatial_relation_constraints
-        for item in raw_constraints or []:
-            if not isinstance(item, dict):
-                continue
-            function_name = self._stringify_value(item.get("function_name")).upper()
-            if used_function_names and function_name and function_name not in used_function_names:
-                continue
-            function_docs.append(
-                {
-                    "function_name": item.get("function_name"),
-                    "signature": item.get("signature"),
-                    "description": self._truncate_text(item.get("description"), 320),
-                    "example_usages": [
-                        self._truncate_text(example, 180)
-                        for example in (item.get("example_usages") or [])[:1]
-                        if self._truncate_text(example, 180)
-                    ],
-                }
-            )
-        template_text = self._load_named_template_text("question_revision")
-        return self._render_template(
-            template_text,
-            {
-                "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
-                "current_question": self._stringify_value(current_question),
-                "sql_feature_block": self._stable_json_text(sql_features),
-                "database_id": self._stringify_value(database_context.get("database_id")),
-                "city": self._stringify_value(database_context.get("city")),
-                "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),
-                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "execution_results_block": self._stable_json_text(execution_results),
-                "style_constraint_block": self._stable_json_text(style_constraint),
-                "spatial_relation_block": self._stable_json_text(function_docs),
-                "revision_feedback_block": self._stringify_value(revision_feedback),
-                "style_name": self._stringify_value(style_constraint.get("style")),
             },
         )
 
@@ -490,15 +1093,12 @@ class PromptBuilder:
         sql_query: Any,
         database_context: Dict[str, Any],
         sql_features: Dict[str, Any],
-        execution_result_override: Dict[str, Any] | None = None,
         style_constraint: Dict[str, Any],
         spatial_relation_constraints: List[Dict[str, Any]],
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
         execution_results = self._prepare_question_execution_results(
-            execution_result_override
-            if execution_result_override is not None
-            else (getattr(sql_query, "execution_result", {}) or {})
+            getattr(sql_query, "execution_result", {}) or {}
         )
         used_function_names = {
             str(name).strip().upper()
@@ -534,7 +1134,6 @@ class PromptBuilder:
             template_text,
             {
                 "sql_query": self._stringify_value(getattr(sql_query, "sql", "")),
-                "sql_feature_block": self._stable_json_text(sql_features),
                 "database_id": self._stringify_value(database_context.get("database_id")),
                 "city": self._stringify_value(database_context.get("city")),
                 "selected_tables": ", ".join(database_context.get("selected_table_names", []) or []),
@@ -735,30 +1334,29 @@ class PromptBuilder:
         min_tables = structural_constraints.get("min_tables")
         max_tables = structural_constraints.get("max_tables")
         lines = [f"Difficulty tier: {difficulty_level}"]
+        summary = str(structural_constraints.get("difficulty_summary") or "").strip()
+        if summary:
+            lines.append(f"- Summary: {summary}")
 
         if difficulty_level == "easy":
             lines.extend(
                 [
-                    "- Authoritative rule: easy = one table.",
                     "- Use exactly 1 table.",
-                    "- Prefer a direct filter, lookup, or scalar aggregate.",
-                    "- Use ranking only when the question explicitly asks for top-k, nearest, farthest, largest, or smallest results.",
+                    "- Keep the SQL as a single-table spatial filter, lookup, or ranking query.",
                     "- Do not use joins, subqueries, or CTEs.",
                 ]
             )
         elif difficulty_level == "medium":
             lines.extend(
                 [
-                    "- Authoritative rule: medium = two tables with one spatial join.",
                     "- Use exactly 2 tables.",
                     "- Include exactly 1 spatial join connecting those two tables.",
-                    "- Keep the query flat and direct. Do not use subqueries or CTEs.",
+                    "- Keep the query flat. Do not use subqueries or CTEs.",
                 ]
             )
         elif difficulty_level == "hard":
             lines.extend(
                 [
-                    "- Authoritative rule: hard = three tables with two spatial joins.",
                     "- Use exactly 3 tables.",
                     "- Include exactly 2 spatial joins connecting the three tables.",
                     "- Keep the logic flat and direct. Do not use nested subqueries or CTEs.",
@@ -767,47 +1365,16 @@ class PromptBuilder:
         else:
             lines.extend(
                 [
-                    "- Authoritative rule: extra-hard = three to four tables, at least one spatial join, and total spatial joins plus nested queries between two and four.",
                     f"- Use between {min_tables} and {max_tables} tables.",
                     "- Include at least 1 spatial join.",
                     "- Count each spatial join and each nested query (subquery or CTE) as one advanced operation.",
                     "- Keep the total number of spatial joins plus nested queries between 2 and 4.",
                     "- Prefer the simplest executable SQL that satisfies the tier instead of making the query harder for its own sake.",
-                    "- Use nested structure only when it is semantically necessary.",
                 ]
             )
-        return "\n".join(lines)
 
-    @staticmethod
-    def _format_sql_result_window_guidance(
-        *,
-        expected_limit: int | None,
-        allow_limit: bool,
-        require_order_by_with_limit: bool,
-    ) -> str:
-        lines: list[str] = []
-        if expected_limit is None and not allow_limit:
-            lines.append("- Do not use LIMIT for this sample.")
-            lines.append("- Use ORDER BY only when it is semantically necessary.")
-            lines.append("- Prefer a scalar aggregate or direct lookup when it matches the question.")
-            lines.append("- Prefer exactly one answer column; use two columns only for a natural label-plus-metric result.")
-            return "\n".join(lines)
-
-        if expected_limit is not None:
-            lines.append("- This sample should behave like a bounded ranked result query.")
-            if require_order_by_with_limit:
-                lines.append("- Include ORDER BY before LIMIT.")
-            lines.append(f"- Use LIMIT {expected_limit} exactly.")
-            lines.append("- Do not use LIMIT for scalar aggregate queries.")
-            lines.append("- Prefer exactly one answer column; include a second label or metric only when it is essential to the answer.")
-            lines.append("- ORDER BY must use a scalar business field, scalar measurement, or distance, not a geometry-valued expression.")
-            lines.append("- Do not project helper ranking metrics unless they are part of the answer.")
-            return "\n".join(lines)
-
-        lines.append("- LIMIT is optional for this sample.")
-        if require_order_by_with_limit:
-            lines.append("- If you use LIMIT, include ORDER BY before it.")
-        lines.append("- Keep the output compact: prefer one answer column, or two columns only for a natural label-plus-metric result.")
+        lines.append("Structured constraints:")
+        lines.append(self._stable_json_text(structural_constraints))
         return "\n".join(lines)
 
     def _render_template(self, template_text: str, placeholders: Dict[str, str]) -> str:
@@ -1030,6 +1597,7 @@ class PromptBuilder:
             'base': 'Question + Schema',
             'rag': 'Question + Schema + Retrieved Context',
             'keyword': 'Question + Schema + Keyword Context',
-            'full': 'Question + Schema + Retrieved Context + Keyword Context'
+            'full': 'Question + Schema + Retrieved Context + Keyword Context',
+            'finetune_alpaca': 'Instruction + Schema + Representative Values + Question',
         }
         return descriptions.get(config_type, 'Unknown')

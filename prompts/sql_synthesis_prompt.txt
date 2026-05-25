@@ -1,6 +1,5 @@
 Generate exactly one executable read-only PostgreSQL/PostGIS SQL query for synthetic dataset construction on database "{{database_id}}".
-The query must be spatially meaningful, semantically plausible, executable, and consistent with the requested difficulty level.
-Prefer the simplest coherent query that satisfies the difficulty requirement and returns a high-value spatial result.
+Match the requested difficulty, keep the query natural, and preserve the most direct interpretation of the task.
 
 ## Database Context
 - database_id: {{database_id}}
@@ -16,61 +15,27 @@ Prefer the simplest coherent query that satisfies the difficulty requirement and
 ## Difficulty Constraint
 {{difficulty_constraint_block}}
 
-## Required PostGIS Function Constraints
+## Required PostGIS Functions
 {{required_function_block}}
-
-Use only PostGIS functions listed in the required function block.
-Functions with `sampling_role: "sampled"` are the primary target functions for this sample.
-Functions with `sampling_role: "fallback_fixed_join"` are helper options added only to keep the requested difficulty feasible.
-Prefer using at least one compatible `sampled` function when possible; do not default to `fallback_fixed_join` functions if a sampled function can be used naturally.
-Select the minimum compatible subset needed for one coherent executable SQL query.
-You do not need to use every provided function. Use only the subset whose semantics fit the query naturally.
-A function is compatible only if its argument types, argument order, and spatial intent match the available schema.
-Do not introduce, substitute, recommend, or use any PostGIS function that is not explicitly provided.
-If no sampled function can be used naturally or safely, generate the simplest executable query supported by the schema without inventing additional PostGIS functions.
-If a sampled function is a validity or quality-check function such as ST_IsValid, ST_IsValidReason, or ST_IsValidDetail, use it meaningfully as a filter, boolean projection, or diagnostic condition instead of ignoring it in favor of a more common spatial join.
 
 ## Result Window Guidance
 {{result_window_guidance_block}}
 
-## SQL Construction Requirements
-- Use only schema-listed tables and columns.
-- Spatial columns must come directly from the schema; do not assume a generic geom column.
-- Use table aliases for multi-table queries.
-- Use PostgreSQL/PostGIS syntax only.
-- Do not generate DDL, DML, transaction control, or administrative SQL.
-- Generate one SQL query only.
-- Every JOIN must have a complete and executable ON condition.
-- Prefer direct base-table joins and inline expressions. Avoid unnecessary CTEs, derived tables, and intermediate aliases unless essential for the requested difficulty.
-- Prefer unique base tables when multiple tables are required. Avoid self-joins and duplicate use of the same table unless they are clearly necessary.
-- Return only semantically meaningful columns needed for the task; do not use `SELECT *` or dump every column.
-- Prefer benchmark-like result shapes that are easy to verbalize into one question:
-  - default to exactly one answer column whenever a single field or scalar fully answers the query
-  - scalar aggregates should project exactly one expression
-  - grouped aggregates should usually project one grouping label plus one aggregate
-  - simple entity lists/lookups should usually project one to two descriptive fields
-  - avoid returning opaque surrogate IDs unless they are the natural answer or needed to disambiguate
-  - return geometry columns only when the intended task is explicitly about geometry, shape, boundary, centroid, coordinates, or spatial output
-- Keep the projected column count small. Prefer at most three output expressions.
-- Avoid projecting geometry-construction expressions such as `ST_Intersection`, `ST_Buffer`, `ST_Transform`, `ST_CollectionExtract`, or `ST_Centroid` unless the geometry itself is the intended answer.
-- Low-level bbox/accessor functions such as `ST_XMin`, `ST_XMax`, `ST_YMin`, and `ST_YMax` should usually be used in filters, comparisons, or ranking logic rather than returned directly as answer columns.
-- When a ranking metric is only needed for `ORDER BY`, do not also return that metric unless it is part of the intended answer.
-- Do not use a geometry-valued expression as the `ORDER BY` key. Rank by a scalar business field, numeric measurement, or a scalar distance/area/length/perimeter value instead.
-- If GROUP BY is used, every selected non-aggregated field must appear in GROUP BY.
+## Generation Rules
+- Match the question semantics exactly. Never change the requested scope, aggregation, grouping, ranking, or answer shape just to force a sampled function.
+- Use only schema-listed tables and columns, and only PostGIS functions from the required function block. Use the smallest compatible subset. Prefer sampled functions only when they fit naturally.
+- If the question is already answerable from one table plus explicit code, prefix, category, or value filters, do not add extra tables, spatial joins, or inferred regional filters.
+- If the question asks for `count`, `sum`, `avg`, `min`, `max`, `total`, `earliest`, `latest`, `largest`, or `smallest`, use the matching scalar aggregate directly. Do not replace it with `ORDER BY ... LIMIT 1`.
+- If the question asks for ranked results, nearest or farthest entities, or top-k output, use `ORDER BY` with the required `LIMIT`. Do not return helper ranking metrics unless they are part of the answer.
+- Before numeric aggregation or comparison on nullable or text-like value columns, add `IS NOT NULL` and cast when needed.
+- Keep the output compact: one answer column by default; two columns only for a natural label-plus-metric result. Give scalar or metric outputs a meaningful alias. Do not use `SELECT *`.
+- Do not return geometry columns or geometry-construction expressions unless the geometry itself is the intended answer.
+- Do not invent anonymous points, buffers, envelopes, transforms, centroids, collection extraction, or arbitrary coordinate thresholds unless the question explicitly requires them and they are semantically natural.
+- Respect geometry and geography signatures and CRS units. Do not treat EPSG:4326 distances as meters without a valid geography cast or an explicit projected CRS.
+- For spatial predicates, use the exact intended relation with the correct argument order. For multi-table queries, every JOIN must have a complete executable `ON` condition.
+- Prefer flat, direct SQL. Add subqueries or CTEs only when they are structurally necessary.
 
-## PostGIS Semantics Requirements
-- Respect geometry/geography types and function signatures exactly.
-- Do not mix geometry and geography unless an explicit, semantically correct cast is used.
-- Preserve SRID consistency; do not invent SRIDs or projected CRSs.
-- For geometry columns in geographic CRSs such as EPSG:4326, do not interpret raw distance values as meters unless using a valid geography cast or a provided projected CRS.
-- For "within", "inside", or "located in", ensure predicate direction is correct: the smaller feature is the first argument of ST_Within(A, B), while the containing feature is the first argument of ST_Contains(A, B).
-- Use spatial predicates only when their semantics match the intended relation exactly; do not substitute ST_Overlaps, ST_Within, or ST_Intersects for each other.
-- For "near", "nearby", or "within distance", use ST_DWithin only when the threshold and units are valid for the column type and CRS. Do not fabricate arbitrary thresholds merely to make a join return rows.
-- For "closest" or "nearest", prefer ordering by ST_Distance instead of using an arbitrary ST_DWithin threshold.
-- For area, length, perimeter, centroid, buffer, bbox, or accessor functions, use them only when meaningful for the selected table and geometry type.
-- If the required function is a low-level accessor or bbox function, use it in a meaningful comparison, ranking, aggregation, or filter rather than a trivial geometry dump.
-
-Before finalizing, verify that all referenced tables, columns, function signatures, spatial predicate directions, and join conditions are valid and minimal.
+Before finalizing, verify that every table, column, join, function, filter, aggregate, alias, and output column is valid and necessary.
 
 ## Output Format
 Return a JSON object only, without Markdown code fences.

@@ -412,6 +412,8 @@ class PostGISFunctionLibrary:
         database: SynthesizedSpatialDatabase,
         difficulty_level: str,
         rng: np.random.Generator,
+        *,
+        st_function_only: bool = False,
     ) -> list[PostGISFunction]:
         if difficulty_level not in DIFFICULTY_LEVELS:
             raise ValueError(f"Unsupported difficulty level: {difficulty_level}")
@@ -443,6 +445,10 @@ class PostGISFunctionLibrary:
             ]
         if not candidates:
             return []
+        if st_function_only:
+            candidates = [item for item in candidates if self._prefer_st_function_source(item)]
+            if not candidates:
+                return []
 
         desired_count = self._sample_desired_function_count(
             difficulty_level=difficulty_level,
@@ -454,7 +460,8 @@ class PostGISFunctionLibrary:
         fallback_candidates = [item for item in candidates if not self._prefer_st_function_source(item)]
         selected: list[PostGISFunction] = []
         remaining = desired_count
-        for pool in (preferred_candidates, fallback_candidates):
+        pools = (preferred_candidates,) if st_function_only else (preferred_candidates, fallback_candidates)
+        for pool in pools:
             if remaining <= 0 or not pool:
                 continue
             sampled = self._weighted_sample_without_replacement(pool, remaining, rng)
