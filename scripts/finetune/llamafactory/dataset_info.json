@@ -1,0 +1,11 @@
+{
+  "nl2sql_alpaca": {
+    "file_name": "nl2sql_alpaca.jsonl",
+    "formatting": "alpaca",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output"
+    }
+  }
+}
