@@ -1,59 +1,232 @@
 # Dataset configuration file
+
+databases:
+  benchmark_spatialqueryqa: &benchmark_pg_conn
+    host: "10.132.80.204"
+    port: 5432
+    database: "benchmark"
+    user: "postgres"
+    password: "123456"
+    schema: "spatialqueryqa"
+    search_path: "spatialqueryqa, public"
+    pool:
+      min_connections: 1
+      max_connections: 10
+    timeout:
+      query_timeout: 60
+      connection_timeout: 10
+
+  benchmark_spatialsql_ada:
+    <<: *benchmark_pg_conn
+    schema: "spatialsql_ada"
+    search_path: "spatialsql_ada, public"
+
+  benchmark_spatialsql_edu:
+    <<: *benchmark_pg_conn
+    schema: "spatialsql_edu"
+    search_path: "spatialsql_edu, public"
+
+  benchmark_spatialsql_tourism:
+    <<: *benchmark_pg_conn
+    schema: "spatialsql_tourism"
+    search_path: "spatialsql_tourism, public"
+
+  benchmark_spatialsql_traffic:
+    <<: *benchmark_pg_conn
+    schema: "spatialsql_traffic"
+    search_path: "spatialsql_traffic, public"
+
+  benchmark_floodsql:
+    <<: *benchmark_pg_conn
+    schema: "floodsql"
+    search_path: "floodsql, public"
+
 datasets:
-  spatial_qa:
-    type: "excel"
-    loader_class: "SpatialQALoader"
-    data_path: "Spatial QA"
-    database: "postgres"  # Use the postgres database
-    levels: [1, 2, 3]
+  spatialqueryqa:
+    dataset_name: "spatialqueryqa"
+    type: "canonical_json"
+    loader_class: "CanonicalJSONLoader"
+    raw_data_path: "data/benchmark/SpatialQueryQA"
+    data_path: "data/benchmark/normalized/SpatialQueryQA.json"
+    use_preformatted_input: true
+    database: "benchmark_spatialqueryqa"
+    result_materialization:
+      timeout_buffer_seconds: 10
     columns:
       question: "Question"
-      sql: "Reviewed Query"  # Use the reviewed canonical SQL
+      sql: "Reviewed Query"
+      reviewer_effort: "Reviewer Effort"
+    source_partitions:
+      level_1:
+        partition_key: "level_1"
+        level: "Basic(Level 1)"
+        level_id: 1
+        domain: null
+        family: null
+        dataset_version: null
+        database_key: "benchmark_spatialqueryqa"
+        raw_path: "Level 1/level1.xlsx"
+      level_2:
+        partition_key: "level_2"
+        level: "Intermediate(Level 2)"
+        level_id: 2
+        domain: null
+        family: null
+        dataset_version: null
+        database_key: "benchmark_spatialqueryqa"
+        raw_path: "Level 2/level2.xlsx"
+      level_3:
+        partition_key: "level_3"
+        level: "Advanced(Level 3)"
+        level_id: 3
+        domain: null
+        family: null
+        dataset_version: null
+        database_key: "benchmark_spatialqueryqa"
+        raw_path: "Level 3/level3.xlsx"
     grouping:
       fields: ["level"]
       values:
-        level: [1, 2, 3]
+        level: ["Basic(Level 1)", "Intermediate(Level 2)", "Advanced(Level 3)"]
 
-  # SpatialSQL dataset (extended: QA-*.txt under sdbdatasets, evaluated after migration to PostgreSQL/PostGIS)
-  spatialsql_pg:
-    type: "qa_txt"
-    loader_class: "SpatialSQLLoader"
-    data_path: "sdbdatasets"
-    database: "spatial_sql"  # Use the dedicated spatial_sql database
-    use_chinese_question: false
-    use_sql_dialect_adapter: true  # Persist queries after SpatiaLite -> PostGIS conversion
-    dataset_versions: ["dataset1", "dataset2"]
-    domains: ["ada", "edu", "tourism", "traffic"]
-    grouping:
-      fields: ["split"]
-      values:
-        split:
-          - "dataset1_ada"
-          - "dataset1_edu"
-          - "dataset1_tourism"
-          - "dataset1_traffic"
-          - "dataset2_ada"
-          - "dataset2_edu"
-          - "dataset2_tourism"
-          - "dataset2_traffic"
-
-  floodsql_pg:
-    type: "benchmark_json"
-    loader_class: "FloodSQLLoader"
-    data_path: "../FloodSQL-Bench"
-    database: "floodsql"
-    use_sql_dialect_adapter: true
-    sql_dialect_adapter: "duckdb_to_postgis"
+  spatialsql:
+    dataset_name: "spatialsql"
+    type: "canonical_json"
+    loader_class: "CanonicalJSONLoader"
+    raw_data_path: "data/benchmark/SpatialSQL"
+    data_path: "data/benchmark/normalized/SpatialSQL.json"
+    use_preformatted_input: true
+    inference_prompt_sections:
+      - title: "Name"
+        source_key: "name"
+    source_partitions:
+      domain_ada:
+        partition_key: "domain_ada"
+        level: "ada"
+        level_id: null
+        domain: "ada"
+        family: null
+        dataset_version: "dataset2"
+        raw_path: "dataset2/ada"
+        database_key: "benchmark_spatialsql_ada"
+      domain_edu:
+        partition_key: "domain_edu"
+        level: "edu"
+        level_id: null
+        domain: "edu"
+        family: null
+        dataset_version: "dataset2"
+        raw_path: "dataset2/edu"
+        database_key: "benchmark_spatialsql_edu"
+      domain_tourism:
+        partition_key: "domain_tourism"
+        level: "tourism"
+        level_id: null
+        domain: "tourism"
+        family: null
+        dataset_version: "dataset2"
+        raw_path: "dataset2/tourism"
+        database_key: "benchmark_spatialsql_tourism"
+      domain_traffic:
+        partition_key: "domain_traffic"
+        level: "traffic"
+        level_id: null
+        domain: "traffic"
+        family: null
+        dataset_version: "dataset2"
+        raw_path: "dataset2/traffic"
+        database_key: "benchmark_spatialsql_traffic"
+    database_by_metadata:
+      domain:
+        ada: "benchmark_spatialsql_ada"
+        edu: "benchmark_spatialsql_edu"
+        tourism: "benchmark_spatialsql_tourism"
+        traffic: "benchmark_spatialsql_traffic"
     grouping:
       fields: ["level"]
       values:
-        level: ["L0", "L1", "L2", "L3", "L4", "L5"]
+        level: ["ada", "edu", "tourism", "traffic"]
 
-# Default dataset (kept unchanged for the original workflow)
-default_dataset: "spatial_qa"
+  floodsql:
+    dataset_name: "floodsql"
+    type: "canonical_json"
+    loader_class: "CanonicalJSONLoader"
+    raw_data_path: "data/benchmark/FloodSQL-Bench"
+    data_path: "data/benchmark/normalized/FloodSQL-Bench.json"
+    use_preformatted_input: true
+    database: "benchmark_floodsql"
+    source_partitions:
+      level_l0:
+        partition_key: "level_l0"
+        level: "L0"
+        level_id: null
+        domain: null
+        family: "single_table"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/single_table"
+      level_l1:
+        partition_key: "level_l1"
+        level: "L1"
+        level_id: null
+        domain: null
+        family: "double_table_key"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/double_table_key"
+      level_l2:
+        partition_key: "level_l2"
+        level: "L2"
+        level_id: null
+        domain: null
+        family: "double_table_spatial"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/double_table_spatial"
+      level_l3:
+        partition_key: "level_l3"
+        level: "L3"
+        level_id: null
+        domain: null
+        family: "triple_table_key"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/triple_table_key"
+      level_l4:
+        partition_key: "level_l4"
+        level: "L4"
+        level_id: null
+        domain: null
+        family: "triple_table_key_spatial"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/triple_table_key_spatial"
+      level_l5:
+        partition_key: "level_l5"
+        level: "L5"
+        level_id: null
+        domain: null
+        family: "triple_table_key_spatial_updated"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/triple_table_key_spatial_updated"
+      level_l6:
+        partition_key: "level_l6"
+        level: "L6"
+        level_id: null
+        domain: null
+        family: "triple_table_spatial_spatial"
+        dataset_version: null
+        database_key: "benchmark_floodsql"
+        raw_path: "benchmark/triple_table_spatial_spatial"
+    grouping:
+      fields: ["level"]
+      values:
+        level: ["L0", "L1", "L2", "L3", "L4", "L5", "L6"]
 
-# Data preprocessing configuration
+default_dataset: "spatialqueryqa"
+
 preprocessing:
-  extract_schema: true  # Whether to extract schema information
-  schema_cache_dir: "data/schemas"  # Schema cache directory
-  output_dir: "data/preprocessed"  # Preprocessing output directory
+  extract_schema: true
+  schema_cache_dir: "data/schemas"
+  output_dir: "data/preprocessed"

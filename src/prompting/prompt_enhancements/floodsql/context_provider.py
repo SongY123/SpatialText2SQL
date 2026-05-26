@@ -140,6 +140,7 @@ class FloodSQLContextProvider:
             candidates.append(self.metadata_path)
         candidates.extend(
             [
+                self.project_root / "data/benchmark/FloodSQL-Bench/data/metadata_parquet.json",
                 self.project_root / "../FloodSQL-Bench/data/metadata_parquet.json",
                 self.project_root / "FloodSQL-Bench/data/metadata_parquet.json",
                 self.project_root.parent / "FloodSQL-Bench/data/metadata_parquet.json",

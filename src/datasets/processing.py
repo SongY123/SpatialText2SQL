@@ -14,9 +14,17 @@ from src.datasets.path_utils import (
     get_schema_cache_file,
     get_single_dataset_samples_file,
 )
-from src.datasets.loaders.spatial_qa_loader import SpatialQALoader
+from src.datasets.db_routing import (
+    build_schema_cache_key,
+    extract_embedded_db_config,
+    resolve_database_key,
+    resolve_db_settings,
+)
+from src.datasets.names import canonicalize_dataset_name
+from src.datasets.loaders.canonical_json_loader import CanonicalJSONLoader
+from src.datasets.loaders.spatialqueryqa_loader import SpatialQALoader
 from src.datasets.loaders.floodsql_loader import FloodSQLLoader
-from src.datasets.loaders.spatial_sql_loader import SpatialSQLLoader
+from src.datasets.loaders.spatialsql_loader import SpatialSQLLoader
 from src.sql.schema_extractor import SchemaExtractor
 from src.sql.sql_dialect_adapter import (
     classify_spatialsql_failure,
@@ -30,6 +38,7 @@ class DataLoaderFactory:
     
     # 注册数据加载器映射（仅扩展，不修改原有键）
     _loaders = {
+        'CanonicalJSONLoader': CanonicalJSONLoader,
         'SpatialQALoader': SpatialQALoader,
         'SpatialSQLLoader': SpatialSQLLoader,
         'FloodSQLLoader': FloodSQLLoader,
@@ -67,28 +76,29 @@ class DataLoaderFactory:
 class DataPreprocessor:
     """数据预处理器 - 统一的数据预处理流程"""
     
-    def __init__(self, dataset_config_path: str, db_config_path: str):
+    def __init__(self, dataset_config_path: str, db_config_path: Optional[str] = None):
         """
         初始化数据预处理器
         
         Args:
             dataset_config_path: 数据集配置文件路径
-            db_config_path: 数据库配置文件路径
+            db_config_path: 已废弃的旧参数，保留仅为兼容旧调用方
         """
         # 加载配置
         with open(dataset_config_path, 'r', encoding='utf-8') as f:
             self.dataset_config = yaml.safe_load(f)
-        
-        with open(db_config_path, 'r', encoding='utf-8') as f:
-            self.db_config_full = yaml.safe_load(f)
-            # 向后兼容：默认使用 database 字段
-            self.db_config = self.db_config_full.get('database', {})
-            # 多数据库配置
-            self.databases = self.db_config_full.get('databases', {})
+
+        del db_config_path
+        self.db_config_full = extract_embedded_db_config(self.dataset_config)
+
+        # 向后兼容：默认使用 database 字段
+        self.db_config = self.db_config_full.get('database', {})
+        # 多数据库配置
+        self.databases = self.db_config_full.get('databases', {})
         
         # 默认使用单数据库配置的 schema_extractor（向后兼容）
         self.schema_extractor = SchemaExtractor(self.db_config)
-    
+
     def preprocess(self, dataset_name: str = None):
         """
         执行数据预处理
@@ -97,7 +107,8 @@ class DataPreprocessor:
             dataset_name: 数据集名称，如果为None则使用默认数据集
         """
         if dataset_name is None:
-            dataset_name = self.dataset_config.get('default_dataset', 'spatial_qa')
+            dataset_name = self.dataset_config.get('default_dataset', 'spatialqueryqa')
+        dataset_name = canonicalize_dataset_name(dataset_name)
         
         print(f"\n{'='*60}")
         print(f"开始预处理数据集: {dataset_name}")
@@ -123,17 +134,26 @@ class DataPreprocessor:
         print(f"成功提取 {len(extracted_data)} 条有效数据\n")
         
         # 2.5. SpatialSQL 专用：SpatiaLite -> PostGIS 方言转换（仅扩展，不改动其他数据集）
-        if dataset_info.get('use_sql_dialect_adapter') or dataset_name == 'spatialsql_pg':
+        if (
+            not dataset_info.get('use_preformatted_input')
+            and (dataset_info.get('use_sql_dialect_adapter') or dataset_name == 'spatialsql')
+        ):
             extracted_data = self._apply_sql_dialect_adapter(
                 extracted_data,
                 dataset_name,
                 dataset_info,
             )
-        
-        # 3. 提取Schema（支持多数据库）
-        print("步骤 3/4: 提取数据库Schema...")
-        schema, schema_file = self._get_or_extract_schema(dataset_name, dataset_info)
-        print(f"Schema长度: {len(schema)} 字符\n")
+
+        if dataset_info.get('use_preformatted_input'):
+            print("步骤 3/4: 绑定运行时 Schema 引用...")
+            extracted_data = self._attach_runtime_schema_references(extracted_data, dataset_name)
+            schema, schema_file = "", None
+            print(f"已为 {len(extracted_data)} 条数据绑定 Schema 引用\n")
+        else:
+            # 3. 提取Schema（支持多数据库）
+            print("步骤 3/4: 提取数据库Schema...")
+            schema, schema_file = self._get_or_extract_schema(dataset_name, dataset_info)
+            print(f"Schema长度: {len(schema)} 字符\n")
         
         # 4. 整合数据并保存
         print("步骤 4/4: 整合数据并保存...")
@@ -163,7 +183,7 @@ class DataPreprocessor:
         unconverted_all = []
         split_issue_counter: Dict[str, Counter] = defaultdict(Counter)
         adapter_name = dataset_info.get('sql_dialect_adapter')
-        if not adapter_name and dataset_name == 'spatialsql_pg':
+        if not adapter_name and dataset_name == 'spatialsql':
             adapter_name = 'spatialite_to_postgis'
 
         if adapter_name == 'duckdb_to_postgis':
@@ -176,7 +196,7 @@ class DataPreprocessor:
         for item in extracted_data:
             table_prefix = None
             metadata = item.get('metadata', {})
-            if dataset_name == 'spatialsql_pg':
+            if dataset_name == 'spatialsql':
                 split = metadata.get('split', '')
                 if split:
                     table_prefix = f"{split}_"
@@ -276,16 +296,25 @@ class DataPreprocessor:
         schema_cache_dir = get_schema_cache_dir(preprocessing_config)
         
         # 根据数据集配置选择数据库
-        db_name = dataset_info.get('database', 'default')
-        if db_name != 'default' and db_name in self.databases:
-            # 使用数据集指定的数据库
-            db_config = self.databases[db_name]
-            schema_key = db_name
-            print(f"使用数据库: {db_name} ({db_config['database']})")
+        db_name = resolve_database_key(
+            self.dataset_config,
+            dataset_name,
+            {},
+            allow_fallback_mapping=True,
+        )
+        db_config = resolve_db_settings(
+            self.db_config_full,
+            self.dataset_config,
+            dataset_name,
+            {},
+            allow_fallback_mapping=True,
+        )
+        if db_name and db_config:
+            schema_key = build_schema_cache_key(dataset_name, db_name, db_config)
+            print(f"使用数据库: {db_name} ({db_config.get('database')})")
         else:
-            # 使用默认数据库（向后兼容）
             db_config = self.db_config
-            schema_key = self.db_config.get('database', 'default')
+            schema_key = build_schema_cache_key(dataset_name, None, db_config)
             print(f"使用默认数据库: {db_config.get('database', 'postgres')}")
 
         schema_file = get_schema_cache_file(schema_cache_dir, schema_key)
@@ -312,6 +341,43 @@ class DataPreprocessor:
         except Exception as e:
             print(f"Schema提取失败: {str(e)}")
             return "-- Schema提取失败", schema_file
+
+    def _attach_runtime_schema_references(
+        self,
+        extracted_data: List[Dict[str, Any]],
+        dataset_name: str,
+    ) -> List[Dict[str, Any]]:
+        preprocessing_config = self.dataset_config.get('preprocessing', {})
+        schema_cache_dir = get_schema_cache_dir(preprocessing_config)
+        schema_files: Dict[str, Optional[str]] = {}
+
+        for item in extracted_data:
+            metadata = item.get('metadata', {}) if isinstance(item.get('metadata'), dict) else {}
+            db_key = resolve_database_key(self.dataset_config, dataset_name, metadata)
+            db_config = resolve_db_settings(self.db_config_full, self.dataset_config, dataset_name, metadata)
+            if not db_config:
+                continue
+
+            cache_key = build_schema_cache_key(dataset_name, db_key, db_config)
+            if cache_key not in schema_files:
+                schema_file = get_schema_cache_file(schema_cache_dir, cache_key)
+                schema_files[cache_key] = schema_file
+                schema_extractor = SchemaExtractor(db_config)
+                cached_schema = schema_extractor.load_schema_from_file(schema_file)
+                if cached_schema is None:
+                    try:
+                        schema_extractor.connect()
+                        schema = schema_extractor.extract_schema()
+                        schema_extractor.close()
+                        schema_extractor.save_schema_to_file(schema, schema_file)
+                    except Exception as exc:
+                        print(f"Schema提取失败 ({cache_key}): {exc}")
+                        schema_files[cache_key] = None
+
+            if schema_files.get(cache_key):
+                item['schema_file'] = schema_files[cache_key]
+            item.setdefault('dataset', dataset_name)
+        return extracted_data
     
     def _save_preprocessed_data(
         self,
@@ -375,10 +441,11 @@ class DataPreprocessor:
         for group_value, items in grouped_data.items():
             # 为每条数据添加schema
             for item in items:
-                item.pop('schema', None)
                 if schema_file:
+                    item.pop('schema', None)
                     item['schema_file'] = schema_file
-                else:
+                elif schema:
+                    item.pop('schema', None)
                     item['schema'] = schema
                 item['dataset'] = dataset_name
             
@@ -403,10 +470,11 @@ class DataPreprocessor:
     ):
         """保存为单个文件"""
         for item in extracted_data:
-            item.pop('schema', None)
             if schema_file:
+                item.pop('schema', None)
                 item['schema_file'] = schema_file
-            else:
+            elif schema:
+                item.pop('schema', None)
                 item['schema'] = schema
             item['dataset'] = dataset_name
         

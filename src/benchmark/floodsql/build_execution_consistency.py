@@ -25,6 +25,8 @@ import duckdb
 import psycopg2
 import yaml
 
+from src.datasets.db_routing import extract_embedded_db_config, resolve_db_settings
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -65,22 +67,31 @@ def _write_jsonl(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _load_db_config(db_config_path: Path) -> Dict[str, Any]:
-    with open(db_config_path, "r", encoding="utf-8") as f:
-        db_cfg = yaml.safe_load(f) or {}
-    return db_cfg.get("databases", {}).get("floodsql", db_cfg.get("database", {}))
+def _load_db_config(dataset_config_path: Path) -> Dict[str, Any]:
+    with open(dataset_config_path, "r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+    if "datasets" not in dataset_cfg:
+        return dataset_cfg.get("databases", {}).get("floodsql", dataset_cfg.get("database", {}))
+    embedded = extract_embedded_db_config(dataset_cfg)
+    return resolve_db_settings(
+        embedded,
+        dataset_cfg,
+        "floodsql",
+        {},
+        allow_fallback_mapping=True,
+    )
 
 
 def _load_dataset_cfg(dataset_config_path: Path) -> Dict[str, Any]:
     with open(dataset_config_path, "r", encoding="utf-8") as f:
         dataset_cfg = yaml.safe_load(f) or {}
-    return dataset_cfg.get("datasets", {}).get("floodsql_pg", {})
+    return dataset_cfg.get("datasets", {}).get("floodsql", {})
 
 
 def load_floodsql_items(dataset_config_path: Path) -> List[Dict[str, Any]]:
     dataset_cfg = _load_dataset_cfg(dataset_config_path)
     loader = FloodSQLLoader(dataset_cfg)
-    raw_data = loader.load_raw_data(dataset_cfg.get("data_path", "../FloodSQL-Bench"))
+    raw_data = loader.load_raw_data(dataset_cfg.get("raw_data_path", "../FloodSQL-Bench"))
     return loader.extract_questions_and_sqls(raw_data)
 
 
@@ -95,7 +106,7 @@ def resolve_floodsql_paths(
     benchmark_root_path = (
         Path(benchmark_root).expanduser().resolve()
         if benchmark_root
-        else _resolve_benchmark_root(dataset_cfg.get("data_path", "../FloodSQL-Bench"))
+        else _resolve_benchmark_root(dataset_cfg.get("raw_data_path", "../FloodSQL-Bench"))
     )
     data_root_path = (
         Path(data_root).expanduser().resolve()
@@ -667,8 +678,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--db-config",
-        default=str(REPO_ROOT / "config" / "db_config.yaml"),
-        help="Path to db_config.yaml",
+        default=str(REPO_ROOT / "config" / "dataset_config.yaml"),
+        help="Deprecated alias; path to dataset_config.yaml",
     )
     parser.add_argument("--benchmark-root", default=None, help="FloodSQL-Bench root")
     parser.add_argument("--data-root", default=None, help="FloodSQL parquet data root")
@@ -705,8 +716,7 @@ def main() -> int:
     args = parser.parse_args()
 
     dataset_config_path = Path(args.dataset_config).expanduser().resolve()
-    db_config_path = Path(args.db_config).expanduser().resolve()
-    db_cfg = _load_db_config(db_config_path)
+    db_cfg = _load_db_config(dataset_config_path)
     _benchmark_root, data_root, metadata_path = resolve_floodsql_paths(
         dataset_config_path,
         benchmark_root=args.benchmark_root,

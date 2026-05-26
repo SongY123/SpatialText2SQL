@@ -60,6 +60,11 @@ TABLE_CASE_MAP = {
     "gdps": "GDPs",
 }
 KNOWN_FUNCTION_NAMES = {
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
     "ST_Intersects",
     "ST_Intersection",
     "ST_Length",
@@ -512,6 +517,23 @@ def _remove_alias(expr: str) -> str:
     return expr
 
 
+def _extract_alias(expr: str) -> Optional[str]:
+    expr = expr.strip()
+    alias_match = re.search(r"\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$", expr, flags=re.I)
+    if alias_match:
+        return alias_match.group(1)
+    return None
+
+
+def _derive_column_alias(expr: str) -> Optional[str]:
+    expr = _remove_alias(expr).strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        return expr
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", expr):
+        return expr.split(".")[-1]
+    return None
+
+
 def _maybe_qualify_simple_column(expr: str, sql: str) -> str:
     expr = expr.strip()
     if "." in expr or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
@@ -533,6 +555,74 @@ def _append_group_by(sql: str, group_fields: List[str]) -> str:
     insert_at = min(insertion_points) if insertion_points else len(sql)
     group_sql = f" GROUP BY {', '.join(group_fields)} "
     return f"{sql[:insert_at]}{group_sql}{sql[insert_at:]}"
+
+
+def _extract_top_level_where_clause(sql: str) -> str:
+    where_pos = _find_top_level_keyword(sql, "where")
+    if where_pos < 0:
+        return ""
+
+    end_candidates = [
+        _find_top_level_keyword(sql, "group by", start=where_pos),
+        _find_top_level_keyword(sql, "order by", start=where_pos),
+        _find_top_level_keyword(sql, "limit", start=where_pos),
+        _find_top_level_keyword(sql, "offset", start=where_pos),
+    ]
+    end_candidates = [idx for idx in end_candidates if idx >= 0]
+    where_end = min(end_candidates) if end_candidates else len(sql)
+    return sql[where_pos + len("where") : where_end].strip()
+
+
+def _has_single_value_subquery_constraint(expr: str, sql: str) -> bool:
+    where_clause = _extract_top_level_where_clause(sql)
+    if not where_clause:
+        return False
+
+    pattern = re.compile(
+        rf"(?:^|[\s(]){re.escape(expr)}\s*=\s*\(\s*select\b",
+        re.I,
+    )
+    return pattern.search(where_clause) is not None
+
+
+def _rewrite_single_value_aggregate_projection(sql: str) -> str:
+    if _find_top_level_keyword(sql, "group by") >= 0:
+        return sql
+
+    select_pos = _find_top_level_keyword(sql, "select")
+    from_pos = _find_top_level_keyword(sql, "from", start=max(0, select_pos))
+    if select_pos < 0 or from_pos < 0:
+        return sql
+
+    select_list = sql[select_pos + len("select") : from_pos].strip()
+    expressions = _split_top_level_expressions(select_list)
+    if not expressions:
+        return sql
+
+    rewritten_expressions: List[str] = []
+    has_aggregate = False
+    saw_non_aggregate = False
+    for expression in expressions:
+        plain_expr = _remove_alias(expression)
+        if AGGREGATE_PATTERN.search(plain_expr):
+            has_aggregate = True
+            if re.fullmatch(r"count\s*\(\s*\*\s*\)", plain_expr, re.I) and _extract_alias(expression) is None:
+                rewritten_expressions.append("COUNT(*) AS count")
+            else:
+                rewritten_expressions.append(expression.strip())
+            continue
+
+        saw_non_aggregate = True
+        qualified_expr = _maybe_qualify_simple_column(plain_expr, sql)
+        alias = _extract_alias(expression) or _derive_column_alias(qualified_expr)
+        if alias is None or not _has_single_value_subquery_constraint(qualified_expr, sql):
+            return sql
+        rewritten_expressions.append(f"MIN({qualified_expr}) AS {alias}")
+
+    if not has_aggregate or not saw_non_aggregate:
+        return sql
+
+    return f"{sql[:select_pos]}Select {', '.join(rewritten_expressions)} {sql[from_pos:]}"
 
 
 def _fix_incomplete_group_by(sql: str) -> str:
@@ -635,28 +725,6 @@ def _fix_distance_alias_in_join(sql: str) -> str:
     return sql
 
 
-def _fix_known_missing_join_patterns(sql: str) -> str:
-    pattern = re.compile(
-        r"(\bfrom\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+inner\s+join\s+([a-zA-Z_][a-zA-Z0-9_]*))\s+inner\s+join\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+on",
-        re.I,
-    )
-    match = pattern.search(sql)
-    if not match:
-        return sql
-
-    left_table = match.group(2)
-    mid_table = match.group(3)
-    condition = None
-    if left_table.lower().endswith("provinces") and mid_table.lower().endswith("cities"):
-        condition = f" on ST_Contains({left_table}.shape, {mid_table}.shape)"
-    if condition is None:
-        return sql
-
-    original = match.group(1)
-    replacement = f"{original}{condition}"
-    return sql[: match.start(1)] + replacement + sql[match.end(1) :]
-
-
 def _collect_unconverted_functions(sql: str) -> List[str]:
     issues: List[str] = []
     remaining = re.findall(r"\b([A-Z][a-zA-Z0-9_]*)\s*\(", sql)
@@ -691,9 +759,9 @@ def convert_spatialite_to_postgis(
     converted = _rewrite_measurement_calls(converted)
     converted = _rewrite_distance_calls(converted)
     converted = _rewrite_boolean_comparisons(converted)
-    converted = _fix_known_missing_join_patterns(converted)
     converted = _fix_missing_join_on(converted)
     converted = _fix_distance_alias_in_join(converted)
+    converted = _rewrite_single_value_aggregate_projection(converted)
     converted = _fix_missing_group_by(converted)
     converted = _fix_incomplete_group_by(converted)
     converted = _rewrite_desc_order_by_nulls_last(converted)

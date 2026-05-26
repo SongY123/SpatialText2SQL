@@ -37,6 +37,13 @@ ablation_configs:
     use_keyword: false
     prompt_style: "prompt_enhanced"
 
+  finetune_alpaca:
+    name: "Fine-tune Alpaca"
+    description: "Instruction + schema + representative values + question, matching fine-tune format"
+    use_rag: false
+    use_keyword: false
+    prompt_style: "finetune_alpaca"
+
 # Default configuration list
 default_configs:
   - "base"
@@ -53,6 +60,11 @@ prompt_styles:
     use_dataset_context: false
     dataset_specific: true
 
+  finetune_alpaca:
+    template_path: "prompts/finetune_alpaca.txt"
+    include_sample_data: true
+    use_dataset_context: false
+
 # RAG configuration
 rag:
   top_k: 5  # Return the top 5 most relevant documents
@@ -67,7 +79,7 @@ keyword_search:
   method: "tfidf"  # Use the TF-IDF method
   doc_source: "data/postgis_extracted.json"
 
-floodsql_pg:
+floodsql:
   metadata:
     doc_source: "../FloodSQL-Bench/data/metadata_parquet.json"
     embedding_model: "sentence-transformers/all-MiniLM-L6-v2"

@@ -1,8 +1,10 @@
 """Schema提取模块 - 从PostgreSQL数据库提取完整Schema"""
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import psycopg2
+
+from src.datasets.db_routing import apply_search_path, resolve_schema_name
 
 
 class SchemaExtractor:
@@ -31,6 +33,7 @@ class SchemaExtractor:
                 connect_timeout=self.db_config.get('timeout', {}).get('connection_timeout', 10)
             )
             self.cursor = self.conn.cursor()
+            apply_search_path(self.cursor, self.db_config)
             print(f"成功连接到数据库: {self.db_config['database']}")
         except Exception as e:
             print(f"数据库连接失败: {str(e)}")
@@ -52,17 +55,18 @@ class SchemaExtractor:
         """
         if not self.conn:
             self.connect()
-        
+
+        schema_name = resolve_schema_name(self.db_config)
         schema_parts = []
-        
+
         # 1. 获取所有用户表
         self.cursor.execute("""
             SELECT table_name 
             FROM information_schema.tables 
-            WHERE table_schema = 'public' 
+            WHERE table_schema = %s
             AND table_type = 'BASE TABLE'
             ORDER BY table_name;
-        """)
+        """, (schema_name,))
         tables = [row[0] for row in self.cursor.fetchall()]
         
         print(f"发现 {len(tables)} 个表")
@@ -80,6 +84,7 @@ class SchemaExtractor:
     
     def _extract_table_schema(self, table_name: str) -> str:
         """提取单个表的Schema"""
+        schema_name = resolve_schema_name(self.db_config)
         # 获取表的列信息
         self.cursor.execute(f"""
             SELECT 
@@ -89,16 +94,14 @@ class SchemaExtractor:
                 is_nullable,
                 column_default
             FROM information_schema.columns
-            WHERE table_schema = 'public'
+            WHERE table_schema = %s
             AND table_name = %s
             ORDER BY ordinal_position;
-        """, (table_name,))
+        """, (schema_name, table_name))
         
         columns = self.cursor.fetchall()
         
-        # 构建CREATE TABLE语句
-        create_statement = f"CREATE TABLE {table_name} (\n"
-        column_definitions = []
+        column_definitions: List[str] = []
         
         for col_name, data_type, max_length, is_nullable, default in columns:
             col_def = f"    {col_name} {data_type}"
@@ -109,26 +112,82 @@ class SchemaExtractor:
             if default:
                 col_def += f" DEFAULT {default}"
             column_definitions.append(col_def)
-        
+
+        pk_cols = self._fetch_primary_key_columns(schema_name, table_name)
+        if pk_cols:
+            column_definitions.append(f"    PRIMARY KEY ({', '.join(pk_cols)})")
+
+        for fk in self._fetch_foreign_key_constraints(schema_name, table_name):
+            local_columns = ", ".join(fk["local_columns"])
+            ref_columns = ", ".join(fk["referenced_columns"])
+            column_definitions.append(
+                f"    FOREIGN KEY ({local_columns}) REFERENCES {fk['referenced_table']} ({ref_columns})"
+            )
+
+        create_statement = f"CREATE TABLE {table_name} (\n"
         create_statement += ",\n".join(column_definitions)
         create_statement += "\n);"
-        
-        # 获取主键信息
-        self.cursor.execute("""
+        return create_statement
+
+    def _fetch_primary_key_columns(self, schema_name: str, table_name: str) -> List[str]:
+        self.cursor.execute(
+            """
             SELECT kcu.column_name
             FROM information_schema.table_constraints tc
             JOIN information_schema.key_column_usage kcu
-                ON tc.constraint_name = kcu.constraint_name
-            WHERE tc.table_schema = 'public'
-            AND tc.table_name = %s
-            AND tc.constraint_type = 'PRIMARY KEY';
-        """, (table_name,))
-        
-        pk_cols = [row[0] for row in self.cursor.fetchall()]
-        if pk_cols:
-            create_statement += f"\n-- Primary Key: {', '.join(pk_cols)}"
-        
-        return create_statement
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+             AND tc.table_name = kcu.table_name
+            WHERE tc.table_schema = %s
+              AND tc.table_name = %s
+              AND tc.constraint_type = 'PRIMARY KEY'
+            ORDER BY kcu.ordinal_position;
+            """,
+            (schema_name, table_name),
+        )
+        return [row[0] for row in self.cursor.fetchall()]
+
+    def _fetch_foreign_key_constraints(self, schema_name: str, table_name: str) -> List[Dict[str, Any]]:
+        self.cursor.execute(
+            """
+            SELECT
+                kcu.constraint_name,
+                kcu.column_name,
+                ccu.table_name AS referenced_table,
+                ccu.column_name AS referenced_column,
+                kcu.ordinal_position
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+             AND tc.table_name = kcu.table_name
+            JOIN information_schema.referential_constraints rc
+              ON tc.constraint_name = rc.constraint_name
+             AND tc.table_schema = rc.constraint_schema
+            JOIN information_schema.key_column_usage ccu
+              ON rc.unique_constraint_name = ccu.constraint_name
+             AND rc.unique_constraint_schema = ccu.constraint_schema
+             AND ccu.ordinal_position = kcu.position_in_unique_constraint
+            WHERE tc.table_schema = %s
+              AND tc.table_name = %s
+              AND tc.constraint_type = 'FOREIGN KEY'
+            ORDER BY kcu.constraint_name, kcu.ordinal_position;
+            """,
+            (schema_name, table_name),
+        )
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for constraint_name, column_name, referenced_table, referenced_column, _ordinal in self.cursor.fetchall():
+            constraint = grouped.setdefault(
+                constraint_name,
+                {
+                    "referenced_table": referenced_table,
+                    "local_columns": [],
+                    "referenced_columns": [],
+                },
+            )
+            constraint["local_columns"].append(column_name)
+            constraint["referenced_columns"].append(referenced_column)
+        return list(grouped.values())
     
     def _extract_postgis_info(self) -> Optional[str]:
         """提取PostGIS扩展信息"""

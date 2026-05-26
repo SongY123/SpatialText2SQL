@@ -9,7 +9,7 @@ from .context_provider import SpatialSQLContextProvider
 
 
 class SpatialSQLPromptEnhancement:
-    """Provide dataset-specific prompt assets for `spatialsql_pg`."""
+    """Provide dataset-specific prompt assets for `spatialsql`."""
 
     def __init__(self, project_root: Path | str):
         self.project_root = Path(project_root).resolve()
@@ -23,7 +23,7 @@ class SpatialSQLPromptEnhancement:
         }
 
     def build_grounding_block(self, metadata: Dict[str, Any]) -> str:
-        context = self.context_provider.get_context("spatialsql_pg", metadata)
+        context = self.context_provider.get_context("spatialsql", metadata)
         if not context:
             return ""
 

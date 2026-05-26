@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .utils import stable_jsonify, to_text
@@ -14,17 +15,25 @@ class FinetunePromptRenderer:
         "You are a PostgreSQL/PostGIS expert. Read and understand the following database schema, "
         "and use PostgreSQL/PostGIS knowledge to generate a SQL query that answers the user question."
     )
+    DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "prompts" / "finetune_alpaca.txt"
 
     def __init__(
         self,
         *,
         task_description: str,
         max_representative_rows: int = 3,
+        template_path: str | Path | None = None,
     ) -> None:
         self.task_description = to_text(task_description)
         self.max_representative_rows = max(int(max_representative_rows), 1)
+        self.template_path = Path(template_path).resolve() if template_path else self.DEFAULT_TEMPLATE_PATH
+        self._template_text_cache: str | None = None
 
     def render_instruction(self) -> str:
+        template_text = self._load_template_text().strip()
+        marker = "\n[Database Schema]"
+        if marker in template_text:
+            return template_text.split(marker, 1)[0].strip() or self.INSTRUCTION_HEADER
         return self.INSTRUCTION_HEADER
 
     def render_input(
@@ -34,20 +43,21 @@ class FinetunePromptRenderer:
         question: str,
         schema_lines: Sequence[str],
         representative_values: Mapping[str, Any],
+        foreign_key_lines: Sequence[str] = (),
+        custom_sections_block: str = "",
     ) -> str:
         del representative_values
-        sections = [
-            "[Database Schema]",
-            f"[DB_ID] {to_text(database_id)}" if to_text(database_id) else "[DB_ID]",
-            "[Schema]",
-            "\n".join(schema_lines) if schema_lines else "No schema available.",
-            "",
-            "[User Question]",
-            to_text(question),
-            "",
-            "```sql",
-        ]
-        return "\n".join(sections).strip()
+        template_body = self._load_input_template_body()
+        return self._render_input_template(
+            template_body,
+            {
+                "database_id": to_text(database_id),
+                "schema_block": "\n".join(schema_lines) if schema_lines else "No schema available.",
+                "foreign_keys_block": self._build_foreign_keys_block(foreign_key_lines),
+                "question_block": to_text(question),
+                "custom_sections_block": to_text(custom_sections_block),
+            },
+        )
 
     def render_prompt(
         self,
@@ -55,6 +65,7 @@ class FinetunePromptRenderer:
         question: str,
         schema_lines: Sequence[str],
         representative_values: Mapping[str, Any],
+        foreign_key_lines: Sequence[str] = (),
     ) -> str:
         return self.compose_prompt(
             self.render_instruction(),
@@ -63,6 +74,7 @@ class FinetunePromptRenderer:
                 question=question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,
+                foreign_key_lines=foreign_key_lines,
             ),
         )
 
@@ -86,7 +98,7 @@ class FinetunePromptRenderer:
         *,
         included_tables: Sequence[str] | None = None,
         max_representative_rows: int = 3,
-    ) -> tuple[list[str], dict[str, Any]]:
+    ) -> tuple[list[str], dict[str, Any], list[str]]:
         schema_ddls = [
             to_text(item)
             for item in ((database_runtime_metadata or {}).get("schema_ddls") or [])
@@ -95,6 +107,7 @@ class FinetunePromptRenderer:
         direct_representative_values = (database_runtime_metadata or {}).get("representative_values")
         if schema_ddls or isinstance(direct_representative_values, Mapping):
             representative_values: dict[str, Any] = {}
+            foreign_key_lines: list[str] = []
             if isinstance(direct_representative_values, Mapping):
                 for table_name, table_values in direct_representative_values.items():
                     normalized_name = to_text(table_name)
@@ -105,10 +118,11 @@ class FinetunePromptRenderer:
                         geometry_columns=set(),
                         limit=max_representative_rows,
                     )
-            return (
-                FinetunePromptRenderer._build_schema_blocks_from_schema_ddls(schema_ddls, representative_values),
+            schema_blocks, foreign_key_lines = FinetunePromptRenderer._build_schema_blocks_from_schema_ddls(
+                schema_ddls,
                 representative_values,
             )
+            return schema_blocks, representative_values, foreign_key_lines
 
         included = {
             to_text(table_name)
@@ -117,6 +131,7 @@ class FinetunePromptRenderer:
         } or None
         schema_lines: list[str] = []
         representative_values: dict[str, Any] = {}
+        foreign_key_lines: list[str] = []
         for table_meta in (database_runtime_metadata or {}).get("tables", []):
             if not isinstance(table_meta, Mapping):
                 continue
@@ -153,14 +168,19 @@ class FinetunePromptRenderer:
                     primary_key_columns=set(),
                 )
             )
-        return schema_lines, representative_values
+            for raw_fk in table_meta.get("foreign_keys", []) or []:
+                foreign_key_lines.extend(
+                    FinetunePromptRenderer._parse_foreign_key_lines_for_table(table_name, to_text(raw_fk))
+                )
+        return schema_lines, representative_values, FinetunePromptRenderer._dedupe_string_list(foreign_key_lines)
 
     @staticmethod
     def _build_schema_blocks_from_schema_ddls(
         schema_ddls: Sequence[str],
         representative_values: Mapping[str, Any],
-    ) -> list[str]:
+    ) -> tuple[list[str], list[str]]:
         schema_blocks: list[str] = []
+        foreign_key_lines: list[str] = []
         for ddl in schema_ddls:
             parsed = FinetunePromptRenderer._parse_create_table_ddl(ddl)
             if not parsed:
@@ -175,6 +195,7 @@ class FinetunePromptRenderer:
                 for name in (parsed.get("primary_key_columns") or [])
                 if to_text(name)
             }
+            foreign_key_lines.extend(parsed.get("foreign_key_lines") or [])
             representative_rows = []
             if table_name:
                 representative_rows = list(representative_values.get(table_name) or [])
@@ -186,7 +207,7 @@ class FinetunePromptRenderer:
                     primary_key_columns=primary_key_columns,
                 )
             )
-        return schema_blocks
+        return schema_blocks, FinetunePromptRenderer._dedupe_string_list(foreign_key_lines)
 
     @staticmethod
     def _render_schema_block(
@@ -263,11 +284,19 @@ class FinetunePromptRenderer:
         entries = FinetunePromptRenderer._split_sql_entries(body)
         columns: list[dict[str, str]] = []
         primary_key_columns: set[str] = set()
+        foreign_key_lines: list[str] = []
         for entry in entries:
             cleaned = entry.strip()
             if not cleaned:
                 continue
             upper = cleaned.upper()
+            if "FOREIGN KEY" in upper and (
+                upper.startswith("CONSTRAINT") or upper.startswith("FOREIGN KEY")
+            ):
+                foreign_key_lines.extend(
+                    FinetunePromptRenderer._parse_foreign_key_lines_for_table(table_name, cleaned)
+                )
+                continue
             if "PRIMARY KEY" in upper and (
                 upper.startswith("CONSTRAINT") or upper.startswith("PRIMARY KEY")
             ):
@@ -279,10 +308,18 @@ class FinetunePromptRenderer:
             columns.append(parsed_column)
             if "PRIMARY KEY" in upper:
                 primary_key_columns.add(parsed_column["column_name"])
+            foreign_key_lines.extend(
+                FinetunePromptRenderer._parse_inline_foreign_key_lines(
+                    table_name=table_name,
+                    column_name=parsed_column["column_name"],
+                    entry=cleaned,
+                )
+            )
         return {
             "table_name": table_name,
             "columns": columns,
             "primary_key_columns": sorted(primary_key_columns),
+            "foreign_key_lines": FinetunePromptRenderer._dedupe_string_list(foreign_key_lines),
         }
 
     @staticmethod
@@ -330,6 +367,156 @@ class FinetunePromptRenderer:
         )
         column_type = remainder[: constraint_match.start()].strip() if constraint_match else remainder
         return {"column_name": column_name, "column_type": column_type}
+
+    @staticmethod
+    def _parse_foreign_key_lines_for_table(table_name: str, entry: str) -> list[str]:
+        match = re.search(
+            r"FOREIGN\s+KEY\s*\((?P<local_columns>[^)]+)\)\s*REFERENCES\s+(?P<ref_table>[^\s(]+)\s*\((?P<ref_columns>[^)]+)\)",
+            to_text(entry),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        local_columns = FinetunePromptRenderer._split_identifier_list(match.group("local_columns"))
+        ref_table = FinetunePromptRenderer._normalize_identifier(match.group("ref_table"))
+        ref_columns = FinetunePromptRenderer._split_identifier_list(match.group("ref_columns"))
+        return FinetunePromptRenderer._build_foreign_key_pairs(table_name, local_columns, ref_table, ref_columns)
+
+    @staticmethod
+    def _parse_inline_foreign_key_lines(
+        *,
+        table_name: str,
+        column_name: str,
+        entry: str,
+    ) -> list[str]:
+        match = re.search(
+            r"\bREFERENCES\s+(?P<ref_table>[^\s(]+)\s*\((?P<ref_columns>[^)]+)\)",
+            to_text(entry),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        ref_table = FinetunePromptRenderer._normalize_identifier(match.group("ref_table"))
+        ref_columns = FinetunePromptRenderer._split_identifier_list(match.group("ref_columns"))
+        return FinetunePromptRenderer._build_foreign_key_pairs(table_name, [column_name], ref_table, ref_columns)
+
+    @staticmethod
+    def _build_foreign_key_pairs(
+        table_name: str,
+        local_columns: list[str],
+        ref_table: str,
+        ref_columns: list[str],
+    ) -> list[str]:
+        if not table_name or not ref_table or not local_columns or not ref_columns:
+            return []
+        pair_count = min(len(local_columns), len(ref_columns))
+        return [
+            f"{table_name}.{local_columns[index]} = {ref_table}.{ref_columns[index]}"
+            for index in range(pair_count)
+            if local_columns[index] and ref_columns[index]
+        ]
+
+    @staticmethod
+    def _split_identifier_list(raw_columns: str) -> list[str]:
+        identifiers: list[str] = []
+        for part in to_text(raw_columns).split(","):
+            normalized = FinetunePromptRenderer._normalize_identifier(part)
+            if normalized:
+                identifiers.append(normalized)
+        return identifiers
+
+    @staticmethod
+    def _normalize_identifier(identifier: Any) -> str:
+        text = to_text(identifier).strip()
+        if not text:
+            return ""
+        text = text.split(".")[-1].strip()
+        return text.strip('"')
+
+    @staticmethod
+    def _dedupe_string_list(values: Sequence[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = to_text(value).strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            deduped.append(cleaned)
+        return deduped
+
+    @staticmethod
+    def _build_foreign_keys_block(foreign_key_lines: Sequence[str]) -> str:
+        lines = [to_text(line).strip() for line in foreign_key_lines if to_text(line).strip()]
+        if not lines:
+            return ""
+        return "[Foreign Keys]\n" + "\n".join(lines)
+
+    def _load_template_text(self) -> str:
+        if self._template_text_cache is not None:
+            return self._template_text_cache
+        if self.template_path.exists():
+            self._template_text_cache = self.template_path.read_text(encoding="utf-8")
+        else:
+            self._template_text_cache = (
+                f"{self.INSTRUCTION_HEADER}\n"
+                "[Database Schema]\n"
+                "[DB_ID] {{database_id}}\n"
+                "[Schema]\n"
+                "{{schema_block}}\n\n"
+                "{{foreign_keys_block}}\n"
+                "{{custom_sections_block}}\n"
+                "[User Question]\n"
+                "{{question_block}}\n\n"
+                "```sql\n"
+            )
+        return self._template_text_cache
+
+    def _load_input_template_body(self) -> str:
+        template_text = self._load_template_text().strip()
+        marker = "\n[Database Schema]"
+        if marker in template_text:
+            _, body = template_text.split(marker, 1)
+            return "[Database Schema]" + body
+        if template_text.startswith("[Database Schema]"):
+            return template_text
+        return (
+            "[Database Schema]\n"
+            "[DB_ID] {{database_id}}\n"
+            "[Schema]\n"
+            "{{schema_block}}\n\n"
+            "{{foreign_keys_block}}\n"
+            "{{custom_sections_block}}\n"
+            "[User Question]\n"
+            "{{question_block}}\n\n"
+            "```sql"
+        )
+
+    def _render_input_template(self, template_text: str, placeholders: Mapping[str, Any]) -> str:
+        rendered = template_text
+        for key, value in placeholders.items():
+            rendered = rendered.replace(f"{{{{{key}}}}}", to_text(value).strip())
+        rendered = re.sub(r"\{\{[^{}]+\}\}", "", rendered)
+        return self._cleanup_rendered_prompt(rendered)
+
+    @staticmethod
+    def _cleanup_rendered_prompt(rendered: str) -> str:
+        lines = [line.rstrip() for line in rendered.splitlines()]
+        compacted: list[str] = []
+        previous_blank = False
+        for line in lines:
+            if re.match(r"^\[[^\]]+\]\s*$", line) and compacted and not compacted[-1].strip():
+                compacted.pop()
+            is_blank = not line.strip()
+            if is_blank and previous_blank:
+                continue
+            compacted.append(line)
+            previous_blank = is_blank
+        while compacted and not compacted[0].strip():
+            compacted.pop(0)
+        while compacted and not compacted[-1].strip():
+            compacted.pop()
+        return "\n".join(compacted)
 
     @staticmethod
     def _prepare_representative_rows(

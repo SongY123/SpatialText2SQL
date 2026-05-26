@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from src.datasets.names import canonicalize_dataset_name
 
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GEOMETRY_COLUMN_NAMES = {"shape", "location", "geom", "geometry"}
@@ -81,7 +82,7 @@ GENERIC_MIN_COLUMN_KEEP = 8
 SPATIAL_QA_TABLE_TOP_K = {"1": 4, "2": 5, "3": 6}
 FLOODSQL_TABLE_TOP_K = {"L0": 3, "L1": 4, "L2": 4, "L3": 5, "L4": 5, "L5": 5}
 TABLE_ALIAS_PHRASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
-    "spatial_qa": {
+    "spatialqueryqa": {
         "poi": ("poi", "pois", "point of interest", "points of interest"),
         "blockgroups": ("block group", "block groups"),
         "counties": ("county", "counties"),
@@ -92,7 +93,7 @@ TABLE_ALIAS_PHRASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "states": ("state", "states"),
         "tracts": ("tract", "tracts", "census tract", "census tracts"),
     },
-    "floodsql_pg": {
+    "floodsql": {
         "claims": ("claim", "claims", "nfip claim", "nfip claims"),
         "county": ("county", "counties"),
         "census_tracts": ("tract", "tracts", "census tract", "census tracts"),
@@ -170,9 +171,10 @@ class SchemaCompactor:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         metadata = metadata or {}
+        dataset_name = canonicalize_dataset_name(dataset_name)
         if not schema:
             return ""
-        if dataset_name == "spatialsql_pg":
+        if dataset_name == "spatialsql":
             return self._compact_spatialsql_schema(schema, question, metadata)
         return self._compact_generic_schema(
             schema=schema,
@@ -244,7 +246,7 @@ class SchemaCompactor:
                         table_name=full_table_name,
                         columns=columns,
                         question=question,
-                        dataset_name="spatialsql_pg",
+                        dataset_name="spatialsql",
                         metadata={"split": split},
                     ),
                     self._format_table_block(table_name=full_table_name, columns=columns),
@@ -299,7 +301,7 @@ class SchemaCompactor:
                         table_name=table_name,
                         columns=columns,
                         question=question,
-                        dataset_name="spatialsql_pg",
+                        dataset_name="spatialsql",
                         metadata={"split": split},
                     ),
                     self._format_table_block(table_name=table_name, columns=columns),
@@ -570,10 +572,11 @@ class SchemaCompactor:
         metadata: Dict[str, Any],
         total_tables: int,
     ) -> int:
-        if dataset_name == "spatial_qa":
+        dataset_name = canonicalize_dataset_name(dataset_name)
+        if dataset_name == "spatialqueryqa":
             level = str(metadata.get("level") or "").strip()
             return min(total_tables, SPATIAL_QA_TABLE_TOP_K.get(level, 5))
-        if dataset_name == "floodsql_pg":
+        if dataset_name == "floodsql":
             level = str(metadata.get("level") or "").strip()
             return min(total_tables, FLOODSQL_TABLE_TOP_K.get(level, 5))
         return min(total_tables, 5)
@@ -845,7 +848,7 @@ class SchemaCompactor:
 
     def _split_domain_dir(self, split: str) -> Path:
         version = split.split("_", 1)[0]
-        return self.project_root / "sdbdatasets" / version / self._split_domain(split)
+        return self.project_root / "SpatialSQL" / version / self._split_domain(split)
 
     @staticmethod
     def _split_domain(split: str) -> str:

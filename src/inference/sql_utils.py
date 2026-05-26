@@ -159,13 +159,12 @@ def normalize_spatialsql_predicted_sql(
     sql: str,
     metadata: Optional[Dict[str, str]] = None,
 ) -> str:
-    """将模型输出的 SpatialSQL 预测 SQL 归一化到当前 split 的 PG 约定。"""
+    """将模型输出的 SpatialSQL 预测 SQL 归一化到当前 PG schema 约定。"""
     if not sql or not sql.strip():
         return sql
 
-    split = (metadata or {}).get("split", "")
-    table_prefix = f"{split}_" if split else None
-    normalized, _ = convert_spatialite_to_postgis(sql, table_prefix=table_prefix)
+    del metadata
+    normalized, _ = convert_spatialite_to_postgis(sql, table_prefix=None)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     if sql.strip().endswith(";") and not normalized.endswith(";"):
         normalized += ";"

@@ -577,14 +577,23 @@ class BenchmarkReportGenerator:
             meta = model_catalog.get(logical_model, {})
             if meta.get("paper_group") != "open_source":
                 continue
+            spatialqueryqa_detail = (
+                detail_index.get((logical_model, "spatialqueryqa", target_config))
+            )
+            spatialsql_detail = (
+                detail_index.get((logical_model, "spatialsql", target_config))
+            )
+            floodsql_detail = (
+                detail_index.get((logical_model, "floodsql", target_config))
+            )
             rows.append(
                 {
                     "logical_model": logical_model,
                     "display_name": meta.get("display_name", logical_model),
                     "size_label": meta.get("size_label", "Unk."),
-                    "spatial_qa": detail_index.get((logical_model, "spatial_qa", target_config)),
-                    "spatialsql_pg": detail_index.get((logical_model, "spatialsql_pg", target_config)),
-                    "floodsql_pg": detail_index.get((logical_model, "floodsql_pg", target_config)),
+                    "spatialqueryqa": spatialqueryqa_detail,
+                    "spatialsql": spatialsql_detail,
+                    "floodsql": floodsql_detail,
                 }
             )
         return rows
@@ -612,9 +621,9 @@ class BenchmarkReportGenerator:
         ]
         rows = []
         for row in paper_rows:
-            spatialsql = row.get("spatialsql_pg")
-            spatialqa = row.get("spatial_qa")
-            floodsql = row.get("floodsql_pg")
+            spatialsql = row.get("spatialsql")
+            spatialqa = row.get("spatialqueryqa")
+            floodsql = row.get("floodsql")
             spatialqa_levels = self._get_grouped_stats(spatialqa, "level")
             flood_levels = self._get_grouped_stats(floodsql, "level")
             rows.append(
@@ -668,15 +677,15 @@ class BenchmarkReportGenerator:
                 [
                     row["display_name"],
                     row["size_label"],
-                    self._format_integer_metric(self._extract_metric(row.get("spatialsql_pg"), "avg_input_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatialsql_pg"), "avg_output_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatialsql_pg"), "avg_total_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatial_qa"), "avg_input_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatial_qa"), "avg_output_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatial_qa"), "avg_total_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("floodsql_pg"), "avg_input_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("floodsql_pg"), "avg_output_tokens")),
-                    self._format_integer_metric(self._extract_metric(row.get("floodsql_pg"), "avg_total_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialsql"), "avg_input_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialsql"), "avg_output_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialsql"), "avg_total_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialqueryqa"), "avg_input_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialqueryqa"), "avg_output_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialqueryqa"), "avg_total_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("floodsql"), "avg_input_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("floodsql"), "avg_output_tokens")),
+                    self._format_integer_metric(self._extract_metric(row.get("floodsql"), "avg_total_tokens")),
                     "-",
                     "-",
                     "-",
@@ -703,9 +712,9 @@ class BenchmarkReportGenerator:
                 [
                     row["display_name"],
                     row["size_label"],
-                    self._format_integer_metric(self._extract_metric(row.get("spatialsql_pg"), "avg_latency_ms")),
-                    self._format_integer_metric(self._extract_metric(row.get("spatial_qa"), "avg_latency_ms")),
-                    self._format_integer_metric(self._extract_metric(row.get("floodsql_pg"), "avg_latency_ms")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialsql"), "avg_latency_ms")),
+                    self._format_integer_metric(self._extract_metric(row.get("spatialqueryqa"), "avg_latency_ms")),
+                    self._format_integer_metric(self._extract_metric(row.get("floodsql"), "avg_latency_ms")),
                     "-",
                 ]
             )

@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any, Dict, List
 
+from src.datasets.names import canonicalize_dataset_name
+
 
 def _slugify(value: Any) -> str:
     text = str(value).strip()
@@ -40,21 +42,16 @@ def get_group_samples_file(
     group_field: str,
     group_value: Any,
 ) -> str:
+    dataset_name = canonicalize_dataset_name(dataset_name)
     normalized_value = str(group_value).strip()
 
-    if dataset_name == "spatial_qa" and group_field == "level":
+    if dataset_name == "spatialqueryqa" and group_field == "level":
         return os.path.join(dataset_dir, f"level_{_slugify(normalized_value)}_samples.json")
 
-    if dataset_name == "spatialsql_pg" and group_field == "split":
-        version, _, remainder = normalized_value.partition("_")
-        domain = remainder or "unknown"
-        return os.path.join(
-            dataset_dir,
-            _slugify(version or "unknown"),
-            f"{_slugify(domain)}_samples.json",
-        )
+    if dataset_name == "spatialsql" and group_field == "level":
+        return os.path.join(dataset_dir, f"level_{_slugify(normalized_value)}_samples.json")
 
-    if dataset_name == "floodsql_pg" and group_field == "level":
+    if dataset_name == "floodsql" and group_field == "level":
         return os.path.join(dataset_dir, f"{_slugify(normalized_value)}_samples.json")
 
     return os.path.join(
@@ -69,6 +66,7 @@ def get_expected_preprocessed_files(
     grouping_fields: List[str],
     grouping_values: Dict[str, List[Any]],
 ) -> List[str]:
+    dataset_name = canonicalize_dataset_name(dataset_name)
     if not grouping_fields:
         return [get_single_dataset_samples_file(dataset_dir)]
 

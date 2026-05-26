@@ -58,7 +58,7 @@ class BaseDataLoader(ABC):
         Returns:
             数据集元信息字典：
             {
-                "name": "spatial_qa",
+                "name": "spatialqueryqa",
                 "grouping_fields": ["level"],  # 分组字段列表，无分层则为[]
                 "grouping_values": {
                     "level": [1, 2, 3]  # 每个字段的可能值

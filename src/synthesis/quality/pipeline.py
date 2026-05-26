@@ -47,7 +47,7 @@ def _render_input_for_hash(sample: NLSQLSample) -> str:
     if not database_context:
         return ""
     prompt_renderer = FinetunePromptRenderer(task_description="", max_representative_rows=3)
-    schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+    schema_lines, representative_values, foreign_key_lines = FinetunePromptRenderer.build_runtime_prompt_context(
         database_context,
         max_representative_rows=3,
     )
@@ -56,6 +56,7 @@ def _render_input_for_hash(sample: NLSQLSample) -> str:
         question=sample.question,
         schema_lines=schema_lines,
         representative_values=representative_values,
+        foreign_key_lines=foreign_key_lines,
     ).strip()
 
 

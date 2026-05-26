@@ -12,6 +12,8 @@ You are an expert in spatial text-to-SQL. Generate one PostgreSQL + PostGIS SQL 
 ## Keyword Context
 {{keyword_block}}
 
+{{custom_sections_block}}
+
 ## User Question
 {{question_block}}
 

@@ -2,7 +2,7 @@
 """
 Migrate SpatialSQL SQLite/SpatiaLite databases to PostgreSQL/PostGIS.
 
-Scans sdbdatasets/dataset1|2/<domain>/<domain>.sqlite and imports each database
+Scans SpatialSQL/dataset1|2/<domain>/<domain>.sqlite and imports each database
 into a PostgreSQL schema named spatialsql_<version>_<domain>.
 
 Requires GDAL/ogr2ogr for geometry import. Without GDAL, the script only creates
@@ -23,6 +23,8 @@ from pathlib import Path
 import psycopg2
 import yaml
 
+from src.datasets.db_routing import extract_embedded_db_config, resolve_db_settings
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -41,8 +43,18 @@ SQLITE_SKIP_PATTERN = re.compile(
 
 def load_db_config(config_path: Path) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return data.get("database", {})
+        data = yaml.safe_load(f) or {}
+    if "datasets" not in data:
+        return data.get("databases", {}).get("spatial_sql", data.get("database", {}))
+    embedded = extract_embedded_db_config(data)
+    resolved = resolve_db_settings(
+        embedded,
+        data,
+        "spatialsql",
+        {"domain": "ada"},
+        allow_fallback_mapping=True,
+    )
+    return resolved or data.get("database", {})
 
 
 def pg_connection_string(cfg: dict) -> str:
@@ -152,20 +164,20 @@ def migrate_one_db(
 
 def main():
     parser = argparse.ArgumentParser(description="SpatialSQL SQLite -> PostgreSQL/PostGIS migration")
-    parser.add_argument("sdbdatasets", type=str, nargs="?", default="sdbdatasets",
-                        help="Path to sdbdatasets directory (default: sdbdatasets)")
+    parser.add_argument("spatialsql_root", type=str, nargs="?", default="SpatialSQL",
+                        help="Path to SpatialSQL directory (default: SpatialSQL)")
     parser.add_argument("--config", type=str, default=None,
-                        help="Path to db_config.yaml (default: config/db_config.yaml)")
+                        help="Path to dataset_config.yaml (default: config/dataset_config.yaml)")
     parser.add_argument("--report-dir", type=str, default=None,
                         help="Directory for migration_report.* (default: scripts/benchmark/spatialsql)")
     args = parser.parse_args()
 
-    sdb_root = Path(args.sdbdatasets).resolve()
+    sdb_root = Path(args.spatialsql_root).resolve()
     if not sdb_root.is_dir():
         print(f"Error: not a directory: {sdb_root}")
         sys.exit(1)
 
-    config_path = Path(args.config) if args.config else REPO_ROOT / "config" / "db_config.yaml"
+    config_path = Path(args.config) if args.config else REPO_ROOT / "config" / "dataset_config.yaml"
     if not config_path.is_file():
         print(f"Error: config not found: {config_path}")
         sys.exit(1)
@@ -227,7 +239,7 @@ def _format_report_txt(overall: dict) -> str:
     lines = [
         "SpatialSQL SQLite -> PostgreSQL/PostGIS Migration Report",
         "=" * 60,
-        f"sdbdatasets: {overall['sdbdatasets_path']}",
+        f"SpatialSQL: {overall['sdbdatasets_path']}",
         f"ogr2ogr available: {overall['ogr2ogr_available']}",
         "",
     ]

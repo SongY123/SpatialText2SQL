@@ -1,0 +1,148 @@
+You are a PostgreSQL/PostGIS expert. Read and understand the following database schema, and use PostgreSQL/PostGIS knowledge to generate a SQL query that answers the user question.
+[Database Schema]
+[DB_ID] nyc_0005
+[Schema]
+# Table: bicycle_parking_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (borocode:bigint, Examples: [3, 1]),
+  (boroname:text, Examples: [Brooklyn, Manhattan]),
+  (borocd:bigint, Examples: [303, 110, 315]),
+  (coundist:bigint, Examples: [36, 9, 48]),
+  (assemdist:bigint, Examples: [57, 70, 41]),
+  (stsendist:bigint, Examples: [25, 30, 22]),
+  (congdist:bigint, Examples: [8, 13]),
+  (program:text, Examples: [Bike Corral]),
+  (site_id:text, Examples: [S.0029484, S.0029850, S.0032489]),
+  (group_id:text, Examples: [BC0094, BC0257, BC0684]),
+  (borough:text, Examples: [BK, MN]),
+  (ifoaddress:text, Examples: [1048 Bedford Avenue, 245 W 129 Street, 2401 Avenue V]),
+  (onstreet:text, Examples: [Bedford Avenue, W 129 Street, Avenue V]),
+  (fromstreet:text, Examples: [E 24 Street]),
+  (tostreet:text, Examples: [Bedford Avenue]),
+  (side_of_st:text, Examples: [N]),
+  (racktype:text, Examples: [Bike Corral]),
+  (date_inst:date, Examples: [2022-09-15]),
+  (ntaname:text, Examples: [Bedford-Stuyvesant (West), Harlem (North), Madison]),
+  (femafldz:text, Examples: [X]),
+  (femafldt:text, Examples: [AREA OF MINIMAL FLOOD HAZARD]),
+  (hrcevac:text, Examples: [X, 6, 3])
+]
+# Table: bicycle_parking_shelters_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (shelter_id:text, Examples: [BS1001, BS1003, BS1004]),
+  (street:text, Examples: [DEKALB AVENUE, GRAHAM AVENUE, KINGS HIGHWAY]),
+  (build_date:date, Examples: [2007-12-19, 2008-09-12, 2008-09-16]),
+  (ntaname:text, Examples: [Fort Greene, East Williamsburg, Madison]),
+  (femafldz:text, Examples: [X])
+]
+# Table: bus_stop_shelters_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (shelter_id:text, Examples: [BR0003, BR0014, BR0026]),
+  (corner:text, Examples: [SE, NE]),
+  (on_street:text, Examples: [MONTROSE AV, GRAHAM AV, BROADWAY]),
+  (cross_stre:text, Examples: [LORIMER ST, HERBERT ST, LEONARD ST]),
+  (ntaname:text, Examples: [East Williamsburg]),
+  (femafldz:text, Examples: [X])
+]
+# Table: library
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (name:text, Examples: [115th Street, 125th Street, 53rd Street]),
+  (streetname:text, Examples: [West 115th Street, East 125th Street, West 53rd Street]),
+  (housenum:text, Examples: [203, 224, 18]),
+  (city:text, Examples: [New York]),
+  (zip:bigint, Examples: [10026, 10035, 10019]),
+  (url:text, Examples: [http://www.nypl.org/locations/115th-street, http://www.nypl.org/locations/125th-street, http://www.nypl.org/locations/53rd-street]),
+  (bin:bigint, Examples: [1055236, 1054674, 1089376]),
+  (bbl:bigint, Examples: [1018310026, 1017890037, 1012687503]),
+  (x:double precision, Examples: [997115.12977, 1002287.604, 990521.0]),
+  (y:double precision, Examples: [231827.652864, 231844.894956, 216460.0]),
+  (system:text, Examples: [NYPL]),
+  (borocode:bigint, Examples: [1])
+]
+# Table: newsstands_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (street_on:text, Examples: [Whitehall Street, 1 Avenue]),
+  (built_date:text, Examples: [6/12/2008, 8/12/2013]),
+  (ntaname:text, Examples: [Financial District-Battery Park City, Upper East Side-Lenox Hill-Roosevelt Island]),
+  (femafldz:text, Examples: [AE, X])
+]
+# Table: open_storefronts_applications_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (seatingcho:text, Examples: [sidewalk, both]),
+  (retailname:text, Examples: [WE THE PEOPLE, Rainbw]),
+  (bizname:text, Examples: [INFOTEL. INC., Rainbw]),
+  (bizdba:text, Examples: [WE THE PEOPLE, Rainbw]),
+  (biz_desc:text, Examples: [Other, Clothing, Shoe, Accessories Store]),
+  (other_bizd:text, Examples: [LEGAL DOCUMENTS]),
+  (bizstreetn:text, Examples: [233 W. 14 TH ST., 773 Broadway]),
+  (suitenum:text),
+  (bizboro:text, Examples: [Manhattan, Brooklyn]),
+  (bizzip:bigint, Examples: [10011, 11206]),
+  (bizaddress:text, Examples: [233 W. 14 TH ST., Manhattan, NY, 773 Broadway , Brooklyn, NY]),
+  (sidewalkdi:bigint, Examples: [22, 15, 0]),
+  (sidewalk_1:bigint, Examples: [15, 3, 0]),
+  (sidewalkar:bigint, Examples: [330, 45]),
+  (openstreet:bigint, Examples: [0]),
+  (openstre_1:bigint, Examples: [0]),
+  (openstre_2:text),
+  (qualify_si:boolean, Examples: [True, False]),
+  (qualify_op:boolean, Examples: [False]),
+  (landmarkdi:boolean, Examples: [False, True]),
+  (landmark_1:boolean, Examples: [True]),
+  (healthcomp:boolean, Examples: [True]),
+  (submission:date, Examples: [2020-10-28, 2020-10-31]),
+  (creationda:date, Examples: [2022-11-02]),
+  (long:double precision, Examples: [-1.9041344767e-10, -73.9409956595]),
+  (lat:text, Examples: [-1.78722274927E-10, 40.7002569877]),
+  (x:double precision, Examples: [31130726.7325, 1000610.70808]),
+  (y:double precision, Examples: [-2280004.57969, 194404.477383])
+]
+# Table: post_office
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (name:text, Examples: [Grand Central Station, Port Authority Convenience, Midtown Station]),
+  (housenum:text, Examples: [450, 625, 223]),
+  (streetname:text, Examples: [LEXINGTON AVENUE, 8 AVENUE, WEST 38 STREET]),
+  (city:text, Examples: [New York]),
+  (zip:bigint, Examples: [10017, 10018]),
+  (url:text, Examples: [http://www.usps.com/]),
+  (bin:bigint, Examples: [1085671, 1083268, 1014478]),
+  (bbl:bigint, Examples: [1012800090, 1010320029, 1007880026])
+]
+# Table: protected_streets_block_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [MultiLineString (SRID=4326)]),
+  (oftcode:bigint, Examples: [110010117230117248, 110010117250117264, 110010117450117472]),
+  (fromstreet:text, Examples: [EAST 12 STREET, EAST 13 STREET, EAST 23 STREET])
+]
+# Table: waterfront_public_access_areas_wpaas_access_points_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [Point (SRID=4326)]),
+  (wpaa_id:bigint, Examples: [4070010, 3010005, 3060002]),
+  (wpaa_name:text, Examples: [Soundview Pointe, 184 Kent Ave, Ikea])
+]
+# Table: waterfront_public_access_areas_wpaas_footprints_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [MultiPolygon (SRID=4326)]),
+  (wpaa_id:bigint, Examples: [1010003, 4010003, 4070005]),
+  (sign_name:text, Examples: [Pier 17 (2of2), Shore Towers, Skyview Parc]),
+  (shape_area:double precision, Examples: [33461.3368119, 23185.133282, 4841.01504506])
+]
+# Table: waterfront_public_access_areas_wpaas_map
+[
+  (the_geom:geometry(Geometry,4326), Examples: [MultiPolygon (SRID=4326)]),
+  (wpaa_id:bigint, Examples: [3010012, 2100013, 1060007]),
+  (name:text, Examples: [77 Commercial Street, 435 Hunter Ave, Waterside Houses]),
+  (shape_area:double precision, Examples: [160557.152139, 38275.6317659, 237737.086616])
+]
+
+[User Question]
+List the retail names and their distances to the Empire State Building for storefront applications in Manhattan, ordered from closest to farthest.
+
+```sql

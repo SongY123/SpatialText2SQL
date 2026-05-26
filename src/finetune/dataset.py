@@ -31,7 +31,7 @@ class SpatialText2SQLDatasetBuilder:
         next_question_id = self.data_config.question_id_start
         for row in rows:
             metadata = self._load_metadata(row)
-            schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+            schema_lines, representative_values, foreign_key_lines = FinetunePromptRenderer.build_runtime_prompt_context(
                 metadata,
                 max_representative_rows=self.data_config.max_representative_rows,
             )
@@ -41,6 +41,7 @@ class SpatialText2SQLDatasetBuilder:
                 question=row.question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,
+                foreign_key_lines=foreign_key_lines,
             )
             output_text = row.output_text or self.prompt_renderer.render_output(
                 row.sql_reasoning_summary,

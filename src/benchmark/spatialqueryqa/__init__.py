@@ -1,0 +1,1 @@
+"""SpatialQueryQA benchmark entrypoints."""

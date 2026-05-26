@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Validate all spatialsql_pg gold SQL queries on PostgreSQL.
+Validate all spatialsql gold SQL queries on PostgreSQL.
 
 Usage:
     python -m src.benchmark.spatialsql.validate_gold_sql [--utils-first] [--connect-timeout SEC]
@@ -21,6 +21,13 @@ from pathlib import Path
 import psycopg2
 import yaml
 
+from src.datasets.db_routing import (
+    apply_search_path,
+    extract_embedded_db_config,
+    resolve_database_key,
+    resolve_db_settings,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -40,25 +47,29 @@ def _connection_timeout_sec(db_config: dict, override: int | None) -> int:
     return 10
 
 
-def load_preprocessed_items() -> list[dict]:
-    """Load all preprocessed spatialsql_pg items."""
-    prep_dir = REPO_ROOT / "data" / "preprocessed" / "spatialsql_pg"
-    items = []
-    for json_file in sorted(prep_dir.rglob("*.json")):
-        if json_file.name != "samples.json" and not json_file.name.endswith("_samples.json"):
-            continue
-        with open(json_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            items.extend(data)
-        elif isinstance(data, dict) and "items" in data:
-            items.extend(data["items"])
-    return items
+def load_dataset_items(dataset_config_path: Path) -> list[dict]:
+    """Load normalized spatialsql benchmark items."""
+    with open(dataset_config_path, "r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+    dataset_info = (dataset_cfg.get("datasets") or {}).get("spatialsql") or {}
+    data_path = dataset_info.get("data_path")
+    if not data_path:
+        return []
+    from src.datasets.loaders.canonical_json_loader import CanonicalJSONLoader
+
+    target_path = Path(data_path)
+    if not target_path.is_absolute():
+        target_path = REPO_ROOT / target_path
+    if not target_path.exists():
+        return []
+    loader = CanonicalJSONLoader(dataset_info)
+    return loader.extract_questions_and_sqls(loader.load_raw_data(str(target_path)))
 
 
 def validate_all(
     items: list[dict],
-    db_config: dict,
+    dataset_cfg: dict,
+    db_cfg_all: dict,
     timeout_ms: int = 30000,
     connect_timeout_sec: int = 10,
 ):
@@ -70,28 +81,53 @@ def validate_all(
         "details": [],
     }
 
-    conn = psycopg2.connect(
-        host=db_config["host"],
-        port=db_config["port"],
-        database=db_config["database"],
-        user=db_config["user"],
-        password=db_config["password"],
-        connect_timeout=connect_timeout_sec,
-        options=f"-c statement_timeout={timeout_ms}",
-    )
+    connections: dict[str, Any] = {}
 
     for item in items:
         item_id = item.get("id", "?")
-        source_id = item.get("metadata", {}).get("source_id", "?")
+        metadata = item.get("metadata", {}) or {}
+        source_id = metadata.get("source_id", "?")
         gold_sql = item.get("gold_sql", "")
         candidates = item.get("gold_sql_candidates", [])
+        db_key = resolve_database_key(
+            dataset_cfg,
+            "spatialsql",
+            metadata,
+            allow_fallback_mapping=True,
+        ) or "spatialsql"
+        db_config = resolve_db_settings(
+            db_cfg_all,
+            dataset_cfg,
+            "spatialsql",
+            metadata,
+            allow_fallback_mapping=True,
+        )
+        if not db_config:
+            raise RuntimeError(f"Missing database routing for spatialsql sample {item_id}")
+        conn = connections.get(db_key)
+        if conn is None or getattr(conn, "closed", False):
+            conn = psycopg2.connect(
+                host=db_config["host"],
+                port=db_config["port"],
+                database=db_config["database"],
+                user=db_config["user"],
+                password=db_config["password"],
+                connect_timeout=connect_timeout_sec,
+                options=f"-c statement_timeout={timeout_ms}",
+            )
+            cursor = conn.cursor()
+            try:
+                apply_search_path(cursor, db_config)
+            finally:
+                cursor.close()
+            connections[db_key] = conn
 
         all_sqls = [gold_sql] + [c for c in candidates if c != gold_sql]
         results["total"] += 1
         entry = {
             "id": item_id,
             "source_id": source_id,
-            "split": item.get("metadata", {}).get("split", ""),
+            "domain": metadata.get("domain", ""),
             "gold_sql": gold_sql,
             "status": "unknown",
             "errors": [],
@@ -126,7 +162,11 @@ def validate_all(
         if results["total"] % 50 == 0:
             print(f"  [{results['total']}]")
 
-    conn.close()
+    for conn in connections.values():
+        try:
+            conn.close()
+        except Exception:
+            pass
     print()
     return results
 
@@ -140,28 +180,35 @@ def main():
         type=int,
         default=None,
         metavar="SEC",
-        help="TCP connect timeout in seconds. Defaults to databases.spatial_sql.timeout.connection_timeout or 10.",
+        help="TCP connect timeout in seconds. Defaults to the routed SpatialSQL schema config timeout or 10.",
     )
     args = parser.parse_args()
 
-    if args.preprocess_first:
+    if args.utils_first:
         print("=== Re-running preprocessing ===")
         from src.datasets.processing import DataPreprocessor
         cfg_dir = REPO_ROOT / "config"
         preprocessor = DataPreprocessor(
             dataset_config_path=str(cfg_dir / "dataset_config.yaml"),
-            db_config_path=str(cfg_dir / "db_config.yaml"),
         )
-        preprocessor.preprocess("spatialsql_pg")
+        preprocessor.preprocess("spatialsql")
         print()
 
-    with open(REPO_ROOT / "config" / "db_config.yaml", "r", encoding="utf-8") as f:
-        db_cfg_all = yaml.safe_load(f)
-    db_config = db_cfg_all.get("databases", {}).get("spatial_sql", db_cfg_all.get("database", {}))
+    dataset_config_path = REPO_ROOT / "config" / "dataset_config.yaml"
+    with open(dataset_config_path, "r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+    db_cfg_all = extract_embedded_db_config(dataset_cfg)
+    db_config = resolve_db_settings(
+        db_cfg_all,
+        dataset_cfg,
+        "spatialsql",
+        {"domain": "ada"},
+        allow_fallback_mapping=True,
+    )
 
-    items = load_preprocessed_items()
+    items = load_dataset_items(dataset_config_path)
     if not items:
-        print("No preprocessed items found. Run with --utils-first or ensure data exists.")
+        print("No normalized SpatialSQL items found. Run preprocessing or ensure data exists.")
         return
 
     print(f"Loaded {len(items)} gold SQL items")
@@ -174,7 +221,12 @@ def main():
 
     t0 = time.time()
     try:
-        results = validate_all(items, db_config, connect_timeout_sec=ct)
+        results = validate_all(
+            items,
+            dataset_cfg,
+            db_cfg_all,
+            connect_timeout_sec=ct,
+        )
     except Exception as e:
         err = str(e).lower()
         if any(
@@ -190,7 +242,7 @@ def main():
             print(
                 "\nFailed to connect to PostgreSQL (timeout or unreachable). Common causes:\n"
                 "  - The host is only reachable on VPN or an internal network, or the server is down.\n"
-                "  - For local debugging, update databases.spatial_sql.host in config/db_config.yaml.\n"
+                "  - For local debugging, update benchmark_spatialsql_* host entries in config/dataset_config.yaml.\n"
                 "  - You can also use an SSH tunnel: ssh -L 5432:127.0.0.1:5432 user@jump-host and then set host to 127.0.0.1.\n"
                 f"\nOriginal error: {e}\n",
                 file=sys.stderr,

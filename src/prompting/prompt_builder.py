@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
+from src.datasets.names import canonicalize_dataset_name
+
 from .prompt_enhancements.registry import PromptEnhancementRegistry
 from .schema_compactor import DEFAULT_PROJECT_ROOT, SchemaCompactor
 from .sample_data_provider import PostgresSampleDataProvider
@@ -19,6 +23,12 @@ class PromptBuilder:
         self.config = config
         project_root = config.get("project_root")
         self.project_root = Path(project_root).resolve() if project_root else DEFAULT_PROJECT_ROOT
+        dataset_config_path = config.get("dataset_config_path")
+        self.dataset_config_path = (
+            Path(dataset_config_path).resolve()
+            if dataset_config_path
+            else self.project_root / "config" / "dataset_config.yaml"
+        )
         template_path = config.get("prompt_template_path")
         self.template_path = (
             Path(template_path).resolve()
@@ -28,14 +38,15 @@ class PromptBuilder:
         self.ablation_configs = config.get("ablation_configs", {})
         self.prompt_styles = config.get("prompt_styles", {})
         self._template_cache: Dict[str, str] = {}
+        self.dataset_config = self._load_dataset_config()
         self.schema_compactor = SchemaCompactor(project_root=self.project_root)
         self.sample_data_provider = config.get("sample_data_provider") or PostgresSampleDataProvider(
             project_root=self.project_root,
-            db_config_path=config.get("db_config_path"),
+            dataset_config_path=config.get("dataset_config_path"),
         )
         self.prompt_enhancement_registry = (
-            config.get("prompt_enhancement_registry")
-            or PromptEnhancementRegistry(self.project_root)
+                config.get("prompt_enhancement_registry")
+                or PromptEnhancementRegistry(self.project_root)
         )
         self.named_prompt_templates = {
             "sql_synthesis": self.project_root / "prompts" / "sql_synthesis_prompt.txt",
@@ -44,18 +55,21 @@ class PromptBuilder:
             "question_revision": self.project_root / "prompts" / "question_revision_prompt.txt",
             "quality_control": self.project_root / "prompts" / "quality_control_prompt.txt",
         }
-    
+
     def build_prompt(
-        self,
-        question: str,
-        schema: str,
-        config_type: str = 'base',
-        rag_context: Optional[str] = None,
-        keyword_context: Optional[str] = None,
-        dataset_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+            self,
+            question: str,
+            schema: str,
+            config_type: str = 'base',
+            rag_context: Optional[str] = None,
+            keyword_context: Optional[str] = None,
+            dataset_name: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None,
+            data_item: Optional[Dict[str, Any]] = None,
     ) -> str:
         metadata = metadata or {}
+        data_item = data_item or {}
+        dataset_name = canonicalize_dataset_name(dataset_name)
         config_spec = self._resolve_ablation_config(config_type)
         prompt_style = str(config_spec.get("prompt_style") or "default")
         style_spec = self._resolve_prompt_style(prompt_style, dataset_name)
@@ -72,6 +86,27 @@ class PromptBuilder:
                 dataset_name=dataset_name or "",
                 metadata=metadata,
                 compact_schema=compact_schema,
+            )
+        custom_sections_block = self._build_custom_sections_block(dataset_name, data_item)
+        if prompt_style == "finetune_alpaca":
+            structured_schema_block, foreign_key_lines = self._build_structured_schema_context(
+                schema=schema,
+                compact_schema=compact_schema,
+                sample_data_block=sample_data_block,
+                metadata=metadata,
+            )
+            database_id = self._resolve_database_display_id(
+                dataset_name=dataset_name,
+                data_item=data_item,
+                metadata=metadata,
+            )
+            return self._build_finetune_alpaca_prompt(
+                template_text=template_text,
+                question=question,
+                database_id=database_id,
+                schema_block=structured_schema_block,
+                foreign_key_lines=foreign_key_lines,
+                custom_sections_block=custom_sections_block,
             )
         grounding_block = self._build_grounding_block(
             dataset_name=dataset_name,
@@ -97,20 +132,911 @@ class PromptBuilder:
             ),
             "grounding_block": grounding_block.strip(),
             "question_block": (question or "").strip(),
+            "custom_sections_block": custom_sections_block,
         }
         return self._render_template(template_text, placeholders)
 
+    def _build_finetune_alpaca_prompt(
+            self,
+            *,
+            template_text: str,
+            question: str,
+            database_id: str,
+            schema_block: str,
+            foreign_key_lines: List[str],
+            custom_sections_block: str,
+    ) -> str:
+        return self._render_template(
+            template_text,
+            {
+                "database_id": self._stringify_value(database_id),
+                "schema_block": schema_block,
+                "foreign_keys_block": self._build_foreign_keys_block(foreign_key_lines),
+                "question_block": self._stringify_value((question or "").strip()),
+                "custom_sections_block": custom_sections_block,
+            },
+        )
+
+    def _load_dataset_config(self) -> Dict[str, Any]:
+        if not self.dataset_config_path.exists():
+            return {}
+        with open(self.dataset_config_path, "r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle) or {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _build_structured_schema_context(
+            self,
+            *,
+            schema: str,
+            compact_schema: str,
+            sample_data_block: str,
+            metadata: Dict[str, Any],
+    ) -> Tuple[str, List[str]]:
+        schema_text = (schema or compact_schema or "").strip()
+        geometry_hints = self._build_finetune_geometry_hints(
+            schema=schema,
+            compact_schema=compact_schema,
+            metadata=metadata,
+        )
+        representative_values = self._parse_sample_data_block(sample_data_block)
+        schema_lines = self._build_finetune_schema_lines(
+            schema_text,
+            representative_values,
+            geometry_hints,
+        )
+        foreign_key_lines = self._extract_foreign_key_lines(
+            schema=schema,
+            compact_schema=compact_schema,
+            metadata=metadata,
+        )
+        return (
+            "\n".join(schema_lines) if schema_lines else "No schema available.",
+            foreign_key_lines,
+        )
+
+    def _extract_foreign_key_lines(
+            self,
+            *,
+            schema: str,
+            compact_schema: str,
+            metadata: Dict[str, Any],
+    ) -> List[str]:
+        lines: List[str] = []
+        database_context = metadata.get("database_context")
+        if isinstance(database_context, dict):
+            for ddl in database_context.get("schema_ddls", []) or []:
+                parsed = self._parse_finetune_create_table_ddl(str(ddl or ""))
+                if parsed:
+                    lines.extend(parsed.get("foreign_key_lines") or [])
+
+            for table_meta in database_context.get("tables", []) or []:
+                if not isinstance(table_meta, dict):
+                    continue
+                table_name = str(table_meta.get("table_name") or "").strip()
+                for raw_fk in table_meta.get("foreign_keys", []) or []:
+                    lines.extend(self._parse_foreign_key_lines_for_table(table_name, str(raw_fk or "")))
+
+        schema_text = (schema or compact_schema or "").strip()
+        if re.search(r"\bCREATE\s+TABLE\b", schema_text, flags=re.I):
+            for ddl in self._split_finetune_schema_ddls(schema_text):
+                parsed = self._parse_finetune_create_table_ddl(ddl)
+                if parsed:
+                    lines.extend(parsed.get("foreign_key_lines") or [])
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            cleaned = str(line or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            deduped.append(cleaned)
+        return deduped
+
+    def _build_foreign_keys_block(self, foreign_key_lines: List[str]) -> str:
+        if not foreign_key_lines:
+            return ""
+        return "[Foreign Keys]\n" + "\n".join(foreign_key_lines)
+
+    def _build_custom_sections_block(
+            self,
+            dataset_name: Optional[str],
+            data_item: Dict[str, Any],
+    ) -> str:
+        if not dataset_name:
+            return ""
+        dataset_info = (self.dataset_config.get("datasets") or {}).get(dataset_name) or {}
+        sections = dataset_info.get("inference_prompt_sections") or []
+        rendered: List[str] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            source_key = str(section.get("source_key") or "").strip()
+            if not source_key:
+                continue
+            title = self._normalize_prompt_section_title(
+                section.get("title") or section.get("label") or source_key.split(".")[-1]
+            )
+            value = self._lookup_nested_value(data_item, source_key)
+            rendered_value = self._format_prompt_section_value(value)
+            if not rendered_value:
+                continue
+            rendered.append(f"[{title}]\n{rendered_value}")
+        return "\n\n".join(rendered)
+
+    def _resolve_database_display_id(
+            self,
+            *,
+            dataset_name: Optional[str],
+            data_item: Dict[str, Any],
+            metadata: Dict[str, Any],
+    ) -> str:
+        for value in [
+            dataset_name,
+            data_item.get("database_id"),
+            metadata.get("database_id"),
+            metadata.get("database_key"),
+        ]:
+            text = self._stringify_value(value)
+            if text:
+                return text
+        return ""
+
+    def _build_named_section(self, title: str, body: Any) -> str:
+        rendered_body = self._format_prompt_section_value(body)
+        if not rendered_body:
+            return ""
+        return f"[{title}]\n{rendered_body}"
+
+    @staticmethod
+    def _lookup_nested_value(payload: Any, dotted_key: str) -> Any:
+        current = payload
+        for part in str(dotted_key or "").split("."):
+            if not part:
+                continue
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                continue
+            return None
+        return current
+
+    @staticmethod
+    def _normalize_prompt_section_title(title: Any) -> str:
+        raw = str(title or "").strip()
+        if not raw:
+            return ""
+        return raw.strip("[]")
+
+    def _format_prompt_section_value(self, value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            return self._stable_json_text(value)
+        return self._stringify_value(value)
+
+    def _build_finetune_schema_lines(
+            self,
+            compact_schema: str,
+            representative_values: Dict[str, List[Dict[str, Any]]],
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        schema = (compact_schema or "").strip()
+        if not schema:
+            return ["No schema available."]
+        if re.search(r"\bCREATE\s+TABLE\b", schema, flags=re.I):
+            ddls = self._split_finetune_schema_ddls(schema)
+            rendered = self._build_finetune_schema_blocks_from_ddls(
+                ddls,
+                representative_values,
+                geometry_hints,
+            )
+            return rendered or [schema]
+
+        tables = self._parse_compact_schema_tables(schema)
+        if not tables:
+            return [schema]
+
+        blocks: List[str] = []
+        for table_name, columns in tables:
+            rendered_columns = [
+                {
+                    "column_name": column_name,
+                    "column_type": self._format_finetune_column_type(column_type),
+                }
+                for column_name, column_type in columns
+            ]
+            blocks.append(
+                self._render_finetune_schema_block(
+                    table_name=table_name,
+                    columns=rendered_columns,
+                    representative_rows=list(representative_values.get(table_name) or []),
+                    primary_key_columns=set(),
+                    geometry_hints=geometry_hints,
+                )
+            )
+        return blocks
+
+    @staticmethod
+    def _split_finetune_schema_ddls(schema: str) -> List[str]:
+        ddls: List[str] = []
+        parts = re.split(r";\s*(?=CREATE\s+TABLE\b)", schema, flags=re.I)
+        for part in parts:
+            cleaned = part.strip()
+            if not cleaned:
+                continue
+            if not cleaned.endswith(";"):
+                cleaned = f"{cleaned};"
+            ddls.append(cleaned)
+        return ddls
+
+    @staticmethod
+    def _format_finetune_column_type(column_type: str) -> str:
+        original = (column_type or "text").strip()
+        normalized = original.lower()
+        type_map = {
+            "double": "double precision",
+            "float": "double precision",
+            "real": "double precision",
+            "geometry": "geometry",
+            "user-defined": "geometry",
+            "numeric": "numeric",
+            "integer": "integer",
+            "int": "integer",
+            "bigint": "bigint",
+            "smallint": "smallint",
+            "boolean": "boolean",
+            "bool": "boolean",
+            "date": "date",
+            "timestamp": "timestamp",
+            "timestamptz": "timestamp with time zone",
+            "bytea": "bytea",
+            "text": "text",
+        }
+        return type_map.get(normalized, original or "text")
+
+    def _parse_compact_schema_tables(self, compact_schema: str) -> List[Tuple[str, List[Tuple[str, str]]]]:
+        tables: List[Tuple[str, List[Tuple[str, str]]]] = []
+        for raw_line in (compact_schema or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = re.match(r"^-\s+([A-Za-z0-9_]+)\((.*)\)$", line)
+            if match is None:
+                match = re.match(r"^(?:table\s+)?([A-Za-z0-9_]+)\((.*)\)$", line, re.I)
+            if match is None:
+                continue
+            table_name, raw_columns = match.groups()
+            columns = self._parse_compact_schema_columns(raw_columns)
+            if columns:
+                tables.append((table_name, columns))
+        return tables
+
+    @staticmethod
+    def _parse_compact_schema_columns(raw_columns: str) -> List[Tuple[str, str]]:
+        columns: List[Tuple[str, str]] = []
+        for raw_column in PromptBuilder._split_compact_schema_columns(raw_columns):
+            match = re.match(
+                r'^\s*"?(?P<name>[A-Za-z0-9_]+)"?\s+(?P<column_type>.+?)\s*$',
+                raw_column,
+                flags=re.DOTALL,
+            )
+            if match is None:
+                continue
+            columns.append(
+                (
+                    match.group("name").strip('"'),
+                    match.group("column_type").strip(),
+                )
+            )
+        return columns
+
+    @staticmethod
+    def _split_compact_schema_columns(raw_columns: str) -> List[str]:
+        items: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in raw_columns or "":
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    items.append(item)
+                current = []
+                continue
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    def _build_finetune_schema_blocks_from_ddls(
+            self,
+            schema_ddls: List[str],
+            representative_values: Dict[str, List[Dict[str, Any]]],
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        schema_blocks: List[str] = []
+        for ddl in schema_ddls:
+            parsed = self._parse_finetune_create_table_ddl(ddl)
+            if not parsed:
+                cleaned = str(ddl or "").strip()
+                if cleaned:
+                    schema_blocks.append(cleaned)
+                continue
+            table_name = str(parsed.get("table_name") or "").strip()
+            columns = list(parsed.get("columns") or [])
+            primary_key_columns = {
+                str(name).strip()
+                for name in (parsed.get("primary_key_columns") or [])
+                if str(name).strip()
+            }
+            representative_rows = list(representative_values.get(table_name) or []) if table_name else []
+            schema_blocks.append(
+                self._render_finetune_schema_block(
+                    table_name=table_name,
+                    columns=columns,
+                    representative_rows=representative_rows,
+                    primary_key_columns=primary_key_columns,
+                    geometry_hints=geometry_hints,
+                )
+            )
+        return schema_blocks
+
+    @staticmethod
+    def _render_finetune_schema_block(
+            *,
+            table_name: str,
+            columns: List[Dict[str, Any]],
+            representative_rows: List[Dict[str, Any]],
+            primary_key_columns: set[str],
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        lines = [f"# Table: {table_name}", "["]
+        rendered_columns: List[str] = []
+        for column in columns:
+            if not isinstance(column, dict):
+                continue
+            column_name = str(column.get("column_name") or "").strip()
+            raw_column_type = str(column.get("column_type") or column.get("data_type") or "text").strip()
+            if not column_name:
+                continue
+            column_type = PromptBuilder._normalize_finetune_geometry_column_type(
+                table_name,
+                column_name,
+                raw_column_type,
+                geometry_hints,
+            )
+            fragments = [f"{column_name}:{column_type}"]
+            if column_name in primary_key_columns:
+                fragments.append("Primary Key")
+            examples = PromptBuilder._collect_finetune_example_values(
+                table_name,
+                column_name,
+                column_type,
+                representative_rows,
+                geometry_hints,
+            )
+            if examples:
+                fragments.append(f"Examples: [{', '.join(examples)}]")
+            rendered_columns.append(f"  ({', '.join(fragments)})")
+        for index, rendered in enumerate(rendered_columns):
+            suffix = "," if index < len(rendered_columns) - 1 else ""
+            lines.append(f"{rendered}{suffix}")
+        lines.append("]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _collect_finetune_example_values(
+            table_name: str,
+            column_name: str,
+            column_type: str,
+            representative_rows: List[Dict[str, Any]],
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> List[str]:
+        examples: List[str] = []
+        seen: set[str] = set()
+        for row in representative_rows:
+            if not isinstance(row, dict) or column_name not in row:
+                continue
+            rendered = PromptBuilder._format_finetune_example_value(
+                table_name,
+                column_name,
+                column_type,
+                row.get(column_name),
+                geometry_hints,
+            )
+            if not rendered or rendered in seen:
+                continue
+            seen.add(rendered)
+            examples.append(rendered)
+        return examples
+
+    @staticmethod
+    def _format_finetune_example_value(
+            table_name: str,
+            column_name: str,
+            column_type: str,
+            value: Any,
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        if value is None:
+            return ""
+        hint = PromptBuilder._get_finetune_geometry_hint(geometry_hints, table_name, column_name)
+        if PromptBuilder._looks_finetune_geometry_column(column_type, hint):
+            return PromptBuilder._format_finetune_geometry_example(
+                table_name,
+                column_name,
+                column_type,
+                value,
+                hint,
+            )
+        return str(value).strip()
+
+    def _build_finetune_geometry_hints(
+            self,
+            *,
+            schema: str,
+            compact_schema: str,
+            metadata: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        hints: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        database_context = metadata.get("database_context")
+        if isinstance(database_context, dict):
+            for ddl in database_context.get("schema_ddls", []) or []:
+                parsed = self._parse_finetune_create_table_ddl(str(ddl or ""))
+                if not parsed:
+                    continue
+                table_name = str(parsed.get("table_name") or "").strip()
+                for column in parsed.get("columns", []) or []:
+                    if not isinstance(column, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(column.get("column_name") or "").strip(),
+                        str(column.get("column_type") or "").strip(),
+                    )
+
+            for table_meta in database_context.get("tables", []) or []:
+                if not isinstance(table_meta, dict):
+                    continue
+                table_name = str(table_meta.get("table_name") or "").strip()
+                for column in table_meta.get("columns", []) or []:
+                    if not isinstance(column, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(column.get("column_name") or "").strip(),
+                        str(column.get("column_type") or column.get("data_type") or "").strip(),
+                    )
+                for field in table_meta.get("spatial_fields", []) or []:
+                    if not isinstance(field, dict):
+                        continue
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        str(field.get("column_name") or field.get("canonical_name") or "").strip(),
+                        str(field.get("column_type") or "").strip(),
+                        geometry_type=str(field.get("geometry_type") or "").strip(),
+                        srid=field.get("srid"),
+                    )
+
+        for schema_text in [schema, compact_schema]:
+            parsed_tables = self._parse_compact_schema_tables(str(schema_text or ""))
+            for table_name, columns in parsed_tables:
+                for column_name, column_type in columns:
+                    self._register_finetune_geometry_hint(
+                        hints,
+                        table_name,
+                        column_name,
+                        column_type,
+                    )
+        return hints
+
+    def _register_finetune_geometry_hint(
+            self,
+            hints: Dict[str, Dict[str, Dict[str, Any]]],
+            table_name: str,
+            column_name: str,
+            column_type: str,
+            *,
+            geometry_type: str = "",
+            srid: Any = None,
+    ) -> None:
+        table_key = str(table_name or "").strip()
+        column_key = str(column_name or "").strip()
+        type_text = str(column_type or "").strip()
+        if not table_key or not column_key:
+            return
+        if not self._looks_geometry_like_type(type_text) and not geometry_type:
+            return
+        table_hints = hints.setdefault(table_key, {})
+        entry = table_hints.setdefault(column_key, {})
+        if type_text and not entry.get("source_type"):
+            entry["source_type"] = type_text
+        parsed_geometry_type, parsed_srid = self._parse_geometry_type_details(type_text)
+        if geometry_type and not entry.get("geometry_type"):
+            entry["geometry_type"] = self._normalize_finetune_geometry_name(geometry_type)
+        elif parsed_geometry_type and not entry.get("geometry_type"):
+            entry["geometry_type"] = self._normalize_finetune_geometry_name(parsed_geometry_type)
+        if srid not in (None, "") and not entry.get("srid"):
+            try:
+                entry["srid"] = int(srid)
+            except (TypeError, ValueError):
+                entry["srid"] = srid
+        elif parsed_srid is not None and not entry.get("srid"):
+            entry["srid"] = parsed_srid
+
+    @staticmethod
+    def _get_finetune_geometry_hint(
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+            table_name: str,
+            column_name: str,
+    ) -> Dict[str, Any]:
+        return dict((geometry_hints.get(table_name) or {}).get(column_name) or {})
+
+    @staticmethod
+    def _looks_geometry_like_type(column_type: str) -> bool:
+        normalized = str(column_type or "").strip().lower()
+        return normalized in {"geometry", "user-defined"} or normalized.startswith("geometry(")
+
+    @staticmethod
+    def _parse_geometry_type_details(column_type: str) -> Tuple[str, Optional[int]]:
+        match = re.match(
+            r"^\s*geometry\s*\(\s*([A-Za-z]+)\s*(?:,\s*(\d+)\s*)?\)\s*$",
+            str(column_type or "").strip(),
+            flags=re.I,
+        )
+        if not match:
+            return "", None
+        geometry_type = match.group(1) or ""
+        srid_text = match.group(2)
+        return geometry_type, int(srid_text) if srid_text else None
+
+    @staticmethod
+    def _normalize_finetune_geometry_name(geometry_type: str) -> str:
+        mapping = {
+            "POINT": "Point",
+            "MULTIPOINT": "MultiPoint",
+            "LINESTRING": "LineString",
+            "MULTILINESTRING": "MultiLineString",
+            "POLYGON": "Polygon",
+            "MULTIPOLYGON": "MultiPolygon",
+            "GEOMETRY": "Geometry",
+            "GEOMETRYCOLLECTION": "GeometryCollection",
+        }
+        normalized = str(geometry_type or "").strip().upper()
+        return mapping.get(normalized, str(geometry_type or "").strip() or "Geometry")
+
+    @staticmethod
+    def _infer_finetune_geometry_name(table_name: str, column_name: str) -> str:
+        name = f"{table_name} {column_name}".lower()
+        point_tokens = [
+            "poi",
+            "point",
+            "station",
+            "shelter",
+            "stop",
+            "office",
+            "library",
+            "parking",
+            "address",
+            "location",
+            "ghcn",
+        ]
+        line_tokens = [
+            "road",
+            "street",
+            "line",
+            "route",
+            "corridor",
+            "track",
+            "trail",
+            "path",
+            "rail",
+        ]
+        if any(token in name for token in point_tokens):
+            return "Point"
+        if any(token in name for token in line_tokens):
+            return "MultiLineString"
+        return "MultiPolygon"
+
+    @staticmethod
+    def _normalize_finetune_geometry_column_type(
+            table_name: str,
+            column_name: str,
+            column_type: str,
+            geometry_hints: Dict[str, Dict[str, Dict[str, Any]]],
+    ) -> str:
+        original = str(column_type or "text").strip()
+        normalized = original.lower()
+        type_map = {
+            "double": "double precision",
+            "float": "double precision",
+            "real": "double precision",
+            "numeric": "numeric",
+            "integer": "integer",
+            "int": "integer",
+            "bigint": "bigint",
+            "smallint": "smallint",
+            "boolean": "boolean",
+            "bool": "boolean",
+            "date": "date",
+            "timestamp": "timestamp",
+            "timestamptz": "timestamp with time zone",
+            "bytea": "bytea",
+            "text": "text",
+        }
+        hint = PromptBuilder._get_finetune_geometry_hint(geometry_hints, table_name, column_name)
+        if PromptBuilder._looks_finetune_geometry_column(original, hint):
+            srid = hint.get("srid")
+            if srid in (None, ""):
+                _parsed_geometry_type, parsed_srid = PromptBuilder._parse_geometry_type_details(original)
+                srid = parsed_srid
+            if srid in (None, ""):
+                srid = 4326
+            return f"geometry(Geometry,{srid})"
+        return type_map.get(normalized, original or "text")
+
+    @staticmethod
+    def _looks_finetune_geometry_column(column_type: str, hint: Dict[str, Any]) -> bool:
+        return PromptBuilder._looks_geometry_like_type(column_type) or bool(hint)
+
+    @staticmethod
+    def _format_finetune_geometry_example(
+            table_name: str,
+            column_name: str,
+            column_type: str,
+            value: Any,
+            hint: Dict[str, Any],
+    ) -> str:
+        text = str(value or "").strip()
+        geometry_type = ""
+        srid = hint.get("srid")
+        if isinstance(value, dict):
+            geometry_type = str(value.get("type") or "").strip()
+        elif text and text != "<geometry>":
+            upper = text.upper()
+            if upper.startswith("SRID=") and ";" in text:
+                srid_text, text = text.split(";", 1)
+                srid_match = re.search(r"SRID\s*=\s*(\d+)", srid_text, flags=re.I)
+                if srid_match:
+                    srid = int(srid_match.group(1))
+                text = text.strip()
+            match = re.match(r"^([A-Za-z]+)", text)
+            if match:
+                geometry_type = match.group(1)
+        if not geometry_type:
+            geometry_type = str(hint.get("geometry_type") or "").strip()
+        if not geometry_type:
+            _parsed_geometry_type, parsed_srid = PromptBuilder._parse_geometry_type_details(column_type)
+            geometry_type = _parsed_geometry_type
+            if srid in (None, ""):
+                srid = parsed_srid
+        normalized_geometry_type = PromptBuilder._normalize_finetune_geometry_name(geometry_type)
+        if normalized_geometry_type == "Geometry" and text in {"", "<geometry>", "GEOMETRY"}:
+            geometry_type = PromptBuilder._infer_finetune_geometry_name(table_name, column_name)
+        if not geometry_type:
+            geometry_type = PromptBuilder._infer_finetune_geometry_name(table_name, column_name)
+        geometry_display = PromptBuilder._normalize_finetune_geometry_name(geometry_type)
+        if srid in (None, ""):
+            srid = 4326
+        return f"{geometry_display} (SRID={srid})"
+
+    def _parse_finetune_create_table_ddl(self, ddl: str) -> Optional[Dict[str, Any]]:
+        ddl_text = str(ddl or "").strip()
+        if not ddl_text:
+            return None
+        match = re.search(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>[^\s(]+)\s*\((?P<body>.*)\)\s*;?\s*$",
+            ddl_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        raw_table_name = match.group("name").strip()
+        table_name = raw_table_name.split(".")[-1].strip('"')
+        body = match.group("body")
+        entries = self._split_finetune_sql_entries(body)
+        columns: List[Dict[str, str]] = []
+        primary_key_columns: set[str] = set()
+        foreign_key_lines: List[str] = []
+        for entry in entries:
+            cleaned = entry.strip()
+            if not cleaned:
+                continue
+            upper = cleaned.upper()
+            if "FOREIGN KEY" in upper and (
+                    upper.startswith("CONSTRAINT") or upper.startswith("FOREIGN KEY")
+            ):
+                foreign_key_lines.extend(self._parse_foreign_key_lines_for_table(table_name, cleaned))
+                continue
+            if "PRIMARY KEY" in upper and (
+                    upper.startswith("CONSTRAINT") or upper.startswith("PRIMARY KEY")
+            ):
+                primary_key_columns.update(self._parse_finetune_primary_key_columns(cleaned))
+                continue
+            parsed_column = self._parse_finetune_column_definition(cleaned)
+            if not parsed_column:
+                continue
+            columns.append(parsed_column)
+            if "PRIMARY KEY" in upper:
+                primary_key_columns.add(parsed_column["column_name"])
+            foreign_key_lines.extend(
+                self._parse_inline_foreign_key_lines(
+                    table_name=table_name,
+                    column_name=parsed_column["column_name"],
+                    entry=cleaned,
+                )
+            )
+        return {
+            "table_name": table_name,
+            "columns": columns,
+            "primary_key_columns": sorted(primary_key_columns),
+            "foreign_key_lines": self._dedupe_string_list(foreign_key_lines),
+        }
+
+    @staticmethod
+    def _split_finetune_sql_entries(body: str) -> List[str]:
+        items: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in body:
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth > 0:
+                depth -= 1
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    items.append(item)
+                current = []
+                continue
+            current.append(char)
+        tail = "".join(current).strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    @staticmethod
+    def _parse_finetune_primary_key_columns(entry: str) -> set[str]:
+        match = re.search(r"PRIMARY\s+KEY\s*\((?P<columns>[^)]+)\)", entry, flags=re.IGNORECASE)
+        if not match:
+            return set()
+        return {
+            str(item).strip().strip('"')
+            for item in match.group("columns").split(",")
+            if str(item).strip()
+        }
+
+    @staticmethod
+    def _parse_finetune_column_definition(entry: str) -> Optional[Dict[str, str]]:
+        match = re.match(r'^\s*"?(?P<name>[A-Za-z0-9_]+)"?\s+(?P<rest>.+?)\s*$', entry, flags=re.DOTALL)
+        if not match:
+            return None
+        column_name = str(match.group("name") or "").strip()
+        remainder = match.group("rest").strip()
+        constraint_match = re.search(
+            r"\s+(?:NOT\s+NULL|NULL|DEFAULT|PRIMARY\s+KEY|UNIQUE|REFERENCES|CHECK|CONSTRAINT)\b",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+        column_type = remainder[: constraint_match.start()].strip() if constraint_match else remainder
+        return {"column_name": column_name, "column_type": column_type}
+
+    def _parse_foreign_key_lines_for_table(self, table_name: str, entry: str) -> List[str]:
+        match = re.search(
+            r"FOREIGN\s+KEY\s*\((?P<local_columns>[^)]+)\)\s*REFERENCES\s+(?P<ref_table>[^\s(]+)\s*\((?P<ref_columns>[^)]+)\)",
+            str(entry or ""),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        local_columns = self._split_identifier_list(match.group("local_columns"))
+        ref_table = self._normalize_identifier(match.group("ref_table"))
+        ref_columns = self._split_identifier_list(match.group("ref_columns"))
+        return self._build_foreign_key_pairs(table_name, local_columns, ref_table, ref_columns)
+
+    def _parse_inline_foreign_key_lines(
+            self,
+            *,
+            table_name: str,
+            column_name: str,
+            entry: str,
+    ) -> List[str]:
+        match = re.search(
+            r"\bREFERENCES\s+(?P<ref_table>[^\s(]+)\s*\((?P<ref_columns>[^)]+)\)",
+            str(entry or ""),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+        ref_table = self._normalize_identifier(match.group("ref_table"))
+        ref_columns = self._split_identifier_list(match.group("ref_columns"))
+        return self._build_foreign_key_pairs(table_name, [column_name], ref_table, ref_columns)
+
+    def _build_foreign_key_pairs(
+            self,
+            table_name: str,
+            local_columns: List[str],
+            ref_table: str,
+            ref_columns: List[str],
+    ) -> List[str]:
+        if not table_name or not ref_table or not local_columns or not ref_columns:
+            return []
+        pair_count = min(len(local_columns), len(ref_columns))
+        return [
+            f"{table_name}.{local_columns[index]} = {ref_table}.{ref_columns[index]}"
+            for index in range(pair_count)
+            if local_columns[index] and ref_columns[index]
+        ]
+
+    @staticmethod
+    def _split_identifier_list(raw_columns: str) -> List[str]:
+        return [
+            PromptBuilder._normalize_identifier(part)
+            for part in str(raw_columns or "").split(",")
+            if PromptBuilder._normalize_identifier(part)
+        ]
+
+    @staticmethod
+    def _normalize_identifier(identifier: Any) -> str:
+        text = str(identifier or "").strip()
+        if not text:
+            return ""
+        text = text.split(".")[-1].strip()
+        return text.strip('"')
+
+    @staticmethod
+    def _dedupe_string_list(values: List[str]) -> List[str]:
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = str(value or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            deduped.append(cleaned)
+        return deduped
+
+    @staticmethod
+    def _parse_sample_data_block(sample_data_block: str) -> Dict[str, List[Dict[str, Any]]]:
+        representative_values: Dict[str, List[Dict[str, Any]]] = {}
+        current_table: Optional[str] = None
+        for raw_line in (sample_data_block or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            table_match = re.match(r"^-\s+([A-Za-z0-9_]+)\s*$", line)
+            if table_match is not None:
+                current_table = table_match.group(1)
+                representative_values.setdefault(current_table, [])
+                continue
+            if current_table is None:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = {"value": line}
+            if isinstance(payload, dict):
+                representative_values[current_table].append(payload)
+        return representative_values
+
     def build_sql_synthesis_prompt(
-        self,
-        *,
-        database: Any,
-        difficulty_level: str,
-        structural_constraints: Dict[str, Any],
-        sampled_functions: List[Dict[str, Any]],
-        database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        expected_limit: int | None = None,
-        allow_limit: bool = True,
-        require_order_by_with_limit: bool = False,
+            self,
+            *,
+            database: Any,
+            difficulty_level: str,
+            structural_constraints: Dict[str, Any],
+            sampled_functions: List[Dict[str, Any]],
+            database_runtime_metadata: Optional[Dict[str, Any]] = None,
+            expected_limit: int | None = None,
+            allow_limit: bool = True,
+            require_order_by_with_limit: bool = False,
     ) -> str:
         schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
             database,
@@ -160,22 +1086,22 @@ class PromptBuilder:
         )
 
     def build_sql_revision_prompt(
-        self,
-        *,
-        database: Any,
-        original_sql: str,
-        execution_error: str,
-        used_tables: List[str],
-        database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        expected_limit: int | None = None,
-        allow_limit: bool = True,
-        require_order_by_with_limit: bool = False,
+            self,
+            *,
+            database: Any,
+            original_sql: str,
+            execution_error: str,
+            used_tables: List[str],
+            database_runtime_metadata: Optional[Dict[str, Any]] = None,
+            expected_limit: int | None = None,
+            allow_limit: bool = True,
+            require_order_by_with_limit: bool = False,
     ) -> str:
         included_tables = {
-            str(table_name).strip()
-            for table_name in used_tables
-            if str(table_name).strip()
-        } or None
+                              str(table_name).strip()
+                              for table_name in used_tables
+                              if str(table_name).strip()
+                          } or None
         schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
             database,
             database_runtime_metadata=database_runtime_metadata,
@@ -202,16 +1128,16 @@ class PromptBuilder:
         )
 
     def build_question_revision_prompt(
-        self,
-        *,
-        sql_query: Any,
-        database_context: Dict[str, Any],
-        sql_features: Dict[str, Any],
-        current_question: str,
-        execution_result_override: Dict[str, Any] | None = None,
-        style_constraint: Dict[str, Any],
-        spatial_relation_constraints: List[Dict[str, Any]],
-        revision_feedback: str,
+            self,
+            *,
+            sql_query: Any,
+            database_context: Dict[str, Any],
+            sql_features: Dict[str, Any],
+            current_question: str,
+            execution_result_override: Dict[str, Any] | None = None,
+            style_constraint: Dict[str, Any],
+            spatial_relation_constraints: List[Dict[str, Any]],
+            revision_feedback: str,
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
         execution_results = self._prepare_question_execution_results(
@@ -289,11 +1215,11 @@ class PromptBuilder:
         return names
 
     def _prepare_representative_rows(
-        self,
-        representative_values: Any,
-        *,
-        geometry_columns: set[str],
-        limit: int,
+            self,
+            representative_values: Any,
+            *,
+            geometry_columns: set[str],
+            limit: int,
     ) -> List[Dict[str, Any]]:
         normalized = representative_values
         if isinstance(normalized, dict) and isinstance(normalized.get("rows"), list):
@@ -366,11 +1292,11 @@ class PromptBuilder:
         return rows
 
     def _normalize_representative_value(
-        self,
-        column_name: str,
-        value: Any,
-        *,
-        geometry_columns: set[str],
+            self,
+            column_name: str,
+            value: Any,
+            *,
+            geometry_columns: set[str],
     ) -> Any:
         if column_name.lower() in geometry_columns:
             if value in (None, ""):
@@ -395,11 +1321,11 @@ class PromptBuilder:
         return "GEOMETRY"
 
     def _build_sql_prompt_context(
-        self,
-        database: Any,
-        *,
-        database_runtime_metadata: Optional[Dict[str, Any]] = None,
-        included_tables: Optional[set[str]] = None,
+            self,
+            database: Any,
+            *,
+            database_runtime_metadata: Optional[Dict[str, Any]] = None,
+            included_tables: Optional[set[str]] = None,
     ) -> Tuple[List[str], List[str], Dict[str, Any]]:
         if isinstance(database_runtime_metadata, dict) and database_runtime_metadata.get("tables"):
             schema_lines: List[str] = []
@@ -485,14 +1411,14 @@ class PromptBuilder:
         return schema_lines, spatial_lines, representative_values
 
     def build_question_generation_prompt(
-        self,
-        *,
-        sql_query: Any,
-        database_context: Dict[str, Any],
-        sql_features: Dict[str, Any],
-        execution_result_override: Dict[str, Any] | None = None,
-        style_constraint: Dict[str, Any],
-        spatial_relation_constraints: List[Dict[str, Any]],
+            self,
+            *,
+            sql_query: Any,
+            database_context: Dict[str, Any],
+            sql_features: Dict[str, Any],
+            execution_result_override: Dict[str, Any] | None = None,
+            style_constraint: Dict[str, Any],
+            spatial_relation_constraints: List[Dict[str, Any]],
     ) -> str:
         schema_lines = self._build_question_schema_lines(database_context)
         execution_results = self._prepare_question_execution_results(
@@ -503,9 +1429,9 @@ class PromptBuilder:
         used_function_names = {
             str(name).strip().upper()
             for name in (
-                getattr(sql_query, "used_spatial_functions", None)
-                or sql_features.get("postgis_functions", [])
-                or []
+                    getattr(sql_query, "used_spatial_functions", None)
+                    or sql_features.get("postgis_functions", [])
+                    or []
             )
             if str(name).strip()
         }
@@ -593,14 +1519,14 @@ class PromptBuilder:
         return summary
 
     def build_quality_control_prompt(
-        self,
-        *,
-        sample: Dict[str, Any],
-        schema_lines: List[str],
-        sql_feature_summary: Dict[str, Any],
-        execution_summary: Dict[str, Any],
-        representative_values: Dict[str, Any],
-        judge_rules: Dict[str, Any],
+            self,
+            *,
+            sample: Dict[str, Any],
+            schema_lines: List[str],
+            sql_feature_summary: Dict[str, Any],
+            execution_summary: Dict[str, Any],
+            representative_values: Dict[str, Any],
+            judge_rules: Dict[str, Any],
     ) -> str:
         template_text = self._load_named_template_text("quality_control")
         return self._render_template(
@@ -728,9 +1654,9 @@ class PromptBuilder:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
 
     def _format_sql_difficulty_constraint(
-        self,
-        difficulty_level: str,
-        structural_constraints: Dict[str, Any],
+            self,
+            difficulty_level: str,
+            structural_constraints: Dict[str, Any],
     ) -> str:
         min_tables = structural_constraints.get("min_tables")
         max_tables = structural_constraints.get("max_tables")
@@ -828,9 +1754,9 @@ class PromptBuilder:
         }
 
     def _resolve_prompt_style(
-        self,
-        prompt_style: str,
-        dataset_name: Optional[str],
+            self,
+            prompt_style: str,
+            dataset_name: Optional[str],
     ) -> Dict[str, Any]:
         default_style = self.prompt_styles.get("default", {})
         style_config = self.prompt_styles.get(prompt_style, {})
@@ -864,24 +1790,24 @@ class PromptBuilder:
         return self._template_cache[cache_key]
 
     def _build_grounding_block(
-        self,
-        dataset_name: Optional[str],
-        metadata: Dict[str, Any],
-        style_spec: Dict[str, Any],
+            self,
+            dataset_name: Optional[str],
+            metadata: Dict[str, Any],
+            style_spec: Dict[str, Any],
     ) -> str:
         if not style_spec.get("use_dataset_context"):
             return ""
         return self.prompt_enhancement_registry.build_grounding_block(
             dataset_name or "",
             metadata,
-        )
+            )
 
     def _build_schema_semantics_block(
-        self,
-        dataset_name: Optional[str],
-        metadata: Dict[str, Any],
-        style_spec: Dict[str, Any],
-        compact_schema: str,
+            self,
+            dataset_name: Optional[str],
+            metadata: Dict[str, Any],
+            style_spec: Dict[str, Any],
+            compact_schema: str,
     ) -> str:
         if not style_spec.get("use_dataset_context"):
             return ""
@@ -896,7 +1822,7 @@ class PromptBuilder:
             dataset_name or "",
             metadata,
             compact_schema,
-        )
+            )
 
     @staticmethod
     def _cleanup_rendered_prompt(rendered: str) -> str:
@@ -910,7 +1836,7 @@ class PromptBuilder:
                 if not PromptBuilder._is_empty_metadata_line(line)
             ]
             cleaned_body = PromptBuilder._trim_blank_lines(cleaned_body)
-            if cleaned_body:
+            if cleaned_body or PromptBuilder._should_keep_empty_section(header):
                 cleaned_sections.append((header, cleaned_body))
 
         prompt_lines = PromptBuilder._trim_blank_lines([line.rstrip() for line in preamble])
@@ -930,7 +1856,7 @@ class PromptBuilder:
         current_body: List[str] = []
 
         for line in rendered.splitlines():
-            if line.startswith("## "):
+            if line.startswith("## ") or re.match(r"^\[[^\]]+\]\s*$", line.strip()):
                 if current_header is None:
                     pass
                 else:
@@ -954,6 +1880,10 @@ class PromptBuilder:
         return bool(re.match(r"^\s*-\s+[A-Za-z0-9_ ]+:\s*$", line))
 
     @staticmethod
+    def _should_keep_empty_section(header: str) -> bool:
+        return header.strip() in {"[SQL]"}
+
+    @staticmethod
     def _trim_blank_lines(lines: List[str]) -> List[str]:
         start = 0
         end = len(lines)
@@ -971,37 +1901,39 @@ class PromptBuilder:
             compacted.append(line)
             previous_blank = is_blank
         return compacted
-    
+
     def build_batch_prompts(
-        self,
-        questions: list,
-        schema: str,
-        config_type: str = 'base',
-        rag_contexts: Optional[list] = None,
-        keyword_contexts: Optional[list] = None,
-        dataset_name: Optional[str] = None,
-        metadatas: Optional[list] = None,
+            self,
+            questions: list,
+            schema: str,
+            config_type: str = 'base',
+            rag_contexts: Optional[list] = None,
+            keyword_contexts: Optional[list] = None,
+            dataset_name: Optional[str] = None,
+            metadatas: Optional[list] = None,
+            data_items: Optional[list] = None,
     ) -> list:
         """
         批量构建prompts
-        
+
         Args:
             questions: 问题列表
             schema: 数据库Schema
             config_type: 配置类型
             rag_contexts: RAG context列表（可选）
             keyword_contexts: Keyword context列表（可选）
-            
+
         Returns:
             prompt列表
         """
         prompts = []
-        
+
         for i, question in enumerate(questions):
             rag_ctx = rag_contexts[i] if rag_contexts and i < len(rag_contexts) else None
             kw_ctx = keyword_contexts[i] if keyword_contexts and i < len(keyword_contexts) else None
             metadata = metadatas[i] if metadatas and i < len(metadatas) else None
-            
+            data_item = data_items[i] if data_items and i < len(data_items) else None
+
             prompt = self.build_prompt(
                 question=question,
                 schema=schema,
@@ -1010,19 +1942,20 @@ class PromptBuilder:
                 keyword_context=kw_ctx,
                 dataset_name=dataset_name,
                 metadata=metadata,
+                data_item=data_item,
             )
             prompts.append(prompt)
-        
+
         return prompts
-    
+
     @staticmethod
     def get_config_description(config_type: str) -> str:
         """
         获取配置类型的描述
-        
+
         Args:
             config_type: 配置类型
-            
+
         Returns:
             配置描述字符串
         """
@@ -1030,6 +1963,7 @@ class PromptBuilder:
             'base': 'Question + Schema',
             'rag': 'Question + Schema + Retrieved Context',
             'keyword': 'Question + Schema + Keyword Context',
-            'full': 'Question + Schema + Retrieved Context + Keyword Context'
+            'full': 'Question + Schema + Retrieved Context + Keyword Context',
+            'finetune_alpaca': 'Instruction + Schema + Representative Values + Question',
         }
         return descriptions.get(config_type, 'Unknown')

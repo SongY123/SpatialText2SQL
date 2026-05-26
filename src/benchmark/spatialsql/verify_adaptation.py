@@ -2,7 +2,7 @@
 """
 Validate the SpatialSQL integration without requiring live databases.
 
-1) Regression-check the original spatial_qa flow.
+1) Regression-check the original spatialqueryqa flow.
 2) Verify the SpatialSQL loader and SQL dialect adapter.
 """
 from __future__ import annotations
@@ -22,21 +22,21 @@ os.chdir(REPO_ROOT)
 
 
 def test_original_flow():
-    """Check that the original spatial_qa flow is still wired correctly."""
+    """Check that the original spatialqueryqa flow is still wired correctly."""
     from src.datasets import DataLoaderFactory
 
     config_path = os.path.join(REPO_ROOT, "config", "dataset_config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    default_name = config.get("default_dataset", "spatial_qa")
-    assert default_name == "spatial_qa", "default_dataset must remain spatial_qa"
+    default_name = config.get("default_dataset", "spatialqueryqa")
+    assert default_name == "spatialqueryqa", "default_dataset must remain spatialqueryqa"
     dataset_info = config["datasets"].get(default_name)
     assert dataset_info is not None
     loader = DataLoaderFactory.create(dataset_info["loader_class"], dataset_info)
     info = loader.get_dataset_info()
-    assert info["name"] == "spatial_qa"
+    assert info["name"] == "spatialqueryqa"
     assert "grouping_fields" in info and "level" in info["grouping_fields"]
-    print("[OK] Original spatial_qa configuration is intact and SpatialQALoader is available.")
+    print("[OK] Original spatialqueryqa configuration is intact and SpatialQALoader is available.")
     return True
 
 
@@ -95,12 +95,12 @@ def test_evaluator_multigold():
 
 
 def main():
-    print("SpatialSQL adaptation validation (no sdbdatasets or migrated PostgreSQL required)\n")
+    print("SpatialSQL adaptation validation (no SpatialSQL or migrated PostgreSQL required)\n")
     try:
         test_original_flow()
         test_spatialsql_loader_and_adapter()
         test_evaluator_multigold()
-        print("\nAll checks passed. The original flow is intact and the spatialsql_pg extension is available.")
+        print("\nAll checks passed. The original flow is intact and the spatialsql extension is available.")
         return 0
     except Exception as e:
         print(f"\nValidation failed: {e}")

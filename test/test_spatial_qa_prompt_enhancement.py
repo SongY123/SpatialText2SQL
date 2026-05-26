@@ -80,7 +80,7 @@ class SpatialQAPromptEnhancementTests(unittest.TestCase):
                 "use_dataset_context": True,
             },
         )
-        self.assertIn("Spatial QA difficulty level: 3", grounding)
+        self.assertIn("SpatialQueryQA difficulty level: 3", grounding)
         self.assertIn("per entity", grounding)
         self.assertIn("aggregation logic", grounding)
         self.assertNotIn("ST_", grounding)
@@ -145,7 +145,7 @@ class SpatialQAPromptEnhancementTests(unittest.TestCase):
         self.assertNotIn("## Grounding Hints", prompt)
         self.assertNotIn("## Retrieved Context", prompt)
         self.assertNotIn("## Keyword Context", prompt)
-        self.assertNotIn("Spatial QA difficulty level: 3", prompt)
+        self.assertNotIn("SpatialQueryQA difficulty level: 3", prompt)
         self.assertIn("Return only the columns or aggregate values needed", prompt)
         self.assertNotIn("ST_", prompt)
         self.assertNotIn("LEFT JOIN", prompt)
@@ -174,7 +174,7 @@ class SpatialQAPromptEnhancementTests(unittest.TestCase):
         )
 
         self.assertNotIn("## Grounding Hints", prompt)
-        self.assertNotIn("Spatial QA difficulty level", prompt)
+        self.assertNotIn("SpatialQueryQA difficulty level", prompt)
         self.assertIn("## Sample Data", prompt)
         self.assertIn("Return one PostgreSQL + PostGIS SQL query only.", prompt)
 

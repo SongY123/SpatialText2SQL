@@ -268,7 +268,7 @@ class NLSQLSample:
             from src.finetune.prompting import FinetunePromptRenderer
 
             prompt_renderer = FinetunePromptRenderer(task_description="", max_representative_rows=3)
-            schema_lines, prompt_representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+            schema_lines, prompt_representative_values, foreign_key_lines = FinetunePromptRenderer.build_runtime_prompt_context(
                 database_context_payload,
                 max_representative_rows=3,
             )
@@ -278,6 +278,7 @@ class NLSQLSample:
                 question=self.question,
                 schema_lines=schema_lines,
                 representative_values=prompt_representative_values,
+                foreign_key_lines=foreign_key_lines,
             )
             row["output"] = prompt_renderer.render_output(self.sql_reasoning_summary, self.sql)
 

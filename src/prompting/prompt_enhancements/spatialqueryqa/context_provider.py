@@ -1,4 +1,4 @@
-"""Build level-aware grounding hints for the Spatial QA prompt enhancement."""
+"""Build level-aware grounding hints for the SpatialQueryQA prompt enhancement."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 
 COMMON_HINTS = (
-    "Spatial QA runs on PostgreSQL/PostGIS; use only tables, columns, and literals grounded by the schema, sample data, and question.",
+    "SpatialQueryQA runs on PostgreSQL/PostGIS; use only tables, columns, and literals grounded by the schema, sample data, and question.",
     "Use spatial SQL only when the question requires spatial reasoning; otherwise keep the query as standard SQL.",
     "Return only the columns or aggregate values needed to answer the question, and avoid extra diagnostic fields unless requested.",
 )
@@ -95,7 +95,7 @@ MAX_COLUMN_HINTS_PER_TABLE = 4
 
 
 class SpatialQAContextProvider:
-    """Return lightweight level-aware prompt hints for `spatial_qa`."""
+    """Return lightweight level-aware prompt hints for `spatialqueryqa`."""
 
     def get_context(self, metadata: Dict[str, Any] | None) -> Dict[str, Any]:
         metadata = metadata or {}

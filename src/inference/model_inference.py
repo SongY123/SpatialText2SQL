@@ -16,6 +16,7 @@ from src.inference.sql_utils import (
     normalize_floodsql_predicted_sql,
     normalize_spatialsql_predicted_sql,
 )
+from src.datasets.names import dataset_name_matches
 
 
 def build_model_run_name(model_name: str, backend: str) -> str:
@@ -304,6 +305,7 @@ class ModelInference:
                     'question': data_items[idx]['question'],
                     'gold_sql': data_items[idx]['gold_sql'],
                     'gold_sql_candidates': data_items[idx].get('gold_sql_candidates', []),
+                    'results': data_items[idx].get('results'),
                     'predicted_sql': predicted_sql,
                     'metadata': data_items[idx].get('metadata', {}),
                     'source_backend': data_items[idx].get('source_backend'),
@@ -442,11 +444,11 @@ class ModelInference:
         dataset_name = data_item.get("dataset")
         metadata = data_item.get("metadata", {})
         if enable_spatialsql and (
-            dataset_name == "spatialsql_pg" or metadata.get("split")
+            dataset_name_matches(dataset_name, "spatialsql") or metadata.get("split") or metadata.get("domain")
         ):
             return normalize_spatialsql_predicted_sql(predicted_sql, metadata)
         if enable_floodsql and (
-            dataset_name == "floodsql_pg" or metadata.get("family")
+            dataset_name_matches(dataset_name, "floodsql") or metadata.get("family") or metadata.get("level")
         ):
             return normalize_floodsql_predicted_sql(predicted_sql, metadata)
         return predicted_sql
@@ -470,6 +472,7 @@ class ModelInference:
             'question': data_item['question'],
             'gold_sql': data_item['gold_sql'],
             'gold_sql_candidates': data_item.get('gold_sql_candidates', []),
+            'results': data_item.get('results'),
             'predicted_sql': '',
             'error': str(exc),
             'metadata': data_item.get('metadata', {}),

@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from .floodsql_pg.adapter import FloodSQLPromptEnhancement
-from .spatial_qa.adapter import SpatialQAPromptEnhancement
-from .spatialsql_pg.adapter import SpatialSQLPromptEnhancement
+from src.datasets.names import canonicalize_dataset_name
+
+from .floodsql.adapter import FloodSQLPromptEnhancement
+from .spatialqueryqa.adapter import SpatialQAPromptEnhancement
+from .spatialsql.adapter import SpatialSQLPromptEnhancement
 
 
 class PromptEnhancementRegistry:
@@ -16,13 +18,13 @@ class PromptEnhancementRegistry:
     def __init__(self, project_root: Path | str):
         self.project_root = Path(project_root).resolve()
         self._enhancements = {
-            "floodsql_pg": FloodSQLPromptEnhancement(self.project_root),
-            "spatial_qa": SpatialQAPromptEnhancement(self.project_root),
-            "spatialsql_pg": SpatialSQLPromptEnhancement(self.project_root),
+            "floodsql": FloodSQLPromptEnhancement(self.project_root),
+            "spatialqueryqa": SpatialQAPromptEnhancement(self.project_root),
+            "spatialsql": SpatialSQLPromptEnhancement(self.project_root),
         }
 
     def resolve_dataset_override(self, dataset_name: str) -> Dict[str, Any]:
-        enhancement = self._enhancements.get(dataset_name)
+        enhancement = self._enhancements.get(canonicalize_dataset_name(dataset_name))
         if enhancement is None:
             return {}
         return enhancement.get_prompt_style_override()
@@ -32,7 +34,7 @@ class PromptEnhancementRegistry:
         dataset_name: str,
         metadata: Dict[str, Any],
     ) -> str:
-        enhancement = self._enhancements.get(dataset_name)
+        enhancement = self._enhancements.get(canonicalize_dataset_name(dataset_name))
         if enhancement is None:
             return ""
         return enhancement.build_grounding_block(metadata or {})
@@ -43,7 +45,7 @@ class PromptEnhancementRegistry:
         metadata: Dict[str, Any],
         compact_schema: str,
     ) -> str:
-        enhancement = self._enhancements.get(dataset_name)
+        enhancement = self._enhancements.get(canonicalize_dataset_name(dataset_name))
         if enhancement is None:
             return ""
         build_fn = getattr(enhancement, "build_schema_semantics_block", None)

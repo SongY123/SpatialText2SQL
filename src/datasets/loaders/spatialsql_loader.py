@@ -44,7 +44,7 @@ def _split_sql_candidates(sql_field: str) -> List[str]:
 
 class SpatialSQLLoader(BaseDataLoader):
     """
-    Load SpatialSQL data from QA-*.txt files under sdbdatasets.
+    Load SpatialSQL data from QA-*.txt files under SpatialSQL.
 
     The loader returns normalized records with question, gold_sql,
     gold_sql_candidates, and metadata fields.
@@ -52,10 +52,21 @@ class SpatialSQLLoader(BaseDataLoader):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.data_path = config.get("data_path", "sdbdatasets")
+        self.data_path = config.get("raw_data_path", config.get("data_path", "SpatialSQL"))
         self.use_chinese_question = config.get("use_chinese_question", False)
-        self.dataset_versions = config.get("dataset_versions", SPATIALSQL_VERSIONS)
-        self.domains = config.get("domains", SPATIALSQL_DOMAINS)
+        partitions = config.get("source_partitions", {})
+        self.dataset_versions = sorted(
+            {
+                str(partition.get("dataset_version"))
+                for partition in partitions.values()
+                if partition.get("dataset_version")
+            }
+        ) or config.get("dataset_versions", SPATIALSQL_VERSIONS)
+        self.domains = [
+            str(partition.get("domain") or partition.get("level"))
+            for partition in partitions.values()
+            if partition.get("domain") or partition.get("level")
+        ] or config.get("domains", SPATIALSQL_DOMAINS)
 
     def load_raw_data(self, data_path: str) -> List[Dict]:
         """Read QA-*.txt files under dataset1/dataset2 and return raw records."""
@@ -156,9 +167,9 @@ class SpatialSQLLoader(BaseDataLoader):
             for d in self.domains:
                 splits.append(f"{v}_{d}")
         return {
-            "name": "spatialsql_pg",
-            "grouping_fields": ["split"],
+            "name": "spatialsql",
+            "grouping_fields": ["level"],
             "grouping_values": {
-                "split": splits,
+                "level": self.domains,
             },
         }

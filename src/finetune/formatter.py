@@ -39,7 +39,7 @@ class NL2SQLAlpacaFormatter:
                 )
                 continue
             metadata = self._load_embedded_metadata(row)
-            schema_lines, representative_values = FinetunePromptRenderer.build_runtime_prompt_context(
+            schema_lines, representative_values, foreign_key_lines = FinetunePromptRenderer.build_runtime_prompt_context(
                 metadata,
                 max_representative_rows=self.data_config.max_representative_rows,
             )
@@ -49,6 +49,7 @@ class NL2SQLAlpacaFormatter:
                 question=row.question,
                 schema_lines=schema_lines,
                 representative_values=representative_values,
+                foreign_key_lines=foreign_key_lines,
             )
             output_text = self.prompt_renderer.render_output(row.sql_reasoning_summary, row.sql)
             formatted_rows.append(

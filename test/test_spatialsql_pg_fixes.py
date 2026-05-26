@@ -209,10 +209,11 @@ class SpatialDialectAdapterTests(unittest.TestCase):
         converted, issues = sql_dialect_adapter.convert_spatialite_to_postgis(
             sql, table_prefix="dataset1_ada_"
         )
-        self.assertRegex(
+        self.assertIn(
+            "Select MIN(dataset1_ada_provinces.name) AS name, COUNT(*) AS count",
             converted,
-            r"(?is)order\s+by\s+POPU\s+desc\s+NULLS\s+LAST\s+limit\s+1\)\s+GROUP\s+BY\s+dataset1_ada_provinces\.name",
         )
+        self.assertNotIn("GROUP BY dataset1_ada_provinces.name", converted)
         self.assertEqual(issues, [])
 
     def test_fixes_tourism_scenicspots_table_casing(self):
@@ -239,13 +240,33 @@ class SpatialDialectAdapterTests(unittest.TestCase):
         )
         low = converted.lower()
         self.assertIn(
-            "inner join dataset2_edu_cities on st_contains(dataset2_edu_provinces.shape, dataset2_edu_cities.shape)",
+            "inner join dataset2_edu_cities on true",
             low,
         )
         self.assertIn(
             "inner join dataset2_edu_universities on st_contains(dataset2_edu_cities.shape, dataset2_edu_universities.location)",
             low,
         )
+        self.assertEqual(issues, [])
+
+    def test_rewrites_subquery_constrained_count_projection_without_group_by(self):
+        sql = (
+            "Select cities.name, count(*) from provinces inner join cities inner join universities "
+            "on Contains(cities.Shape, universities.Location) = 1 where cities.name = "
+            "(Select cities.name from provinces inner join cities on Contains(provinces.Shape, cities.Shape) = 1 "
+            "where provinces.name = '湖北省' order by Area(cities.Shape, 1) desc limit 1)"
+        )
+        converted, issues = sql_dialect_adapter.convert_spatialite_to_postgis(
+            sql, table_prefix="dataset2_edu_"
+        )
+        low = converted.lower()
+        self.assertIn("select min(dataset2_edu_cities.name) as name, count(*) as count", low)
+        self.assertIn("from dataset2_edu_provinces inner join dataset2_edu_cities on true", low)
+        self.assertIn(
+            "inner join dataset2_edu_universities on st_contains(dataset2_edu_cities.shape, dataset2_edu_universities.location)",
+            low,
+        )
+        self.assertNotIn("group by dataset2_edu_cities.name", low)
         self.assertEqual(issues, [])
 
     def test_fixes_on_clause_using_alias_d(self):

@@ -15,6 +15,11 @@ FLOODSQL_BENCHMARK_SPECS: List[Dict[str, str]] = [
     {"family": "double_table_spatial", "questions_file": "150.json", "results_file": "150_results.jsonl"},
     {"family": "triple_table_key", "questions_file": "50.json", "results_file": "50_results.jsonl"},
     {
+        "family": "triple_table_key_spatial",
+        "questions_file": "50.json",
+        "results_file": "50_results.jsonl",
+    },
+    {
         "family": "triple_table_key_spatial_updated",
         "questions_file": "50.json",
         "results_file": "50_results.jsonl",
@@ -25,13 +30,14 @@ FLOODSQL_BENCHMARK_SPECS: List[Dict[str, str]] = [
         "results_file": "50_results.jsonl",
     },
 ]
-FLOODSQL_LEVELS = ["L0", "L1", "L2", "L3", "L4", "L5"]
+FLOODSQL_LEVELS = ["L0", "L1", "L2", "L3", "L4", "L5", "L6"]
 FLOODSQL_FAMILIES = [spec["family"] for spec in FLOODSQL_BENCHMARK_SPECS]
 FLOODSQL_CATEGORY_FALLBACKS = {
     "single_table": "single table",
     "double_table_key": "double table key-based",
     "double_table_spatial": "double table spatial",
     "triple_table_key": "triple table key-based",
+    "triple_table_key_spatial": "triple table key-spatial",
     "triple_table_key_spatial_updated": "triple table key-spatial",
     "triple_table_spatial_spatial": "triple table spatial-spatial",
 }
@@ -90,8 +96,14 @@ class FloodSQLLoader(BaseDataLoader):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.data_path = config.get("data_path", "../FloodSQL-Bench")
+        self.data_path = config.get("raw_data_path", config.get("data_path", "../FloodSQL-Bench"))
         self.benchmark_specs = config.get("benchmark_specs", FLOODSQL_BENCHMARK_SPECS)
+        source_partitions = config.get("source_partitions", {})
+        self.levels = [
+            str(partition.get("level"))
+            for partition in source_partitions.values()
+            if partition.get("level")
+        ] or FLOODSQL_LEVELS
 
     def load_raw_data(self, data_path: str) -> List[Dict[str, Any]]:
         root = _resolve_benchmark_root(data_path or self.data_path)
@@ -189,10 +201,10 @@ class FloodSQLLoader(BaseDataLoader):
 
     def get_dataset_info(self) -> Dict[str, Any]:
         return {
-            "name": "floodsql_pg",
+            "name": "floodsql",
             "grouping_fields": ["level", "family"],
             "grouping_values": {
-                "level": FLOODSQL_LEVELS,
+                "level": self.levels,
                 "family": FLOODSQL_FAMILIES,
             },
         }

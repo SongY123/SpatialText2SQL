@@ -14,6 +14,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import yaml
 import psycopg2
 
+from src.datasets.db_routing import (
+    apply_search_path,
+    extract_embedded_db_config,
+    resolve_database_key,
+    resolve_schema_name,
+)
+
 from .schema_compactor import DEFAULT_PROJECT_ROOT, SchemaCompactor
 
 
@@ -35,11 +42,6 @@ class ResolvedColumn:
 class PostgresSampleDataProvider:
     """Fetch compact prompt sample rows from PostgreSQL/PostGIS."""
 
-    DATABASE_KEY_BY_DATASET = {
-        "spatial_qa": "postgres",
-        "spatialsql_pg": "spatial_sql",
-        "floodsql_pg": "floodsql",
-    }
     SAMPLE_LIMIT = 5
     MAX_TEXT_LENGTH = 96
 
@@ -47,14 +49,17 @@ class PostgresSampleDataProvider:
         self,
         project_root: str | Path | None = None,
         db_config_path: str | Path | None = None,
+        dataset_config_path: str | Path | None = None,
         db_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.project_root = Path(project_root).resolve() if project_root else DEFAULT_PROJECT_ROOT
-        self.db_config_path = (
-            Path(db_config_path).resolve()
-            if db_config_path
-            else self.project_root / "config" / "db_config.yaml"
+        self.dataset_config_path = (
+            Path(dataset_config_path).resolve()
+            if dataset_config_path
+            else self.project_root / "config" / "dataset_config.yaml"
         )
+        del db_config_path
+        self.dataset_config = self._load_dataset_config()
         self.db_config = db_config if db_config is not None else self._load_db_config()
         self.schema_compactor = SchemaCompactor(project_root=self.project_root)
         self._connections: Dict[str, Any] = {}
@@ -68,7 +73,6 @@ class PostgresSampleDataProvider:
         metadata: Optional[Dict[str, Any]],
         compact_schema: str,
     ) -> str:
-        del metadata
         if not dataset_name or not compact_schema.strip():
             return ""
 
@@ -76,7 +80,12 @@ class PostgresSampleDataProvider:
         if not table_specs:
             return ""
 
-        db_key = self.DATABASE_KEY_BY_DATASET.get(dataset_name)
+        db_key = resolve_database_key(
+            self.dataset_config,
+            dataset_name,
+            metadata or {},
+            allow_fallback_mapping=True,
+        )
         if not db_key:
             return ""
 
@@ -142,10 +151,17 @@ class PostgresSampleDataProvider:
         return columns
 
     def _load_db_config(self) -> Dict[str, Any]:
-        if not self.db_config_path.exists():
+        return self._load_embedded_db_config()
+
+    def _load_dataset_config(self) -> Dict[str, Any]:
+        if not self.dataset_config_path.exists():
             return {}
-        with open(self.db_config_path, "r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
+        with open(self.dataset_config_path, "r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle) or {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _load_embedded_db_config(self) -> Dict[str, Any]:
+        return extract_embedded_db_config(self.dataset_config)
 
     def _get_connection(self, db_key: str):
         if db_key in self._failed_db_keys:
@@ -177,6 +193,11 @@ class PostgresSampleDataProvider:
                 ),
             )
             connection.autocommit = True
+            cursor = connection.cursor()
+            try:
+                apply_search_path(cursor, db_settings)
+            finally:
+                cursor.close()
         except Exception as exc:  # pragma: no cover - exercised via mocks/tests
             warnings.warn(
                 f"连接数据库 {db_key} 失败，跳过 prompt sample data 注入: {exc}",
@@ -193,9 +214,7 @@ class PostgresSampleDataProvider:
         databases = self.db_config.get("databases", {})
         if db_key in databases:
             return databases[db_key] or {}
-        if db_key == "postgres":
-            return self.db_config.get("database", {}) or {}
-        return {}
+        return self.db_config.get("database", {}) or {}
 
     def _get_table_samples(
         self,
@@ -261,6 +280,7 @@ class PostgresSampleDataProvider:
         ]
         rows = self._query_table_rows(
             connection=connection,
+            schema_name=table_meta["actual_schema"],
             table_name=table_meta["actual_table"],
             fetch_columns=fetch_columns,
         )
@@ -295,14 +315,15 @@ class PostgresSampleDataProvider:
         if cache_key in self._table_meta_cache:
             return self._table_meta_cache[cache_key]
 
+        schema_name = resolve_schema_name(self._get_db_settings(db_key))
         query = """
-            SELECT table_name, column_name, data_type, udt_name, ordinal_position
+            SELECT table_schema, table_name, column_name, data_type, udt_name, ordinal_position
             FROM information_schema.columns
-            WHERE table_schema = 'public'
+            WHERE table_schema = %s
               AND lower(table_name) = lower(%s)
-            ORDER BY table_name, ordinal_position
+            ORDER BY table_schema, table_name, ordinal_position
         """
-        rows = self._execute_fetchall(connection, query, (requested_table,))
+        rows = self._execute_fetchall(connection, query, (schema_name, requested_table))
         if not rows:
             warnings.warn(
                 f"表 {requested_table} 不存在于目标 PostgreSQL 数据库中，已跳过 sample data 注入。",
@@ -312,9 +333,9 @@ class PostgresSampleDataProvider:
             self._table_meta_cache[cache_key] = None
             return None
 
-        tables: Dict[str, List[Tuple[str, str, str]]] = {}
-        for table_name, column_name, data_type, udt_name, _ordinal_position in rows:
-            tables.setdefault(table_name, []).append(
+        tables: Dict[Tuple[str, str], List[Tuple[str, str, str]]] = {}
+        for table_schema, table_name, column_name, data_type, udt_name, _ordinal_position in rows:
+            tables.setdefault((table_schema, table_name), []).append(
                 (
                     column_name,
                     str(data_type or "").lower(),
@@ -322,12 +343,13 @@ class PostgresSampleDataProvider:
                 )
             )
 
-        if requested_table in tables:
+        if (schema_name, requested_table) in tables:
+            actual_schema = schema_name
             actual_table = requested_table
         else:
-            actual_table = sorted(
+            actual_schema, actual_table = sorted(
                 tables.keys(),
-                key=lambda name: (name.lower() != requested_table.lower(), name),
+                key=lambda item: (item[1].lower() != requested_table.lower(), item[0], item[1]),
             )[0]
 
         column_meta = {
@@ -336,9 +358,10 @@ class PostgresSampleDataProvider:
                 "data_type": data_type,
                 "udt_name": udt_name,
             }
-            for column_name, data_type, udt_name in tables[actual_table]
+            for column_name, data_type, udt_name in tables[(actual_schema, actual_table)]
         }
         resolved = {
+            "actual_schema": actual_schema,
             "actual_table": actual_table,
             "columns": column_meta,
         }
@@ -348,10 +371,11 @@ class PostgresSampleDataProvider:
     def _query_table_rows(
         self,
         connection,
+        schema_name: str,
         table_name: str,
         fetch_columns: Sequence[ResolvedColumn],
     ) -> List[Tuple[Any, ...]]:
-        table_sql = self._quote_identifier(table_name)
+        table_sql = f"{self._quote_identifier(schema_name)}.{self._quote_identifier(table_name)}"
         if fetch_columns:
             select_sql = ", ".join(
                 self._quote_identifier(column.actual_name) for column in fetch_columns

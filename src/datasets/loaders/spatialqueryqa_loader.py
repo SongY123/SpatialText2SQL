@@ -12,9 +12,25 @@ class SpatialQALoader(BaseDataLoader):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.data_path = config.get('data_path', 'Spatial QA')
-        self.levels = config.get('levels', [1, 2, 3])
+        self.data_path = config.get('raw_data_path', config.get('data_path', 'SpatialQueryQA'))
+        partitions = config.get('source_partitions', {})
+        self.partitions = [
+            partition
+            for partition in partitions.values()
+            if isinstance(partition, dict) and partition.get('raw_path')
+        ]
+        self.levels = [
+            int(partition.get('level_id'))
+            for partition in self.partitions
+            if partition.get('level_id') is not None
+        ] or [1, 2, 3]
+        self.level_labels = {
+            int(partition.get('level_id')): str(partition.get('level'))
+            for partition in self.partitions
+            if partition.get('level_id') is not None and partition.get('level')
+        }
         self.columns = config.get('columns', {})
+        self.reviewer_effort_col = self.columns.get('reviewer_effort', 'Reviewer Effort')
     
     def load_raw_data(self, data_path: str) -> List[Dict]:
         """
@@ -28,8 +44,14 @@ class SpatialQALoader(BaseDataLoader):
         """
         all_data = []
         
-        for level in self.levels:
-            level_file = os.path.join(data_path, f"Level {level}", f"level{level}.xlsx")
+        partition_rows = self.partitions or [
+            {"level_id": level, "raw_path": os.path.join(f"Level {level}", f"level{level}.xlsx")}
+            for level in self.levels
+        ]
+
+        for partition in partition_rows:
+            level = int(partition.get("level_id", 0) or 0)
+            level_file = os.path.join(data_path, str(partition.get("raw_path")))
             
             if not os.path.exists(level_file):
                 print(f"警告: 文件不存在 {level_file}")
@@ -47,6 +69,9 @@ class SpatialQALoader(BaseDataLoader):
                 for row in sheet.iter_rows(min_row=2, values_only=True):
                     if row[0] is not None:  # 跳过空行
                         row_data = dict(zip(headers, row))
+                        reviewer_effort = str(row_data.get(self.reviewer_effort_col) or '').strip()
+                        if reviewer_effort == '❌':
+                            continue
                         row_data['level'] = level
                         all_data.append(row_data)
                 
@@ -80,7 +105,7 @@ class SpatialQALoader(BaseDataLoader):
                 "question": row.get(question_col, '').strip() if row.get(question_col) else '',
                 "gold_sql": row.get(sql_col, '').strip() if row.get(sql_col) else '',
                 "metadata": {
-                    "level": row.get('level', 1)
+                    "level": self.level_labels.get(row.get('level', 1), row.get('level', 1))
                 }
             }
             
@@ -98,9 +123,9 @@ class SpatialQALoader(BaseDataLoader):
             数据集元信息字典
         """
         return {
-            "name": "spatial_qa",
+            "name": "spatialqueryqa",
             "grouping_fields": ["level"],
             "grouping_values": {
-                "level": self.levels
+                "level": [self.level_labels.get(level, level) for level in self.levels]
             }
         }

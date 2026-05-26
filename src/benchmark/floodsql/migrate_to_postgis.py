@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from src.datasets.db_routing import extract_embedded_db_config, resolve_db_settings
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -55,25 +57,34 @@ def _resolve_benchmark_root(raw_path: str | Path) -> Path:
 
 def _resolve_data_paths(dataset_config_path: Path) -> tuple[Path, Path]:
     dataset_cfg = _load_yaml(dataset_config_path)
-    floodsql_cfg = dataset_cfg.get("datasets", {}).get("floodsql_pg", {})
-    configured_root = floodsql_cfg.get("data_path", "../FloodSQL-Bench")
+    floodsql_cfg = dataset_cfg.get("datasets", {}).get("floodsql", {})
+    configured_root = floodsql_cfg.get("raw_data_path", "../FloodSQL-Bench")
     benchmark_root = _resolve_benchmark_root(configured_root)
     data_root = benchmark_root / "data"
     metadata_path = data_root / "metadata_parquet.json"
     return data_root, metadata_path
 
 
-def _resolve_db_config(db_config_path: Path) -> dict:
-    db_cfg = _load_yaml(db_config_path)
-    return db_cfg.get("databases", {}).get("floodsql", db_cfg.get("database", {}))
+def _resolve_db_config(dataset_config_path: Path) -> dict:
+    dataset_cfg = _load_yaml(dataset_config_path)
+    if "datasets" not in dataset_cfg:
+        return dataset_cfg.get("databases", {}).get("floodsql", dataset_cfg.get("database", {}))
+    embedded = extract_embedded_db_config(dataset_cfg)
+    return resolve_db_settings(
+        embedded,
+        dataset_cfg,
+        "floodsql",
+        {},
+        allow_fallback_mapping=True,
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="FloodSQL parquet -> PostGIS migration")
     parser.add_argument(
         "--db-config",
-        default=str(REPO_ROOT / "config" / "db_config.yaml"),
-        help="Path to db_config.yaml",
+        default=str(REPO_ROOT / "config" / "dataset_config.yaml"),
+        help="Deprecated alias; path to dataset_config.yaml",
     )
     parser.add_argument(
         "--dataset-config",
@@ -105,9 +116,8 @@ def main() -> int:
     args = parser.parse_args()
 
     dataset_config_path = Path(args.dataset_config).expanduser().resolve()
-    db_config_path = Path(args.db_config).expanduser().resolve()
     default_data_root, default_metadata = _resolve_data_paths(dataset_config_path)
-    db_defaults = _resolve_db_config(db_config_path)
+    db_defaults = _resolve_db_config(dataset_config_path)
 
     data_root = Path(args.data_root).expanduser().resolve() if args.data_root else default_data_root
     metadata_path = Path(args.metadata).expanduser().resolve() if args.metadata else default_metadata

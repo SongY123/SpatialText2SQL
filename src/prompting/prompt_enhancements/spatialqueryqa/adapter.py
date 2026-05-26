@@ -1,4 +1,4 @@
-"""Prompt enhancement adapter for the Spatial QA benchmark."""
+"""Prompt enhancement adapter for the SpatialQueryQA benchmark."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .context_provider import SpatialQAContextProvider
 
 
 class SpatialQAPromptEnhancement:
-    """Provide dataset-specific prompt assets for `spatial_qa`."""
+    """Provide dataset-specific prompt assets for `spatialqueryqa`."""
 
     def __init__(self, project_root: Path | str):
         self.project_root = Path(project_root).resolve()
@@ -29,7 +29,7 @@ class SpatialQAPromptEnhancement:
         level = str(context.get("level") or "").strip()
         focus = str(context.get("focus") or "").strip()
         if level:
-            lines.append(f"- Spatial QA difficulty level: {level}")
+            lines.append(f"- SpatialQueryQA difficulty level: {level}")
         if focus:
             lines.append(f"- Level focus: {focus}")
 

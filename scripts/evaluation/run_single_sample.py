@@ -21,6 +21,8 @@ os.chdir(REPO_ROOT)
 
 from src.inference.model_inference import ModelInference, ModelLoaderFactory
 from src.prompting.prompt_builder import PromptBuilder
+from src.datasets.db_routing import extract_embedded_db_config, resolve_db_settings
+from src.datasets.names import canonicalize_dataset_name
 from src.datasets.path_utils import (
     get_group_samples_file,
     get_preprocessed_output_dir,
@@ -32,11 +34,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run one or more samples through the current inference path and print the raw/final outputs."
     )
-    parser.add_argument("--dataset", required=True, help="Dataset name, e.g. spatial_qa or spatialsql_pg")
+    parser.add_argument("--dataset", required=True, help="Dataset name, e.g. spatialqueryqa or spatialsql")
     parser.add_argument(
         "--group-value",
         default="",
-        help="Grouped dataset value, e.g. 1 for spatial_qa level1 or dataset1_ada for spatialsql_pg",
+        help="Grouped dataset value, e.g. Basic(Level 1) for spatialqueryqa or ada for spatialsql",
     )
     parser.add_argument("--sample-id", default="", help="Sample id to run; overrides --sample-limit when set")
     parser.add_argument(
@@ -146,13 +148,19 @@ def select_samples(items: List[Dict[str, Any]], sample_id: str, sample_limit: in
     return items[:sample_limit]
 
 
-def resolve_db_config(db_cfg: Dict[str, Any], dataset_info: Dict[str, Any]) -> Dict[str, Any]:
-    db_name = dataset_info.get("database", "default")
-    if db_name != "default":
-        databases = db_cfg.get("databases", {})
-        if db_name in databases:
-            return databases[db_name]
-    return db_cfg.get("database", {})
+def resolve_db_config(
+    dataset_cfg: Dict[str, Any],
+    dataset_name: str,
+    sample: Dict[str, Any],
+) -> Dict[str, Any]:
+    db_cfg = extract_embedded_db_config(dataset_cfg)
+    return resolve_db_settings(
+        db_cfg,
+        dataset_cfg,
+        dataset_name,
+        sample.get("metadata", {}),
+        allow_fallback_mapping=True,
+    )
 
 
 def run_one_sample(
@@ -172,6 +180,7 @@ def run_one_sample(
         keyword_context=None,
         dataset_name=args.dataset,
         metadata=sample.get("metadata", {}),
+        data_item=sample,
     )
 
     raw_reasoning = ""
@@ -213,7 +222,10 @@ def run_one_sample(
             normalized_sql,
             sample.get("gold_sql", ""),
             gold_sql_candidates=sample.get("gold_sql_candidates") or None,
+            expected_results=sample.get("results"),
             sample_label=f"{args.dataset}:{sample.get('id')}",
+            metadata=sample.get("metadata", {}),
+            dataset_name=sample.get("dataset") or args.dataset,
         )
 
     return {
@@ -357,11 +369,10 @@ def print_sample_result(
 def main() -> int:
     args = parse_args()
     project_root = REPO_ROOT
+    args.dataset = canonicalize_dataset_name(args.dataset)
 
     dataset_config = load_yaml(project_root / "config" / "dataset_config.yaml")
     eval_config = load_yaml(project_root / "config" / "eval_config.yaml")
-    db_config = load_yaml(project_root / "config" / "db_config.yaml")
-
     if args.dataset not in dataset_config["datasets"]:
         raise ValueError(f"unknown dataset: {args.dataset}")
 
@@ -393,7 +404,13 @@ def main() -> int:
     if not args.no_eval:
         from src.evaluation.evaluator import Evaluator
 
-        evaluator = Evaluator(resolve_db_config(db_config, dataset_info), eval_config)
+        evaluator = Evaluator(
+            resolve_db_config(dataset_config, args.dataset, samples[0]),
+            eval_config,
+            db_config_full=extract_embedded_db_config(dataset_config),
+            dataset_config=dataset_config,
+            dataset_name=args.dataset,
+        )
 
     results = []
 

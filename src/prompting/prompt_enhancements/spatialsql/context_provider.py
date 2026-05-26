@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from src.datasets.names import dataset_name_matches
+
 
 def _parse_qa_block(block: str) -> Optional[Dict[str, str]]:
     lines = [line.strip() for line in block.strip().splitlines() if line.strip()]
@@ -27,9 +29,9 @@ def _parse_qa_block(block: str) -> Optional[Dict[str, str]]:
 
 
 class SpatialSQLContextProvider:
-    """Read original SpatialSQL QA hints from `sdbdatasets` on demand."""
+    """Read original SpatialSQL QA hints from `SpatialSQL` on demand."""
 
-    def __init__(self, project_root: Path | str, raw_data_path: str = "sdbdatasets"):
+    def __init__(self, project_root: Path | str, raw_data_path: str = "data/benchmark/SpatialSQL"):
         self.project_root = Path(project_root).resolve()
         raw_root = Path(raw_data_path)
         if raw_root.is_absolute():
@@ -43,11 +45,16 @@ class SpatialSQLContextProvider:
         dataset_name: str,
         metadata: Optional[Dict[str, object]],
     ) -> Optional[Dict[str, str]]:
-        if not dataset_name or not dataset_name.startswith("spatialsql_pg"):
+        if not dataset_name_matches(dataset_name, "spatialsql"):
             return None
 
         metadata = metadata or {}
         split = str(metadata.get("split") or "").strip()
+        if not split:
+            version = str(metadata.get("dataset_version") or "dataset2").strip()
+            domain = str(metadata.get("domain") or metadata.get("level") or "").strip()
+            if domain:
+                split = f"{version}_{domain}"
         source_id = str(metadata.get("source_id") or "").strip()
         if not split or not source_id:
             return None

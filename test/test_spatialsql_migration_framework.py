@@ -48,7 +48,7 @@ migration_framework = _load_module(
 class SpatialSqlMigrationFrameworkTests(unittest.TestCase):
     def test_build_source_inventory_detects_tourism_geometry_anomaly(self):
         inventory, anomalies = migration_framework.build_source_inventory(
-            ROOT / "sdbdatasets",
+            ROOT / "SpatialSQL",
             versions=["dataset1"],
             domains=["tourism"],
         )

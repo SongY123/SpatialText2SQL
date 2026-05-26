@@ -26,6 +26,8 @@ from typing import Any
 import psycopg2
 import yaml
 
+from src.datasets.db_routing import apply_search_path, extract_embedded_db_config, resolve_db_settings
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -155,20 +157,23 @@ def _is_probably_nondeterministic_topk_query(sql: str) -> bool:
     return has_grouping and (aggregate_order or computed_order or order_expr.startswith("("))
 
 
-def load_preprocessed_items() -> list[dict]:
-    """Load all preprocessed floodsql_pg items."""
-    prep_dir = REPO_ROOT / "data" / "preprocessed" / "floodsql_pg"
-    items: list[dict] = []
-    for json_file in sorted(prep_dir.glob("*.json")):
-        if json_file.name != "samples.json" and not json_file.name.endswith("_samples.json"):
-            continue
-        with open(json_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            items.extend(data)
-        elif isinstance(data, dict) and "items" in data:
-            items.extend(data["items"])
-    return items
+def load_dataset_items(dataset_config_path: Path) -> list[dict]:
+    """Load normalized floodsql benchmark items."""
+    with open(dataset_config_path, "r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+    dataset_info = (dataset_cfg.get("datasets") or {}).get("floodsql") or {}
+    data_path = dataset_info.get("data_path")
+    if not data_path:
+        return []
+    from src.datasets.loaders.canonical_json_loader import CanonicalJSONLoader
+
+    target_path = Path(data_path)
+    if not target_path.is_absolute():
+        target_path = REPO_ROOT / target_path
+    if not target_path.exists():
+        return []
+    loader = CanonicalJSONLoader(dataset_info)
+    return loader.extract_questions_and_sqls(loader.load_raw_data(str(target_path)))
 
 
 def validate_all(
@@ -181,7 +186,7 @@ def validate_all(
 ) -> dict:
     """Execute all FloodSQL gold SQL queries on PostgreSQL and validate the results."""
     results = {
-        "dataset": "floodsql_pg",
+        "dataset": "floodsql",
         "database": db_config["database"],
         "total": 0,
         "gold_success": 0,
@@ -206,6 +211,11 @@ def validate_all(
         connect_timeout=connect_timeout_sec,
         options=f"-c statement_timeout={timeout_ms}",
     )
+    cursor = conn.cursor()
+    try:
+        apply_search_path(cursor, db_config)
+    finally:
+        cursor.close()
 
     for item in items:
         item_id = item.get("id", "?")
@@ -301,7 +311,7 @@ def main():
         type=int,
         default=None,
         metavar="SEC",
-        help="TCP connect timeout in seconds. Defaults to databases.floodsql.timeout.connection_timeout or 10.",
+        help="TCP connect timeout in seconds. Defaults to benchmark_floodsql.timeout.connection_timeout or 10.",
     )
     parser.add_argument(
         "--timeout-ms",
@@ -322,25 +332,32 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.preprocess_first:
+    if args.utils_first:
         print("=== Re-running preprocessing ===")
         from src.datasets.processing import DataPreprocessor
 
         cfg_dir = REPO_ROOT / "config"
         preprocessor = DataPreprocessor(
             dataset_config_path=str(cfg_dir / "dataset_config.yaml"),
-            db_config_path=str(cfg_dir / "db_config.yaml"),
         )
-        preprocessor.preprocess("floodsql_pg")
+        preprocessor.preprocess("floodsql")
         print()
 
-    with open(REPO_ROOT / "config" / "db_config.yaml", "r", encoding="utf-8") as f:
-        db_cfg_all = yaml.safe_load(f)
-    db_config = db_cfg_all.get("databases", {}).get("floodsql", db_cfg_all.get("database", {}))
+    dataset_config_path = REPO_ROOT / "config" / "dataset_config.yaml"
+    with open(dataset_config_path, "r", encoding="utf-8") as f:
+        dataset_cfg = yaml.safe_load(f) or {}
+    embedded_db_cfg = extract_embedded_db_config(dataset_cfg)
+    db_config = resolve_db_settings(
+        embedded_db_cfg,
+        dataset_cfg,
+        "floodsql",
+        {},
+        allow_fallback_mapping=True,
+    )
 
-    items = load_preprocessed_items()
+    items = load_dataset_items(dataset_config_path)
     if not items:
-        print("No preprocessed items found. Run with --utils-first or ensure data exists.")
+        print("No normalized FloodSQL items found. Run preprocessing or ensure data exists.")
         return
 
     print(f"Loaded {len(items)} gold SQL items")
@@ -375,7 +392,7 @@ def main():
             print(
                 "\nFailed to connect to PostgreSQL (timeout or unreachable). Common causes:\n"
                 "  - The host is only reachable on VPN or an internal network, or the server is down.\n"
-                "  - For local debugging, update databases.floodsql.host in config/db_config.yaml.\n"
+                "  - For local debugging, update benchmark_floodsql.host in config/dataset_config.yaml.\n"
                 "  - You can also use an SSH tunnel: ssh -L 5432:127.0.0.1:5432 user@jump-host and then set host to 127.0.0.1.\n"
                 f"\nOriginal error: {exc}\n",
                 file=sys.stderr,

@@ -8,6 +8,9 @@ from decimal import Decimal
 from typing import List, Dict, Any, Optional
 from collections import Counter, defaultdict
 
+from src.datasets.db_routing import apply_search_path, resolve_db_settings
+from src.utils.execution_results import compare_result_rows, normalize_result_rows
+
 
 def _json_default(obj):
     """JSON序列化时处理评估结果中的常见标量类型。"""
@@ -43,7 +46,15 @@ class Evaluator:
         'gold_execution_error',
     }
     
-    def __init__(self, db_config: Dict, eval_config: Dict):
+    def __init__(
+        self,
+        db_config: Dict,
+        eval_config: Dict,
+        *,
+        db_config_full: Optional[Dict[str, Any]] = None,
+        dataset_config: Optional[Dict[str, Any]] = None,
+        dataset_name: Optional[str] = None,
+    ):
         """
         初始化评估器
         
@@ -52,6 +63,9 @@ class Evaluator:
             eval_config: 评估配置
         """
         self.db_config = db_config
+        self.db_config_full = db_config_full or {}
+        self.dataset_config = dataset_config or {}
+        self.dataset_name = dataset_name
         self.eval_config = eval_config
         self.timeout = eval_config.get('evaluation', {}).get('timeout', 60)
         evaluation_cfg = eval_config.get('evaluation', {})
@@ -99,7 +113,11 @@ class Evaluator:
             accuracy_info = self._finalize_result_info(self._execution_accuracy(
                 pred['predicted_sql'],
                 pred['gold_sql'],
-                gold_sql_candidates=gold_candidates if isinstance(gold_candidates, list) and gold_candidates else None
+                gold_sql_candidates=gold_candidates if isinstance(gold_candidates, list) and gold_candidates else None,
+                expected_results=pred.get('results'),
+                sample_label=pred.get('id'),
+                metadata=pred.get('metadata', {}),
+                dataset_name=pred.get('dataset') or self.dataset_name,
             ))
             
             result_item = {
@@ -159,7 +177,10 @@ class Evaluator:
         predicted_sql: str,
         gold_sql: str,
         gold_sql_candidates: Optional[List[str]] = None,
+        expected_results: Any = None,
         sample_label: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        dataset_name: Optional[str] = None,
     ) -> Dict:
         """
         计算执行准确率。若提供 gold_sql_candidates，预测结果与任一候选结果一致即判对。
@@ -187,11 +208,14 @@ class Evaluator:
             result_info['error_message'] = '预测SQL为空'
             return self._finalize_result_info(result_info)
 
+        active_db_config = self._resolve_db_config_for_item(dataset_name, metadata)
         pred_exec = self._execute_sql(
             predicted_sql,
             stage_name='预测SQL',
             sample_label=sample_label,
+            db_config=active_db_config,
         )
+        expected_result_rows = self._normalize_expected_results(expected_results)
         if pred_exec['status'] == 'ok':
             pred_result = pred_exec['result']
             result_info['pred_result_count'] = pred_exec['result_count']
@@ -201,11 +225,29 @@ class Evaluator:
                 result_info['error_type'] = 'connection_error'
                 result_info['error_message'] = self._format_connection_error('预测SQL执行失败', pred_exec)
                 return self._finalize_result_info(result_info)
-            if pred_exec['status'] != 'timeout':
+            if expected_result_rows is not None or pred_exec['status'] != 'timeout':
                 result_info['error_type'] = 'execution_error'
                 result_info['error_message'] = self._format_execution_status('预测SQL执行失败', pred_exec)
                 return self._finalize_result_info(result_info)
             pred_result = None
+
+        if expected_result_rows is not None:
+            result_info['gold_result_count'] = len(expected_result_rows)
+            matched, diff_details = compare_result_rows(
+                pred_result,
+                expected_result_rows,
+                left_name='predicted',
+                right_name='gold',
+            )
+            if matched:
+                result_info['correct'] = 1
+                return self._finalize_result_info(result_info)
+
+            result_info['error_type'] = 'result_mismatch'
+            result_info['error_message'] = f'结果集不匹配: 预测{len(pred_result)}条，标准{len(expected_result_rows)}条'
+            if diff_details and len(pred_result) <= 10 and len(expected_result_rows) <= 10:
+                result_info['diff_details'] = diff_details
+            return self._finalize_result_info(result_info)
 
         gold_list = [gold_sql]
         if gold_sql_candidates:
@@ -221,6 +263,7 @@ class Evaluator:
                 gsql,
                 stage_name='标准SQL' if i == 0 else '标准SQL候选',
                 sample_label=sample_label,
+                db_config=active_db_config,
             )
             if gold_exec['status'] == 'ok':
                 if gold_result is None:
@@ -229,7 +272,13 @@ class Evaluator:
                 gold_success = True
                 if pred_exec['status'] == 'timeout':
                     break
-                if pred_result == gold_exec['result']:
+                matched, _diff_details = compare_result_rows(
+                    pred_result,
+                    gold_exec['result'],
+                    left_name='predicted',
+                    right_name='gold',
+                )
+                if matched:
                     result_info['correct'] = 1
                     result_info['error_type'] = None
                     result_info['error_message'] = None
@@ -272,12 +321,14 @@ class Evaluator:
             result_info['error_type'] = 'result_mismatch'
             result_info['error_message'] = f'结果集不匹配: 预测{len(pred_result)}条，标准{result_info["gold_result_count"]}条'
             if gold_result is not None and len(pred_result) <= 10 and len(gold_result) <= 10:
-                only_in_pred = pred_result - gold_result
-                only_in_gold = gold_result - pred_result
-                result_info['diff_details'] = {
-                    'only_in_predicted': list(only_in_pred) if only_in_pred else None,
-                    'only_in_gold': list(only_in_gold) if only_in_gold else None
-                }
+                _matched, diff_details = compare_result_rows(
+                    pred_result,
+                    gold_result,
+                    left_name='predicted',
+                    right_name='gold',
+                )
+                if diff_details:
+                    result_info['diff_details'] = diff_details
         elif gold_outcome == 'timeout':
             result_info['error_type'] = 'pred_ok_gold_timeout'
             result_info['error_message'] = '预测SQL执行成功，但标准SQL执行超时'
@@ -298,18 +349,24 @@ class Evaluator:
 
         return self._finalize_result_info(result_info)
 
-    def _connect_with_retry(self, sample_label: Optional[str] = None):
+    def _connect_with_retry(
+        self,
+        sample_label: Optional[str] = None,
+        *,
+        db_config: Optional[Dict[str, Any]] = None,
+    ):
         """带简单重试的数据库连接。"""
         backoff = self.retry_backoff_sec
         recovery_start = None
+        active_db_config = db_config or self.db_config
         while True:
             try:
                 return psycopg2.connect(
-                    host=self.db_config['host'],
-                    port=self.db_config['port'],
-                    database=self.db_config['database'],
-                    user=self.db_config['user'],
-                    password=self.db_config['password'],
+                    host=active_db_config['host'],
+                    port=active_db_config['port'],
+                    database=active_db_config['database'],
+                    user=active_db_config['user'],
+                    password=active_db_config['password'],
                     connect_timeout=self.connect_timeout,
                     options=f'-c statement_timeout={self.timeout * 1000}'
                 )
@@ -339,12 +396,29 @@ class Evaluator:
     def _format_connection_error(self, prefix: str, execution_info: Dict[str, Any]) -> str:
         return f'{prefix}: 数据库连接失败 ({execution_info.get("error")})'
 
+    def _resolve_db_config_for_item(
+        self,
+        dataset_name: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not self.db_config_full or not self.dataset_config or not dataset_name:
+            return self.db_config
+        resolved = resolve_db_settings(
+            self.db_config_full,
+            self.dataset_config,
+            dataset_name,
+            metadata or {},
+            allow_fallback_mapping=True,
+        )
+        return resolved or self.db_config
+
     def _execute_sql(
         self,
         sql: str,
         *,
         stage_name: str,
         sample_label: Optional[str] = None,
+        db_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         info = {
             'stage': stage_name,
@@ -358,10 +432,12 @@ class Evaluator:
         conn = None
         cursor = None
         try:
-            conn = self._connect_with_retry(sample_label=sample_label)
+            conn = self._connect_with_retry(sample_label=sample_label, db_config=db_config)
             cursor = conn.cursor()
+            apply_search_path(cursor, db_config or self.db_config)
             cursor.execute(sql)
-            result = set(cursor.fetchall())
+            rows = cursor.fetchall() if cursor.description is not None else []
+            result = normalize_result_rows(rows)
             info['status'] = 'ok'
             info['result'] = result
             info['result_count'] = len(result)
@@ -396,6 +472,11 @@ class Evaluator:
             'status': execution_info.get('status'),
             'stage': execution_info.get('stage'),
         }
+
+    def _normalize_expected_results(self, expected_results: Any) -> Optional[List[Any]]:
+        if expected_results is None:
+            return None
+        return normalize_result_rows(expected_results)
 
     def _build_gold_error_record(self, candidate_index: int, execution_info: Dict[str, Any]) -> Dict[str, Any]:
         return {

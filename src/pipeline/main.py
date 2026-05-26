@@ -14,13 +14,23 @@ import yaml
 from src.datasets.path_utils import (
     get_expected_preprocessed_files,
     get_preprocessed_output_dir,
+    get_schema_cache_dir,
+    get_schema_cache_file,
 )
+from src.datasets.db_routing import (
+    build_schema_cache_key,
+    extract_embedded_db_config,
+    resolve_database_key,
+    resolve_db_settings,
+)
+from src.datasets.names import canonicalize_dataset_name, canonicalize_dataset_names, dataset_name_matches
+from src.sql.schema_extractor import SchemaExtractor
 
 
 class MainPipeline:
     """主流程控制器。"""
 
-    DEFAULT_ALL_DATASETS = ["spatial_qa", "spatialsql_pg", "floodsql_pg"]
+    DEFAULT_ALL_DATASETS = ["spatialqueryqa", "spatialsql", "floodsql"]
 
     def __init__(self, args):
         self._validate_action_selection(args)
@@ -29,7 +39,7 @@ class MainPipeline:
         self.project_root = os.path.abspath(os.path.join(self.config_dir, os.pardir))
 
         self.dataset_config = self._load_config("dataset_config.yaml")
-        self.db_config = self._load_config("db_config.yaml")
+        self.db_config = extract_embedded_db_config(self.dataset_config)
         self.model_config = self._load_config("model_config.yaml")
         self.eval_config = self._load_config("eval_config.yaml")
 
@@ -90,12 +100,20 @@ class MainPipeline:
         with open(config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
 
+    def _load_optional_config(self, filename: str) -> dict:
+        config_path = os.path.join(self.config_dir, filename)
+        if not os.path.exists(config_path):
+            return {}
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
     def _resolve_dataset_names(self, dataset_args) -> List[str]:
         available = self.dataset_config.get("datasets", {})
         if not dataset_args:
-            return [self.dataset_config.get("default_dataset", "spatial_qa")]
+            return [canonicalize_dataset_name(self.dataset_config.get("default_dataset", "spatialqueryqa"))]
 
         requested = dataset_args if isinstance(dataset_args, list) else [dataset_args]
+        requested = canonicalize_dataset_names(requested)
         if "all" in requested:
             return [name for name in self.DEFAULT_ALL_DATASETS if name in available]
         return requested
@@ -163,13 +181,14 @@ class MainPipeline:
         return self._get_dataset_db_config_by_name(self.dataset_name)
 
     def _get_dataset_db_config_by_name(self, dataset_name: str) -> dict:
-        dataset_info = self.dataset_config["datasets"][dataset_name]
-        db_name = dataset_info.get("database", "default")
-        if db_name != "default" and "databases" in self.db_config:
-            databases = self.db_config["databases"]
-            if db_name in databases:
-                return databases[db_name]
-        return self.db_config.get("database", {})
+        resolved = resolve_db_settings(
+            self.db_config,
+            self.dataset_config,
+            dataset_name,
+            {},
+            allow_fallback_mapping=True,
+        )
+        return resolved or self.db_config.get("database", {})
 
     def _get_results_root(self) -> str:
         return self.eval_config.get("results", {}).get("output_dir", "results")
@@ -435,10 +454,10 @@ class MainPipeline:
         }
 
     def _get_floodsql_metadata_config(self) -> dict:
-        return self.eval_config.get("floodsql_pg", {}).get("metadata", {})
+        return self.eval_config.get("floodsql", {}).get("metadata", {})
 
     def _create_rag_retriever(self):
-        if self.dataset_name == "floodsql_pg":
+        if dataset_name_matches(self.dataset_name, "floodsql"):
             from src.retrieval.floodsql_metadata_retriever import FloodSQLMetadataRAGRetriever
 
             return FloodSQLMetadataRAGRetriever(self._get_floodsql_metadata_config())
@@ -448,7 +467,7 @@ class MainPipeline:
         return RAGRetriever(self.eval_config.get("rag", {}))
 
     def _create_keyword_searcher(self):
-        if self.dataset_name == "floodsql_pg":
+        if dataset_name_matches(self.dataset_name, "floodsql"):
             from src.retrieval.floodsql_metadata_retriever import FloodSQLMetadataKeywordSearcher
 
             return FloodSQLMetadataKeywordSearcher(self._get_floodsql_metadata_config())
@@ -462,7 +481,7 @@ class MainPipeline:
         print("Spatial Text2SQL 推理评估框架")
         print("=" * 80 + "\n")
 
-        if self.args.preprocess:
+        if self.args.utils:
             for dataset_name in self.dataset_names:
                 self._set_dataset_context(dataset_name)
                 self._run_preprocessing()
@@ -503,7 +522,6 @@ class MainPipeline:
 
         preprocessor = DataPreprocessor(
             dataset_config_path=os.path.join(self.config_dir, "dataset_config.yaml"),
-            db_config_path=os.path.join(self.config_dir, "db_config.yaml"),
         )
         preprocessor.preprocess(self.dataset_name)
 
@@ -544,7 +562,13 @@ class MainPipeline:
             keyword_searcher = self._create_keyword_searcher()
             keyword_searcher.load_documents()
 
-        prompt_builder = PromptBuilder(self.eval_config)
+        prompt_builder = PromptBuilder(
+            {
+                **self.eval_config,
+                "project_root": self.project_root,
+                "dataset_config_path": os.path.join(self.config_dir, "dataset_config.yaml"),
+            }
+        )
         model_inference = ModelInference(
             model_config_path=os.path.join(self.config_dir, "model_config.yaml"),
             eval_config_path=os.path.join(self.config_dir, "eval_config.yaml"),
@@ -554,6 +578,9 @@ class MainPipeline:
         evaluator = Evaluator(
             db_config=dataset_db_config,
             eval_config=self.eval_config,
+            db_config_full=self.db_config,
+            dataset_config=self.dataset_config,
+            dataset_name=self.dataset_name,
         )
 
         loader_class_name = self.dataset_info_dict["loader_class"]
@@ -643,6 +670,23 @@ class MainPipeline:
         return all_eval_results
 
     def _load_preprocessed_data(self) -> list:
+        if self.dataset_info_dict.get("use_preformatted_input"):
+            from src.datasets.processing import DataLoaderFactory
+
+            input_path = self.dataset_info_dict.get("data_path")
+            if not input_path or not os.path.exists(input_path):
+                raise ValueError(f"统一 benchmark 输入不存在: {input_path}")
+            loader_class_name = self.dataset_info_dict["loader_class"]
+            data_loader = DataLoaderFactory.create(loader_class_name, self.dataset_info_dict)
+            data = data_loader.extract_questions_and_sqls(
+                data_loader.load_raw_data(input_path)
+            )
+            hydrated = self._hydrate_schema_references(
+                self._attach_runtime_schema_references(data)
+            )
+            print(f"加载统一 benchmark 输入: {len(hydrated)} 条")
+            return hydrated
+
         preprocessing_config = self.dataset_config.get("preprocessing", {})
         dataset_dir = get_preprocessed_output_dir(preprocessing_config, self.dataset_name)
 
@@ -673,6 +717,10 @@ class MainPipeline:
         return all_data
 
     def _has_preprocessed_data(self) -> bool:
+        if self.dataset_info_dict.get("use_preformatted_input"):
+            input_path = self.dataset_info_dict.get("data_path")
+            return bool(input_path and os.path.exists(input_path))
+
         preprocessing_config = self.dataset_config.get("preprocessing", {})
         dataset_dir = get_preprocessed_output_dir(preprocessing_config, self.dataset_name)
 
@@ -688,6 +736,69 @@ class MainPipeline:
         if not expected_files:
             return False
         return all(os.path.exists(file_path) for file_path in expected_files)
+
+    def _attach_runtime_schema_references(self, data_items: list) -> list:
+        preprocessing_config = self.dataset_config.get("preprocessing", {})
+        schema_cache_dir = get_schema_cache_dir(preprocessing_config)
+        cache: Dict[str, Optional[str]] = {}
+
+        for item in data_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("schema") or item.get("schema_file"):
+                continue
+
+            metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+            for key in (
+                "level",
+                "level_id",
+                "domain",
+                "family",
+                "dataset_version",
+                "database_key",
+                "schema_name",
+                "source_id",
+            ):
+                value = item.get(key)
+                if value not in (None, ""):
+                    metadata.setdefault(key, value)
+            item["metadata"] = metadata
+            db_key = resolve_database_key(self.dataset_config, self.dataset_name, metadata)
+            db_settings = resolve_db_settings(
+                self.db_config,
+                self.dataset_config,
+                self.dataset_name,
+                metadata,
+                allow_fallback_mapping=True,
+            )
+            if not db_settings:
+                continue
+
+            cache_key = build_schema_cache_key(self.dataset_name, db_key, db_settings)
+            if cache_key not in cache:
+                schema_file = get_schema_cache_file(schema_cache_dir, cache_key)
+                cache[cache_key] = schema_file
+                absolute_schema_file = (
+                    schema_file
+                    if os.path.isabs(schema_file)
+                    else os.path.join(self.project_root, schema_file)
+                )
+                if not os.path.exists(absolute_schema_file):
+                    extractor = SchemaExtractor(db_settings)
+                    try:
+                        extractor.connect()
+                        schema = extractor.extract_schema()
+                        extractor.close()
+                        extractor.save_schema_to_file(schema, absolute_schema_file)
+                    except Exception as exc:
+                        print(f"Schema提取失败 ({cache_key}): {exc}")
+                        cache[cache_key] = None
+
+            if cache.get(cache_key):
+                item["schema_file"] = cache[cache_key]
+            item.setdefault("dataset", self.dataset_name)
+
+        return data_items
 
     def _hydrate_schema_references(self, data_items: list) -> list:
         hydrated = []
@@ -706,6 +817,8 @@ class MainPipeline:
                         item["schema"] = f.read()
                 except OSError:
                     item["schema"] = "-- Schema加载失败"
+            elif not item.get("schema"):
+                item["schema"] = "-- Schema加载失败"
             hydrated.append(item)
         return hydrated
 
@@ -745,6 +858,7 @@ class MainPipeline:
                 keyword_context=keyword_context,
                 dataset_name=self.dataset_name,
                 metadata=item.get("metadata", {}),
+                data_item=item,
             )
             prompts.append(prompt)
 
@@ -762,6 +876,9 @@ class MainPipeline:
         evaluator = Evaluator(
             db_config=dataset_db_config,
             eval_config=self.eval_config,
+            db_config_full=self.db_config,
+            dataset_config=self.dataset_config,
+            dataset_name=self.dataset_name,
         )
 
         loader_class_name = self.dataset_info_dict["loader_class"]
@@ -898,11 +1015,13 @@ class MainPipeline:
     def _collect_benchmark_setup_metadata(self) -> Dict[str, Any]:
         metadata: Dict[str, Any] = {}
         for dataset_name in self.dataset_names:
-            if dataset_name == "spatial_qa":
+            if dataset_name_matches(dataset_name, "spatialqueryqa"):
                 try:
-                    from src.sql.spatial_qa_benchmark_setup import inspect_spatial_qa_benchmark_setup
+                    from src.sql.spatialqueryqa_benchmark_setup import (
+                        inspect_spatialqueryqa_benchmark_setup,
+                    )
 
-                    metadata[dataset_name] = inspect_spatial_qa_benchmark_setup(
+                    metadata[dataset_name] = inspect_spatialqueryqa_benchmark_setup(
                         self._get_dataset_db_config_by_name(dataset_name)
                     )
                 except Exception as exc:
@@ -914,7 +1033,7 @@ class MainPipeline:
                     }
                 continue
 
-            if dataset_name == "floodsql_pg":
+            if dataset_name_matches(dataset_name, "floodsql"):
                 metadata[dataset_name] = {
                     "dataset": dataset_name,
                     "status": "managed_by_migration",
@@ -987,9 +1106,10 @@ class MainPipeline:
 
     @staticmethod
     def _prompt_instruction_prefix(prompt_text: str) -> str:
-        marker = "\n## User Question"
-        if marker in prompt_text:
-            prompt_text = prompt_text.split(marker, 1)[0]
+        for marker in ("\n## User Question", "\n[User Question]"):
+            if marker in prompt_text:
+                prompt_text = prompt_text.split(marker, 1)[0]
+                break
         return prompt_text.strip()
 
     @staticmethod
@@ -1273,7 +1393,7 @@ class MainPipeline:
             "models": list(self.model_names),
             "configs": list(self.config_types),
             "actions": {
-                "utils": bool(self.args.preprocess),
+                "utils": bool(self.args.utils),
                 "build_rag": bool(self.args.build_rag),
                 "inference": bool(self.args.inference),
                 "evaluate": bool(self.args.evaluate),
@@ -1325,7 +1445,7 @@ def main():
 
     args = parser.parse_args()
     if not (
-        args.preprocess
+        args.utils
         or args.build_rag
         or args.inference
         or args.evaluate

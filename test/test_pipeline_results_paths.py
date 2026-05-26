@@ -427,7 +427,7 @@ class PipelineResultsPathTests(unittest.TestCase):
             sys,
             "argv",
             [
-                "run_pipeline.py",
+                "run_pipeline.sh",
                 "--config-dir",
                 str(self.config_dir),
                 "--benchmark",

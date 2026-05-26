@@ -20,8 +20,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--db-config",
-        default=str(REPO_ROOT / "config" / "db_config.yaml"),
-        help="Path to db_config.yaml",
+        default=str(REPO_ROOT / "config" / "dataset_config.yaml"),
+        help="Deprecated alias; path to dataset_config.yaml",
     )
     parser.add_argument(
         "--dataset-config",

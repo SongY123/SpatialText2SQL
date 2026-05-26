@@ -9,7 +9,7 @@ from .context_provider import FloodSQLContextProvider
 
 
 class FloodSQLPromptEnhancement:
-    """Provide dataset-specific prompt assets for `floodsql_pg`."""
+    """Provide dataset-specific prompt assets for `floodsql`."""
 
     def __init__(self, project_root: Path | str):
         self.project_root = Path(project_root).resolve()

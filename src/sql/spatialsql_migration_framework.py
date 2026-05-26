@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import psycopg2
 import yaml
 
+from src.datasets.db_routing import extract_embedded_db_config, resolve_db_settings
 from src.inference.sql_utils import normalize_spatialsql_predicted_sql
 from src.sql.sql_dialect_adapter import classify_spatialsql_failure, convert_spatialite_to_postgis
 
@@ -93,12 +94,37 @@ class SplitSpec:
         return self.domain_dir / f"{self.domain}.table.csv"
 
 
-def load_spatialsql_db_config(config_path: Path) -> Dict[str, Any]:
-    """加载 `spatial_sql` 目标数据库配置。"""
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+def load_spatialsql_db_config(
+    config_path: Path,
+    dataset_config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """加载 SpatialSQL 目标数据库配置。"""
+    candidate_path = dataset_config_path or config_path
+    with open(candidate_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if "datasets" not in data:
+        databases = data.get("databases", {})
+        return (
+            databases.get("benchmark_spatialsql_ada")
+            or databases.get("spatial_sql")
+            or data.get("database", {})
+        )
+    embedded = extract_embedded_db_config(data)
+    resolved = resolve_db_settings(
+        embedded,
+        data,
+        "spatialsql",
+        {"domain": "ada"},
+        allow_fallback_mapping=True,
+    )
+    if resolved:
+        return resolved
     databases = data.get("databases", {})
-    return databases.get("spatial_sql", data.get("database", {}))
+    return (
+        databases.get("benchmark_spatialsql_ada")
+        or databases.get("spatial_sql")
+        or data.get("database", {})
+    )
 
 
 def pg_connection_string(cfg: Dict[str, Any]) -> str:
@@ -1027,13 +1053,13 @@ def validate_geometry_columns(
 
 def load_spatialsql_items(dataset_config_path: Path) -> List[Dict[str, Any]]:
     """加载 SpatialSQL QA 样本。"""
-    from src.datasets.loaders.spatial_sql_loader import SpatialSQLLoader
+    from src.datasets.loaders.spatialsql_loader import SpatialSQLLoader
 
     with open(dataset_config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    dataset_info = cfg["datasets"]["spatialsql_pg"]
+    dataset_info = cfg["datasets"]["spatialsql"]
     loader = SpatialSQLLoader(dataset_info)
-    raw_data = loader.load_raw_data(dataset_info.get("data_path", "sdbdatasets"))
+    raw_data = loader.load_raw_data(dataset_info.get("raw_data_path", "SpatialSQL"))
     return loader.extract_questions_and_sqls(raw_data)
 
 
@@ -1844,8 +1870,8 @@ def run_iterative_spatialsql_migration(
 ) -> Dict[str, Any]:
     """执行半自动闭环迁移。"""
     report_dir.mkdir(parents=True, exist_ok=True)
-    sdbdatasets_path = project_root / "sdbdatasets"
-    db_cfg = load_spatialsql_db_config(db_config_path)
+    sdbdatasets_path = project_root / "SpatialSQL"
+    db_cfg = load_spatialsql_db_config(db_config_path, dataset_config_path)
     _log("=" * 70)
     _log("[Framework] SpatialSQL iterative migration started")
     _log(f"[Framework] project_root={project_root}")

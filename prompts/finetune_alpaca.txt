@@ -1,0 +1,12 @@
+You are a PostgreSQL/PostGIS expert. Read and understand the following database schema, and use PostgreSQL/PostGIS knowledge to generate a SQL query that answers the user question.
+[Database Schema]
+[DB_ID] {{database_id}}
+[Schema]
+{{schema_block}}
+
+{{foreign_keys_block}}
+{{custom_sections_block}}
+[User Question]
+{{question_block}}
+
+```sql
