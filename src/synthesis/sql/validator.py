@@ -341,6 +341,208 @@ def _extract_projection_features(sql: str) -> dict[str, object]:
         }
 
 
+def _validate_error_coverage_profile(
+    sql: str,
+    error_coverage_profile: Mapping[str, object] | None,
+) -> list[str]:
+    profile = error_coverage_profile if isinstance(error_coverage_profile, Mapping) else {}
+    profile_id = to_text(profile.get("profile_id")).lower()
+    if not profile_id:
+        return []
+
+    errors: list[str] = []
+    cleaned = _strip_string_literals(sql)
+    required_exact_function_names = {
+        to_text(item)
+        for item in profile.get("required_exact_function_names", []) or []
+        if to_text(item)
+    }
+    if required_exact_function_names:
+        detected_functions = {func.lower() for func in _detect_functions(cleaned)}
+        missing_exact = sorted(
+            function_name
+            for function_name in required_exact_function_names
+            if function_name.lower() not in detected_functions
+        )
+        if missing_exact:
+            errors.append(
+                "Coverage rule: this sample must use the exact target tail function(s): "
+                + ", ".join(missing_exact)
+                + "."
+            )
+
+    if profile_id == "spatialsql_geography_spheroid_measurement":
+        if re.search(r"\bST_Transform\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: geography measurement samples must not use ST_Transform."
+            )
+        geography_calls: list[str] = []
+        missing_true: list[str] = []
+        for function_name, args in _iter_spatial_function_calls(cleaned):
+            lowered_name = function_name.lower()
+            lowered_args = args.lower()
+            if lowered_name not in {"st_area", "st_length", "st_distance"}:
+                continue
+            if "::geography" not in lowered_args:
+                continue
+            geography_calls.append(function_name)
+            top_level_args = [item.strip().lower() for item in _split_top_level_commas(args)]
+            if len(top_level_args) < 2 or top_level_args[-1] != "true":
+                missing_true.append(function_name)
+        if not geography_calls:
+            errors.append(
+                "Coverage rule: geography measurement samples must use ST_Area/ST_Length/ST_Distance on a geography cast."
+            )
+        if missing_true:
+            errors.append(
+                "Coverage rule: geography measurement samples must use the explicit spheroid=true signature for "
+                + ", ".join(sorted(set(missing_true)))
+                + "."
+            )
+        return errors
+
+    if profile_id == "spatialqueryqa_projected_units_measurement":
+        if "::geography" in cleaned.lower():
+            errors.append(
+                "Coverage rule: projected-unit measurement samples must not use geography casts."
+            )
+        has_projected_measurement = False
+        for function_name, args in _iter_spatial_function_calls(cleaned):
+            if function_name.lower() not in {"st_area", "st_length", "st_distance"}:
+                continue
+            if re.search(r"\bST_Transform\s*\(", args, re.I):
+                has_projected_measurement = True
+                break
+        if not has_projected_measurement:
+            errors.append(
+                "Coverage rule: projected-unit measurement samples must measure ST_Transform(...) output."
+            )
+        return errors
+
+    if profile_id == "unit_scaled_measurement_output":
+        has_measurement = any(
+            function_name.lower() in {"st_area", "st_length", "st_distance"}
+            for function_name, _args in _iter_spatial_function_calls(cleaned)
+        )
+        has_scaling = re.search(
+            r"/\s*(1000(?:\.0+)?|1000000(?:\.0+)?)\b|/\s*1e6\b|\*\s*0\.001\b|\*\s*0\.000001\b",
+            cleaned,
+            re.I,
+        ) is not None
+        if not has_measurement or not has_scaling:
+            errors.append(
+                "Coverage rule: unit-scaled measurement samples must convert measurement output with /1000 or /1000000-style scaling."
+            )
+        return errors
+
+    if profile_id == "bbox_extent_accessor_tail":
+        if not re.search(r"\bST_(XMIN|XMAX|YMIN|YMAX)\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: extent-accessor tail samples must use ST_XMin, ST_XMax, ST_YMin, or ST_YMax."
+            )
+        return errors
+
+    if profile_id == "point_coordinate_accessor_tail":
+        if not re.search(r"\bST_(X|Y)\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: point-coordinate tail samples must use ST_X or ST_Y."
+            )
+        return errors
+
+    if profile_id == "geometry_metadata_tail":
+        if not re.search(r"\bST_(SRID|AsText|GeometryType)\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: geometry-metadata tail samples must use ST_SRID, ST_AsText, or ST_GeometryType."
+            )
+        return errors
+
+    if profile_id == "buffered_relation_tail":
+        has_buffer = re.search(r"\bST_Buffer\s*\(", cleaned, re.I) is not None
+        has_relation = re.search(r"\bST_(Within|Intersects|Contains)\s*\(", cleaned, re.I) is not None
+        if not has_buffer or not has_relation:
+            errors.append(
+                "Coverage rule: buffered-relation tail samples must use ST_Buffer together with one spatial relation."
+            )
+        return errors
+
+    if profile_id == "collection_union_tail":
+        has_collection = re.search(r"\bST_(Collect|UnaryUnion|CollectionExtract|IsEmpty)\s*\(", cleaned, re.I) is not None
+        has_staging = cleaned.upper().lstrip().startswith("WITH ") or re.search(r"\(\s*SELECT\b", cleaned, re.I) is not None
+        if not has_collection or not has_staging:
+            errors.append(
+                "Coverage rule: collection tail samples must stage ST_Collect, ST_UnaryUnion, ST_CollectionExtract, or ST_IsEmpty in one CTE or subquery."
+            )
+        return errors
+
+    if profile_id == "crosses_predicate_tail":
+        if not re.search(r"\bST_Crosses\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: crosses tail samples must use ST_Crosses as the spatial predicate."
+            )
+        return errors
+
+    if profile_id == "repair_valid_intersection_tail":
+        has_makevalid = re.search(r"\bST_MakeValid\s*\(", cleaned, re.I) is not None
+        has_overlap_measure = re.search(r"\bST_(Intersection|Area)\s*\(", cleaned, re.I) is not None
+        if not has_makevalid or not has_overlap_measure:
+            errors.append(
+                "Coverage rule: repair tail samples must use ST_MakeValid before an overlap measurement path."
+            )
+        return errors
+
+    if profile_id == "perimeter_measurement_tail":
+        if not re.search(r"\bST_Perimeter\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: perimeter tail samples must use ST_Perimeter."
+            )
+        return errors
+
+    if profile_id == "floodsql_valid_geometry_measurement":
+        if not re.search(r"\bST_IsValid\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: valid-geometry samples must filter with ST_IsValid(...) before geometry measurement or spatial join."
+            )
+        return errors
+
+    if profile_id == "aggregation_output_shape":
+        if not re.search(r"\b(COUNT|SUM|AVG|MIN|MAX)\s*\(", cleaned, re.I) and "GROUP BY" not in cleaned.upper():
+            errors.append(
+                "Coverage rule: aggregate-shape samples must use an aggregate expression or GROUP BY."
+            )
+        return errors
+
+    if profile_id == "distinct_grouped_result_shape":
+        if "DISTINCT" not in cleaned.upper() and "GROUP BY" not in cleaned.upper():
+            errors.append(
+                "Coverage rule: distinct/grouped samples must use DISTINCT or GROUP BY."
+            )
+        return errors
+
+    if profile_id == "offset_ranked_result":
+        upper = cleaned.upper()
+        if "ORDER BY" not in upper or "LIMIT" not in upper or "OFFSET" not in upper:
+            errors.append(
+                "Coverage rule: nth-result samples must use ORDER BY, LIMIT, and OFFSET together."
+            )
+        elif not re.search(r"\bOFFSET\s+[1-9]\d*\b", upper, re.I):
+            errors.append(
+                "Coverage rule: nth-result samples must use a positive OFFSET."
+            )
+        return errors
+
+    if profile_id == "nested_cte_subquery_shape":
+        upper = cleaned.upper()
+        has_cte = upper.lstrip().startswith("WITH ")
+        has_subquery = re.search(r"\(\s*SELECT\b", cleaned, re.I) is not None
+        if not has_cte and not has_subquery:
+            errors.append(
+                "Coverage rule: nested-shape samples must include one CTE or one nested subquery."
+            )
+        return errors
+
+    return errors
+
+
 def _difficulty_matches(target: str, features: Mapping[str, object]) -> tuple[bool, str]:
     table_count = int(features.get("table_count", 0))
     join_count = int(features.get("join_count", 0))
@@ -405,6 +607,7 @@ class SQLValidator:
         sampled_functions: Sequence[str],
         difficulty_level: str,
         database_runtime_metadata: Mapping[str, object] | None = None,
+        error_coverage_profile: Mapping[str, object] | None = None,
         expected_limit: int | None = None,
         allow_limit: bool = True,
         require_order_by_with_limit: bool = False,
@@ -463,6 +666,8 @@ class SQLValidator:
                     "SQL uses PostGIS functions outside the externally provided candidate set: "
                     + ", ".join(unexpected_functions)
                 )
+
+        errors.extend(_validate_error_coverage_profile(sql_text, error_coverage_profile))
 
         raster_topology = [
             func for func in detected_functions

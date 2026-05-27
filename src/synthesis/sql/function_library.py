@@ -93,13 +93,6 @@ FIXED_SPATIAL_JOIN_FUNCTION_SPECS: list[dict[str, Any]] = [
         "description": "True when two geometries touch at the boundary.",
         "example_usages": [],
     },
-    {
-        "function_name": "ST_Crosses",
-        "signature": "ST_Crosses(geometry geomA, geometry geomB)",
-        "categories": ["spatial_join"],
-        "description": "True when two geometries cross.",
-        "example_usages": [],
-    },
 ]
 
 
@@ -415,6 +408,7 @@ class PostGISFunctionLibrary:
         *,
         st_function_only: bool = False,
         exclude_function_names: Sequence[str] | None = None,
+        include_function_names: Sequence[str] | None = None,
         desired_count: int | None = None,
     ) -> list[PostGISFunction]:
         if difficulty_level not in DIFFICULTY_LEVELS:
@@ -426,6 +420,11 @@ class PostGISFunctionLibrary:
         excluded_names = {
             to_text(item).lower()
             for item in (exclude_function_names or [])
+            if to_text(item)
+        }
+        included_names = {
+            to_text(item).lower()
+            for item in (include_function_names or [])
             if to_text(item)
         }
 
@@ -442,6 +441,7 @@ class PostGISFunctionLibrary:
             if difficulty_level in item.compatible_difficulties
             and set(item.categories) & set(preferred_categories)
             and item.function_name.lower() not in excluded_names
+            and (not included_names or item.function_name.lower() in included_names)
             and self._function_is_schema_compatible(item, spatial_table_count, len(database.selected_tables))
         ]
         if not candidates:
@@ -450,6 +450,7 @@ class PostGISFunctionLibrary:
                 for item in self.functions
                 if difficulty_level in item.compatible_difficulties
                 and item.function_name.lower() not in excluded_names
+                and (not included_names or item.function_name.lower() in included_names)
                 and self._function_is_schema_compatible(item, spatial_table_count, len(database.selected_tables))
             ]
         if not candidates:

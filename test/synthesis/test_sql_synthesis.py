@@ -192,6 +192,20 @@ def _error_coverage_function_json_payload():
         ("ST_Within", "ST_Within(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
         ("ST_Touches", "ST_Touches(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
         ("ST_Collect", "ST_Collect(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "geometry"),
+        ("ST_Buffer", "ST_Buffer(geometry g1, double precision radius)", ["geometry g1", "double precision radius"], "geometry"),
+        ("ST_XMin", "ST_XMin(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_XMax", "ST_XMax(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_X", "ST_X(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_Y", "ST_Y(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_SRID", "ST_SRID(geometry g1)", ["geometry g1"], "integer"),
+        ("ST_AsText", "ST_AsText(geometry g1)", ["geometry g1"], "text"),
+        ("ST_GeometryType", "ST_GeometryType(geometry g1)", ["geometry g1"], "text"),
+        ("ST_UnaryUnion", "ST_UnaryUnion(geometry g1)", ["geometry g1"], "geometry"),
+        ("ST_CollectionExtract", "ST_CollectionExtract(geometry g1, integer type)", ["geometry g1", "integer type"], "geometry"),
+        ("ST_IsEmpty", "ST_IsEmpty(geometry g1)", ["geometry g1"], "boolean"),
+        ("ST_Crosses", "ST_Crosses(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
+        ("ST_MakeValid", "ST_MakeValid(geometry g1)", ["geometry g1"], "geometry"),
+        ("ST_Perimeter", "ST_Perimeter(geometry g1)", ["geometry g1"], "double precision"),
     ]:
         payload.append(
             {
@@ -230,6 +244,258 @@ def _error_coverage_function_markdown():
             "ST_Transform",
             "ST_Within",
             "ST_Buffer",
+            "ST_XMin",
+            "ST_XMax",
+            "ST_X",
+            "ST_Y",
+            "ST_SRID",
+            "ST_AsText",
+            "ST_GeometryType",
+            "ST_UnaryUnion",
+            "ST_CollectionExtract",
+            "ST_IsEmpty",
+            "ST_Crosses",
+            "ST_MakeValid",
+            "ST_Perimeter",
+        ]
+    )
+
+
+def _profile_validation_function_json_payload():
+    return [
+        {
+            "function_id": "st_length",
+            "chapter_info": "reference_measurement",
+            "source_file": "reference_measurement.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Length",
+                    "return_type": "double precision",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_Length(geometry geom)",
+                },
+                {
+                    "function_name": "ST_Length",
+                    "return_type": "double precision",
+                    "arguments": ["geography geog", "boolean use_spheroid"],
+                    "signature_str": "ST_Length(geography geog, boolean use_spheroid)",
+                },
+            ],
+            "description": "Returns length.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_area",
+            "chapter_info": "reference_measurement",
+            "source_file": "reference_measurement.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Area",
+                    "return_type": "double precision",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_Area(geometry geom)",
+                },
+                {
+                    "function_name": "ST_Area",
+                    "return_type": "double precision",
+                    "arguments": ["geography geog", "boolean use_spheroid"],
+                    "signature_str": "ST_Area(geography geog, boolean use_spheroid)",
+                },
+            ],
+            "description": "Returns area.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_distance",
+            "chapter_info": "reference_measurement",
+            "source_file": "reference_measurement.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Distance",
+                    "return_type": "double precision",
+                    "arguments": ["geometry geom1", "geometry geom2"],
+                    "signature_str": "ST_Distance(geometry geom1, geometry geom2)",
+                },
+                {
+                    "function_name": "ST_Distance",
+                    "return_type": "double precision",
+                    "arguments": ["geography geog1", "geography geog2", "boolean use_spheroid"],
+                    "signature_str": "ST_Distance(geography geog1, geography geog2, boolean use_spheroid)",
+                },
+            ],
+            "description": "Returns distance.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_transform",
+            "chapter_info": "reference_processing",
+            "source_file": "reference_processing.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Transform",
+                    "return_type": "geometry",
+                    "arguments": ["geometry geom", "integer srid"],
+                    "signature_str": "ST_Transform(geometry geom, integer srid)",
+                }
+            ],
+            "description": "Projects geometry.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_isvalid",
+            "chapter_info": "reference_processing",
+            "source_file": "reference_processing.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_IsValid",
+                    "return_type": "boolean",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_IsValid(geometry geom)",
+                }
+            ],
+            "description": "Checks valid geometry.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_intersects",
+            "chapter_info": "reference_relationship",
+            "source_file": "reference_relationship.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Intersects",
+                    "return_type": "boolean",
+                    "arguments": ["geometry geom1", "geometry geom2"],
+                    "signature_str": "ST_Intersects(geometry geom1, geometry geom2)",
+                }
+            ],
+            "description": "Checks intersection.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_xmin",
+            "chapter_info": "reference_accessor",
+            "source_file": "reference_accessor.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_XMin",
+                    "return_type": "double precision",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_XMin(geometry geom)",
+                }
+            ],
+            "description": "Returns xmin.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_buffer",
+            "chapter_info": "reference_processing",
+            "source_file": "reference_processing.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Buffer",
+                    "return_type": "geometry",
+                    "arguments": ["geometry geom", "double precision radius"],
+                    "signature_str": "ST_Buffer(geometry geom, double precision radius)",
+                }
+            ],
+            "description": "Buffers geometry.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_collect",
+            "chapter_info": "reference_processing",
+            "source_file": "reference_processing.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Collect",
+                    "return_type": "geometry",
+                    "arguments": ["geometry geom1", "geometry geom2"],
+                    "signature_str": "ST_Collect(geometry geom1, geometry geom2)",
+                }
+            ],
+            "description": "Collects geometries.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_astext",
+            "chapter_info": "reference_output",
+            "source_file": "reference_output.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_AsText",
+                    "return_type": "text",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_AsText(geometry geom)",
+                }
+            ],
+            "description": "Returns WKT text.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_crosses",
+            "chapter_info": "reference_relationship",
+            "source_file": "reference_relationship.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Crosses",
+                    "return_type": "boolean",
+                    "arguments": ["geometry geom1", "geometry geom2"],
+                    "signature_str": "ST_Crosses(geometry geom1, geometry geom2)",
+                }
+            ],
+            "description": "Checks crossing.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_makevalid",
+            "chapter_info": "reference_processing",
+            "source_file": "reference_processing.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_MakeValid",
+                    "return_type": "geometry",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_MakeValid(geometry geom)",
+                }
+            ],
+            "description": "Repairs invalid geometry.",
+            "examples": [],
+        },
+        {
+            "function_id": "st_perimeter",
+            "chapter_info": "reference_measurement",
+            "source_file": "reference_measurement.xml",
+            "function_definitions": [
+                {
+                    "function_name": "ST_Perimeter",
+                    "return_type": "double precision",
+                    "arguments": ["geometry geom"],
+                    "signature_str": "ST_Perimeter(geometry geom)",
+                }
+            ],
+            "description": "Returns perimeter.",
+            "examples": [],
+        },
+    ]
+
+
+def _profile_validation_function_markdown():
+    return "\n".join(
+        [
+            "## spatialsql_pg",
+            "ST_Length",
+            "ST_Area",
+            "ST_Distance",
+            "ST_Transform",
+            "ST_IsValid",
+            "ST_Intersects",
+            "ST_XMin",
+            "ST_Buffer",
+            "ST_Collect",
+            "ST_AsText",
+            "ST_Crosses",
+            "ST_MakeValid",
+            "ST_Perimeter",
         ]
     )
 
@@ -490,16 +756,10 @@ class SQLSynthesisTests(unittest.TestCase):
             structural_constraints={"difficulty_level": "easy"},
             sampled_functions=[],
         )
-        representative_section = prompt.split("## Representative Values", 1)[1].split("## Difficulty Constraint", 1)[0].strip()
-        representative_values = json.loads(representative_section)
-        self.assertEqual(
-            representative_values["table_1"],
-            [
-                {"geometry": "POINT", "name": "a"},
-                {"geometry": "POLYGON", "name": "b"},
-                {"geometry": "LINESTRING", "name": "c"},
-            ],
-        )
+        self.assertNotIn("## Representative Values", prompt)
+        self.assertIn("# Table: table_1", prompt)
+        self.assertIn("Examples: [a, b, c]", prompt)
+        self.assertIn("Examples: [Point (SRID=4326), Polygon (SRID=4326), LineString (SRID=4326)]", prompt)
         self.assertIn("scalar aggregates should project exactly one expression", prompt)
         self.assertIn("Keep the projected column count small", prompt)
 
@@ -753,6 +1013,165 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("ST_Length", names)
         self.assertIn("ST_Distance", names)
 
+    def test_tail_profiles_rotate_across_eligible_easy_polygon_profiles(self):
+        database = _make_database(table_count=1)
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "MULTIPOLYGON"}],
+                    "representative_values": [{"geom": "MultiPolygon (SRID=4326)"}],
+                }
+            ]
+        }
+        profile_ids = {
+            select_error_coverage_profile(
+                database=database,
+                sample_index=sample_index,
+                difficulty_level="easy",
+                database_runtime_metadata=runtime_metadata,
+            )["profile_id"]
+            for sample_index in (4, 9, 14)
+        }
+        self.assertEqual(
+            profile_ids,
+            {"bbox_extent_accessor_tail", "geometry_metadata_tail", "perimeter_measurement_tail"},
+        )
+
+    def test_tail_profiles_include_point_accessor_when_point_geometry_present(self):
+        database = _make_database(table_count=1, database_id="point_city_0001")
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "POINT"}],
+                    "representative_values": [{"geom": "Point (SRID=4326)"}],
+                }
+            ]
+        }
+        profile_ids = {
+            select_error_coverage_profile(
+                database=database,
+                sample_index=sample_index,
+                difficulty_level="easy",
+                database_runtime_metadata=runtime_metadata,
+            )["profile_id"]
+            for sample_index in (4, 9, 14, 19, 24)
+        }
+        self.assertIn("point_coordinate_accessor_tail", profile_ids)
+
+    def test_tail_profiles_prefer_point_accessor_on_point_tail_turn(self):
+        database = _make_database(table_count=4, database_id="austin_0001")
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "POINT"}],
+                    "representative_values": [{"geom": "Point (SRID=4326)"}],
+                }
+            ]
+        }
+        profile = select_error_coverage_profile(
+            database=database,
+            sample_index=64,
+            difficulty_level="extra-hard",
+            database_runtime_metadata=runtime_metadata,
+        )
+        self.assertEqual(profile["profile_id"], "point_coordinate_accessor_tail")
+        self.assertIn(profile["function_names"], (["ST_X"], ["ST_Y"]))
+
+    def test_point_tail_rotation_uses_both_x_and_y_across_cities(self):
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "POINT"}],
+                    "representative_values": [{"geom": "Point (SRID=4326)"}],
+                }
+            ]
+        }
+        chosen_functions = set()
+        for database_id in ("austin_0001", "nyc_0001"):
+            profile = select_error_coverage_profile(
+                database=_make_database(table_count=4, database_id=database_id),
+                sample_index=64,
+                difficulty_level="extra-hard",
+                database_runtime_metadata=runtime_metadata,
+            )
+            self.assertEqual(profile["profile_id"], "point_coordinate_accessor_tail")
+            chosen_functions.update(profile["function_names"])
+        self.assertEqual(chosen_functions, {"ST_X", "ST_Y"})
+
+    def test_point_tail_rotation_uses_both_x_and_y_across_mixed_geometry_cities(self):
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "POINT"}],
+                    "representative_values": [{"geom": "Point (SRID=4326)"}],
+                },
+                {
+                    "table_name": "table_2",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "MULTIPOLYGON"}],
+                    "representative_values": [{"geom": "MultiPolygon (SRID=4326)"}],
+                },
+            ]
+        }
+        chosen_functions = set()
+        for database_id in ("austin_0001", "nyc_0001"):
+            profile = select_error_coverage_profile(
+                database=_make_database(table_count=4, database_id=database_id),
+                sample_index=64,
+                difficulty_level="extra-hard",
+                database_runtime_metadata=runtime_metadata,
+            )
+            self.assertEqual(profile["profile_id"], "point_coordinate_accessor_tail")
+            chosen_functions.update(profile["function_names"])
+        self.assertEqual(chosen_functions, {"ST_X", "ST_Y"})
+
+    def test_tail_profiles_cover_repair_path_across_hard_samples(self):
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "MULTIPOLYGON"}],
+                    "representative_values": [{"geom": "MultiPolygon (SRID=4326)"}],
+                }
+            ]
+        }
+        profile_ids = set()
+        for database_id in ("austin_0001", "chicago_0001", "nyc_0001"):
+            database = _make_database(table_count=3, database_id=database_id)
+            for sample_index in (34, 39, 44, 49, 54):
+                profile = select_error_coverage_profile(
+                    database=database,
+                    sample_index=sample_index,
+                    difficulty_level="hard",
+                    database_runtime_metadata=runtime_metadata,
+                )
+                profile_ids.add(profile["profile_id"])
+        self.assertIn("repair_valid_intersection_tail", profile_ids)
+
+    def test_collection_tail_prefers_collectionextract_isempty_path_first(self):
+        runtime_metadata = {
+            "tables": [
+                {
+                    "table_name": "table_1",
+                    "spatial_fields": [{"column_name": "geom", "geometry_type": "MULTIPOLYGON"}],
+                    "representative_values": [{"geom": "MultiPolygon (SRID=4326)"}],
+                }
+            ]
+        }
+        database = _make_database(table_count=4, database_id="chicago_0001")
+        collection_profile = select_error_coverage_profile(
+            database=database,
+            sample_index=64,
+            difficulty_level="extra-hard",
+            database_runtime_metadata=runtime_metadata,
+        )
+        self.assertEqual(collection_profile["profile_id"], "collection_union_tail")
+        self.assertEqual(collection_profile["function_names"], ["ST_CollectionExtract", "ST_IsEmpty"])
+
     def test_function_library_matches_markdown_entries_by_function_id(self):
         payload = [
             {
@@ -857,14 +1276,16 @@ class SQLSynthesisTests(unittest.TestCase):
             allow_limit=True,
             require_order_by_with_limit=True,
         )
-        self.assertIn("Representative Values", prompt)
+        self.assertNotIn("Representative Values", prompt)
         self.assertNotIn("Spatial Field Metadata", prompt)
         self.assertIn("Difficulty Constraint", prompt)
         self.assertIn("ST_DWithin", prompt)
         self.assertIn("used_spatial_functions", prompt)
         self.assertIn("Return a JSON object only", prompt)
-        self.assertIn("do not use `SELECT *`", prompt)
+        self.assertIn("never use `SELECT *`", prompt)
         self.assertIn('sampling_role": "sampled"', prompt)
+        self.assertIn("# Table: table_1", prompt)
+        self.assertIn("# Table: table_2", prompt)
         self.assertIn("This sample should behave like a bounded ranked result query.", prompt)
         self.assertIn("Include ORDER BY before LIMIT.", prompt)
         self.assertIn("Use LIMIT 4 exactly.", prompt)
@@ -937,9 +1358,10 @@ class SQLSynthesisTests(unittest.TestCase):
             require_order_by_with_limit=True,
         )
         self.assertIn("operator does not exist", prompt)
-        self.assertIn("table_1(id integer, name text, shape geography(Point,4326))", prompt)
-        self.assertIn('"hydrant"', prompt)
-        self.assertNotIn("table_2(id integer)", prompt)
+        self.assertIn("# Table: table_1", prompt)
+        self.assertIn("shape:geometry(Geometry,4326)", prompt)
+        self.assertIn("Examples: [hydrant, valve]", prompt)
+        self.assertNotIn("# Table: table_2", prompt)
         self.assertIn("This sample should behave like a bounded ranked result query.", prompt)
         self.assertIn("Use LIMIT 2 exactly.", prompt)
 
@@ -1071,10 +1493,11 @@ class SQLSynthesisTests(unittest.TestCase):
             database_runtime_metadata=runtime_metadata,
         )
         self.assertIn("CREATE TABLE table_1", prompt)
-        self.assertIn("shape geography(Point,4326)", prompt)
+        self.assertIn("# Table: table_1", prompt)
+        self.assertIn("shape:geometry(Geometry,4326)", prompt)
         self.assertNotIn("Spatial Field Metadata", prompt)
-        self.assertIn('"hydrant"', prompt)
-        self.assertIn('"shape": "POINT"', prompt)
+        self.assertIn("Examples: [hydrant]", prompt)
+        self.assertIn("Examples: [Point (SRID=4326)]", prompt)
         self.assertNotIn("geom spatial", prompt)
 
     def test_build_create_table_ddl_query_uses_regclass_placeholders(self):
@@ -1285,6 +1708,154 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         self.assertTrue(result.is_valid)
         self.assertIn("shape", result.detected_columns)
+
+    def test_validator_rejects_missing_explicit_spheroid_true_for_geography_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Length(t.geom::geography) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Length"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "spatialsql_geography_spheroid_measurement"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("explicit spheroid=true signature" in item for item in result.errors))
+
+    def test_validator_rejects_geography_cast_for_projected_measurement_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Area(t.geom::geography, true) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Area", "ST_Transform"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "spatialqueryqa_projected_units_measurement"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must not use geography casts" in item for item in result.errors))
+
+    def test_validator_requires_st_isvalid_for_valid_geometry_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Area(t.geom) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Area", "ST_IsValid"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "floodsql_valid_geometry_measurement"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must filter with ST_IsValid" in item for item in result.errors))
+
+    def test_validator_requires_unit_scaling_for_scaled_measurement_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Area(ST_Transform(t.geom, 6933)) AS area_sq_km FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Area", "ST_Transform"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "unit_scaled_measurement_output"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("/1000 or /1000000-style scaling" in item for item in result.errors))
+
+    def test_validator_requires_extent_accessor_for_tail_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT name FROM table_1 ORDER BY id DESC LIMIT 1",
+            database=database,
+            sampled_functions=["ST_XMin"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "bbox_extent_accessor_tail"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("extent-accessor tail samples" in item for item in result.errors))
+
+    def test_validator_requires_makevalid_for_repair_tail_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=2)
+        result = validator.validate(
+            sql="SELECT ST_Area(ST_Intersection(a.geom, b.geom)) FROM table_1 a JOIN table_2 b ON ST_Intersects(a.geom, b.geom)",
+            database=database,
+            sampled_functions=["ST_Area", "ST_Intersection", "ST_MakeValid"],
+            difficulty_level="hard",
+            error_coverage_profile={"profile_id": "repair_valid_intersection_tail"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must use ST_MakeValid" in item for item in result.errors))
+
+    def test_validator_requires_exact_target_tail_function_when_requested(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_AsText(t.geom) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_AsText", "ST_SRID"],
+            difficulty_level="easy",
+            error_coverage_profile={
+                "profile_id": "geometry_metadata_tail",
+                "required_exact_function_names": ["ST_SRID"],
+            },
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("exact target tail function" in item for item in result.errors))
+
+    def test_validator_requires_distinct_or_group_by_for_distinct_grouped_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=2)
+        result = validator.validate(
+            sql="SELECT a.name FROM table_1 a JOIN table_2 b ON ST_Intersects(a.geom, b.geom) LIMIT 1",
+            database=database,
+            sampled_functions=["ST_Intersects"],
+            difficulty_level="medium",
+            error_coverage_profile={"profile_id": "distinct_grouped_result_shape"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must use DISTINCT or GROUP BY" in item for item in result.errors))
+
+    def test_validator_requires_limit_offset_for_offset_ranked_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=2)
+        result = validator.validate(
+            sql="SELECT a.name FROM table_1 a JOIN table_2 b ON ST_DWithin(a.geom, b.geom, 10) ORDER BY a.name LIMIT 1",
+            database=database,
+            sampled_functions=["ST_DWithin"],
+            difficulty_level="medium",
+            error_coverage_profile={"profile_id": "offset_ranked_result"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("ORDER BY, LIMIT, and OFFSET" in item for item in result.errors))
+
+    def test_validator_requires_cte_or_subquery_for_nested_shape_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=3)
+        result = validator.validate(
+            sql=(
+                "SELECT a.name FROM table_1 a "
+                "JOIN table_2 b ON ST_Intersects(a.geom, b.geom) "
+                "JOIN table_3 c ON ST_Contains(b.geom, c.geom) "
+                "LIMIT 1"
+            ),
+            database=database,
+            sampled_functions=["ST_Intersects", "ST_Contains"],
+            difficulty_level="extra-hard",
+            error_coverage_profile={"profile_id": "nested_cte_subquery_shape"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must include one CTE or one nested subquery" in item for item in result.errors))
 
     def test_execution_checker_uses_explain_for_write_like_sql_without_pre_rejecting(self):
         checker = SQLExecutionChecker(

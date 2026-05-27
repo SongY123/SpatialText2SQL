@@ -9,9 +9,6 @@ Match the requested difficulty, keep the query natural, and preserve the most di
 ## Schema
 {{schema_block}}
 
-## Representative Values
-{{representative_values_block}}
-
 ## Difficulty Constraint
 {{difficulty_constraint_block}}
 

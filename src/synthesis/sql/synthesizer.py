@@ -15,7 +15,11 @@ from src.synthesis.database.models import SynthesizedSpatialDatabase
 from src.synthesis.database.utils import stable_jsonify, to_text
 
 from .config import SQLSynthesisConfig
-from .error_coverage import augment_functions_for_error_coverage, select_error_coverage_profile
+from .error_coverage import (
+    augment_functions_for_error_coverage,
+    benchmark_function_name_allowlist,
+    select_error_coverage_profile,
+)
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary, build_required_function_constraints
 from .generator import SQLGenerator
@@ -304,6 +308,7 @@ class ConstraintGuidedSQLSynthesizer:
                 database=prompt_database,
                 sample_index=sample_index,
                 difficulty_level=difficulty_level,
+                database_runtime_metadata=database_runtime_metadata,
             )
             sampled_functions = augment_functions_for_error_coverage(
                 function_library=self.function_library,
@@ -488,6 +493,7 @@ class ConstraintGuidedSQLSynthesizer:
                 sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                 difficulty_level=difficulty_level,
                 database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+                error_coverage_profile=structural_constraints.get("error_coverage") if isinstance(structural_constraints, Mapping) else None,
                 expected_limit=expected_limit,
                 allow_limit=allow_limit,
                 require_order_by_with_limit=require_order_by_with_limit,
@@ -537,12 +543,14 @@ class ConstraintGuidedSQLSynthesizer:
         sample_success = self._is_sample_success(
             has_sql=has_sql,
             execution_result=execution_result,
+            validation_result=validation_result,
         )
         minor_revision_applied = False
         if not sample_success and self._should_attempt_minor_revision(
             has_sql=has_sql,
             has_dangerous_sql=has_sql and contains_dangerous_sql(candidate.sql),
             execution_result=execution_result,
+            validation_result=validation_result,
         ):
             involved_tables = candidate.used_tables or validation_result.detected_tables
             revision_feedback = self._build_sql_revision_feedback(
@@ -645,6 +653,7 @@ class ConstraintGuidedSQLSynthesizer:
                     sampled_functions=[to_text(item.get("function_name")) for item in required_functions],
                     difficulty_level=difficulty_level,
                     database_runtime_metadata=dict(database_runtime_metadata) if isinstance(database_runtime_metadata, Mapping) else None,
+                    error_coverage_profile=structural_constraints.get("error_coverage") if isinstance(structural_constraints, Mapping) else None,
                     expected_limit=expected_limit,
                     allow_limit=allow_limit,
                     require_order_by_with_limit=require_order_by_with_limit,
@@ -686,6 +695,7 @@ class ConstraintGuidedSQLSynthesizer:
             sample_success = self._is_sample_success(
                 has_sql=has_sql,
                 execution_result=execution_result,
+                validation_result=validation_result,
             )
         if sample_success:
             LOGGER.info(
@@ -911,6 +921,7 @@ class ConstraintGuidedSQLSynthesizer:
                 difficulty_level=difficulty_level,
                 rng=self.rng,
                 st_function_only=self.config.functions.st_function_only,
+                include_function_names=benchmark_function_name_allowlist(),
             )
             if sampled_functions:
                 return difficulty_level, sampled_functions
@@ -1121,8 +1132,11 @@ class ConstraintGuidedSQLSynthesizer:
         *,
         has_sql: bool,
         execution_result: SQLExecutionResult,
+        validation_result: SQLValidationResult,
     ) -> bool:
         if not has_sql:
+            return False
+        if self._has_blocking_validation_errors(validation_result):
             return False
         if not self.config.execution.enable_execution_check or self.config.execution.dry_run:
             return True
@@ -1156,13 +1170,19 @@ class ConstraintGuidedSQLSynthesizer:
         has_sql: bool,
         has_dangerous_sql: bool,
         execution_result: SQLExecutionResult,
+        validation_result: SQLValidationResult,
     ) -> bool:
         return (
             not has_sql
             or has_dangerous_sql
+            or self._has_blocking_validation_errors(validation_result)
             or (
                 execution_result.executed
                 and not execution_result.success
                 and not self._is_timeout_error(execution_result.error_message)
             )
         )
+
+    @staticmethod
+    def _has_blocking_validation_errors(validation_result: SQLValidationResult) -> bool:
+        return any(to_text(item).startswith("Coverage rule:") for item in validation_result.errors)

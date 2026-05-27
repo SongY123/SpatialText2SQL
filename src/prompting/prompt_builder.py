@@ -1050,7 +1050,7 @@ class PromptBuilder:
             allow_limit: bool = True,
             require_order_by_with_limit: bool = False,
     ) -> str:
-        schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
+        schema_block = self._build_sql_prompt_context(
             database,
             database_runtime_metadata=database_runtime_metadata,
         )
@@ -1080,9 +1080,7 @@ class PromptBuilder:
                 "database_id": self._stringify_value(getattr(database, "database_id", "")),
                 "city": self._stringify_value(getattr(database, "city", "")),
                 "selected_tables": ", ".join(selected_tables),
-                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
-                "representative_values_block": self._stable_json_text(representative_values),
+                "schema_block": schema_block,
                 "difficulty_level": self._stringify_value(difficulty_level),
                 "difficulty_constraint_block": self._format_sql_difficulty_constraint(
                     difficulty_level,
@@ -1119,7 +1117,7 @@ class PromptBuilder:
                               for table_name in used_tables
                               if str(table_name).strip()
                           } or None
-        schema_lines, spatial_lines, representative_values = self._build_sql_prompt_context(
+        schema_block = self._build_sql_prompt_context(
             database,
             database_runtime_metadata=database_runtime_metadata,
             included_tables=included_tables,
@@ -1131,9 +1129,7 @@ class PromptBuilder:
                 "database_id": self._stringify_value(getattr(database, "database_id", "")),
                 "city": self._stringify_value(getattr(database, "city", "")),
                 "involved_tables": ", ".join(sorted(included_tables)) if included_tables else "",
-                "schema_block": chr(10).join(schema_lines) if schema_lines else "No schema available.",
-                "spatial_field_block": chr(10).join(spatial_lines) if spatial_lines else "No spatial fields listed.",
-                "representative_values_block": self._stable_json_text(representative_values),
+                "schema_block": schema_block,
                 "original_sql": self._stringify_value(original_sql),
                 "execution_error": self._stringify_value(execution_error or "unknown execution error"),
                 "result_window_guidance_block": self._format_sql_result_window_guidance(
@@ -1343,17 +1339,18 @@ class PromptBuilder:
             *,
             database_runtime_metadata: Optional[Dict[str, Any]] = None,
             included_tables: Optional[set[str]] = None,
-    ) -> Tuple[List[str], List[str], Dict[str, Any]]:
+    ) -> str:
         if isinstance(database_runtime_metadata, dict) and database_runtime_metadata.get("tables"):
-            schema_lines: List[str] = []
-            representative_values: Dict[str, Any] = {}
-            spatial_lines: List[str] = []
+            filtered_tables: List[Dict[str, Any]] = []
+            schema_ddls: List[str] = []
+            compact_schema_lines: List[str] = []
             for table_meta in database_runtime_metadata.get("tables", []):
                 if not isinstance(table_meta, dict):
                     continue
                 table_name = str(table_meta.get("table_name") or "").strip()
                 if included_tables is not None and table_name not in included_tables:
                     continue
+                filtered_tables.append(table_meta)
                 create_table_ddl = str(table_meta.get("create_table_ddl") or "").strip()
                 columns = []
                 for column in table_meta.get("columns", []):
@@ -1364,68 +1361,129 @@ class PromptBuilder:
                     if column_name:
                         columns.append(f"{column_name} {column_type}")
                 if create_table_ddl:
-                    schema_lines.append(create_table_ddl)
+                    schema_ddls.append(create_table_ddl)
                 elif table_name:
-                    schema_lines.append(f"CREATE TABLE {table_name} ({', '.join(columns)});")
-                table_rep_values = table_meta.get("representative_values") or {}
+                    compact_schema_lines.append(f"- {table_name}({', '.join(columns)})")
+
+            metadata = {
+                "database_context": {
+                    "tables": filtered_tables,
+                    "schema_ddls": schema_ddls,
+                }
+            }
+            geometry_hints = self._build_finetune_geometry_hints(
+                schema="\n".join(schema_ddls),
+                compact_schema="\n".join(compact_schema_lines),
+                metadata=metadata,
+            )
+            schema_blocks: List[str] = []
+            for table_meta in filtered_tables:
+                table_name = str(table_meta.get("table_name") or "").strip()
+                if not table_name:
+                    continue
+                parsed = self._parse_finetune_create_table_ddl(str(table_meta.get("create_table_ddl") or "").strip())
+                if parsed:
+                    columns = list(parsed.get("columns") or [])
+                    primary_key_columns = {
+                        str(name).strip()
+                        for name in (parsed.get("primary_key_columns") or [])
+                        if str(name).strip()
+                    }
+                else:
+                    columns = []
+                    for column in table_meta.get("columns", []):
+                        if not isinstance(column, dict):
+                            continue
+                        column_name = str(column.get("column_name") or "").strip()
+                        column_type = str(column.get("column_type") or column.get("data_type") or "text").strip()
+                        if not column_name:
+                            continue
+                        columns.append(
+                            {
+                                "column_name": column_name,
+                                "column_type": column_type or "text",
+                            }
+                        )
+                    primary_key_columns = {
+                        str(column.get("column_name") or "").strip()
+                        for column in table_meta.get("columns", [])
+                        if isinstance(column, dict) and bool(column.get("is_primary_key"))
+                    }
                 geometry_columns = {
                     str(field.get("column_name") or field.get("canonical_name") or "").strip().lower()
                     for field in table_meta.get("spatial_fields", [])
                     if isinstance(field, dict)
                 }
-                if table_name and table_rep_values:
-                    representative_values[table_name] = self._prepare_representative_rows(
-                        table_rep_values,
-                        geometry_columns=geometry_columns,
-                        limit=3,
+                representative_rows = self._prepare_representative_rows(
+                    table_meta.get("representative_values") or {},
+                    geometry_columns=geometry_columns,
+                    limit=3,
+                )
+                schema_blocks.append(
+                    self._render_finetune_schema_block(
+                        table_name=table_name,
+                        columns=columns,
+                        representative_rows=representative_rows,
+                        primary_key_columns=primary_key_columns,
+                        geometry_hints=geometry_hints,
                     )
-                for field in table_meta.get("spatial_fields", []):
-                    if not isinstance(field, dict):
-                        continue
-                    spatial_name = str(field.get("column_name") or field.get("canonical_name") or "").strip()
-                    column_type = str(field.get("column_type") or "").strip()
-                    spatial_type = str(field.get("spatial_type") or "").strip() or "spatial"
-                    geometry_type = str(field.get("geometry_type") or "").strip() or "GEOMETRY"
-                    srid = field.get("srid")
-                    if spatial_name and table_name:
-                        spatial_lines.append(
-                            f"- {table_name}.{spatial_name} "
-                            f"(type={column_type or spatial_type}, family={spatial_type}, geometry_type={geometry_type}, srid={srid if srid not in (None, '') else 'unknown'})"
-                        )
-            return schema_lines, spatial_lines, representative_values
+                )
+            return "\n".join(schema_blocks) if schema_blocks else "No schema available."
 
-        schema_lines = []
-        representative_values: Dict[str, Any] = {}
-        spatial_lines: List[str] = []
+        geometry_hints: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        schema_blocks: List[str] = []
         for table in getattr(database, "selected_tables", []):
             table_name = str(getattr(table, "table_name", "")).strip()
             if included_tables is not None and table_name not in included_tables:
                 continue
             geometry_columns = self._detect_geometry_columns(table)
             columns = []
+            for field in getattr(table, "spatial_fields", []):
+                if not isinstance(field, dict):
+                    continue
+                spatial_name = str(field.get("canonical_name") or "").strip()
+                if not spatial_name:
+                    continue
+                crs_text = str(field.get("crs") or "").strip()
+                srid_match = re.search(r"(\d+)$", crs_text)
+                srid = int(srid_match.group(1)) if srid_match else 4326
+                self._register_finetune_geometry_hint(
+                    geometry_hints,
+                    table_name,
+                    spatial_name,
+                    "geometry",
+                    geometry_type=str(field.get("geometry_type") or "").strip(),
+                    srid=srid,
+                )
             for column in getattr(table, "normalized_schema", []):
                 if not isinstance(column, dict):
                     continue
                 column_name = str(column.get("canonical_name") or column.get("name") or "").strip()
                 column_type = str(column.get("canonical_type") or column.get("type") or "text").strip()
-                if column_name:
-                    columns.append(f"{column_name} {column_type}")
-            schema_lines.append(f"- {table_name}({', '.join(columns)})")
-            table_rep_values = getattr(table, "representative_values", None) or {}
-            if table_rep_values:
-                representative_values[table_name] = self._prepare_representative_rows(
-                    table_rep_values,
-                    geometry_columns=geometry_columns,
-                    limit=3,
-                )
-            for field in getattr(table, "spatial_fields", []):
-                if not isinstance(field, dict):
+                if not column_name:
                     continue
-                spatial_name = str(field.get("canonical_name") or "").strip()
-                crs = str(field.get("crs") or "null").strip()
-                if spatial_name:
-                    spatial_lines.append(f"- {table_name}.{spatial_name} (crs={crs})")
-        return schema_lines, spatial_lines, representative_values
+                normalized_type = "geometry" if column_type.lower() == "spatial" else column_type
+                columns.append(
+                    {
+                        "column_name": column_name,
+                        "column_type": normalized_type or "text",
+                    }
+                )
+            representative_rows = self._prepare_representative_rows(
+                getattr(table, "representative_values", None) or {},
+                geometry_columns=geometry_columns,
+                limit=3,
+            )
+            schema_blocks.append(
+                self._render_finetune_schema_block(
+                    table_name=table_name,
+                    columns=columns,
+                    representative_rows=representative_rows,
+                    primary_key_columns=set(),
+                    geometry_hints=geometry_hints,
+                )
+            )
+        return "\n".join(schema_blocks) if schema_blocks else "No schema available."
 
     def build_question_generation_prompt(
             self,

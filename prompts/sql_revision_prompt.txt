@@ -9,12 +9,6 @@ Keep the same task intent and touched tables. Make the smallest possible SQL fix
 ## Schema
 {{schema_block}}
 
-## Spatial Field Metadata
-{{spatial_field_block}}
-
-## Representative Values
-{{representative_values_block}}
-
 ## Original SQL
 {{original_sql}}
 
