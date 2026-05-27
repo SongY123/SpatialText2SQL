@@ -23,8 +23,8 @@ models:
     backends:
       vllm:
         loader_class: "VllmOpenAILoader"
-        api_base: "http://10.132.80.118:8000/v1"
-        model: "/data/llm/qwen/Qwen2.5-Coder-7B-Instruct"
+        api_base: "http://10.132.80.118:8999/v1"
+        model: "qwen2.5-coder-7b"
         api_key: ""
         timeout: 600
       transformers:

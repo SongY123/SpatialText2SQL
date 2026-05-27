@@ -65,6 +65,18 @@ prompt_styles:
     include_sample_data: true
     use_dataset_context: false
 
+boost:
+  enabled: false
+  selector_template_path: "prompts/sql_selector_prompt.txt"
+  selector_result_row_limit: 5
+  candidate_generation_overrides:
+    do_sample: true
+    temperature: 0.2
+    top_p: 0.8
+  selection_generation_overrides:
+    do_sample: false
+    temperature: 0.0
+
 # RAG configuration
 rag:
   top_k: 5  # Return the top 5 most relevant documents

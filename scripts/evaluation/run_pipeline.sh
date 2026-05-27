@@ -44,6 +44,8 @@ SAMPLE_CONFIG="${SAMPLE_CONFIG:-}"
 SAMPLE_SHOW_PROMPT="${SAMPLE_SHOW_PROMPT:-1}"
 SAMPLE_NO_EVAL="${SAMPLE_NO_EVAL:-0}"
 SAMPLE_PREVIEW_CHARS="${SAMPLE_PREVIEW_CHARS:-12000}"
+NO_PROXY_DEFAULTS="${NO_PROXY_DEFAULTS:-127.0.0.1,localhost,::1,10.132.80.118}"
+NO_PROXY_EXTRA="${NO_PROXY_EXTRA:-}"
 
 append_many() {
   local flag="$1"
@@ -61,14 +63,60 @@ append_many() {
   fi
 }
 
+has_first_value() {
+  local first_value="${1-}"
+  [[ -n "${first_value// /}" ]]
+}
+
+has_cli_flag() {
+  local target_flag="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "$target_flag" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+merge_csv_unique() {
+  local current_value="${1-}"
+  local additions_value="${2-}"
+  local merged_value="$current_value"
+  local item
+  local normalized_item
+
+  for item in ${additions_value//,/ }; do
+    normalized_item="${item// /}"
+    if [[ -z "$normalized_item" ]]; then
+      continue
+    fi
+    if [[ ",$merged_value," != *",$normalized_item,"* ]]; then
+      if [[ -n "$merged_value" ]]; then
+        merged_value+=",${normalized_item}"
+      else
+        merged_value="${normalized_item}"
+      fi
+    fi
+  done
+
+  printf '%s' "$merged_value"
+}
+
+NO_PROXY_MERGED="$(merge_csv_unique "${NO_PROXY:-${no_proxy:-}}" "${NO_PROXY_DEFAULTS}")"
+NO_PROXY_MERGED="$(merge_csv_unique "$NO_PROXY_MERGED" "${NO_PROXY_EXTRA}")"
+export NO_PROXY="$NO_PROXY_MERGED"
+export no_proxy="$NO_PROXY_MERGED"
+
 if [[ "$RUN_SAMPLE" == "1" ]]; then
   EFFECTIVE_SAMPLE_DATASET="$SAMPLE_DATASET"
-  if [[ -z "$EFFECTIVE_SAMPLE_DATASET" && "${#DATASETS[@]}" -gt 0 ]]; then
+  if [[ -z "$EFFECTIVE_SAMPLE_DATASET" ]] && has_first_value "${DATASETS[0]-}"; then
     EFFECTIVE_SAMPLE_DATASET="${DATASETS[0]}"
   fi
 
   EFFECTIVE_SAMPLE_MODEL="$SAMPLE_MODEL"
-  if [[ -z "$EFFECTIVE_SAMPLE_MODEL" && "${#MODELS[@]}" -gt 0 ]]; then
+  if [[ -z "$EFFECTIVE_SAMPLE_MODEL" ]] && has_first_value "${MODELS[0]-}"; then
     EFFECTIVE_SAMPLE_MODEL="${MODELS[0]}"
   fi
 
@@ -81,7 +129,7 @@ if [[ "$RUN_SAMPLE" == "1" ]]; then
   fi
 
   EFFECTIVE_SAMPLE_CONFIG="$SAMPLE_CONFIG"
-  if [[ -z "$EFFECTIVE_SAMPLE_CONFIG" && "${#CONFIGS[@]}" -gt 0 ]]; then
+  if [[ -z "$EFFECTIVE_SAMPLE_CONFIG" ]] && has_first_value "${CONFIGS[0]-}"; then
     EFFECTIVE_SAMPLE_CONFIG="${CONFIGS[0]}"
   fi
   if [[ -z "$EFFECTIVE_SAMPLE_CONFIG" ]]; then
@@ -123,6 +171,22 @@ if [[ "$RUN_SAMPLE" == "1" ]]; then
   fi
 else
   CMD=("$PYTHON_BIN" "-m" "src.pipeline.main" "--config-dir" "$CONFIG_DIR")
+  CLI_HAS_DATASET_OVERRIDE=0
+  CLI_HAS_MODEL_OVERRIDE=0
+  CLI_HAS_CONFIG_OVERRIDE=0
+  CLI_HAS_BACKEND_OVERRIDE=0
+  if has_cli_flag "--dataset" "$@"; then
+    CLI_HAS_DATASET_OVERRIDE=1
+  fi
+  if has_cli_flag "--models" "$@"; then
+    CLI_HAS_MODEL_OVERRIDE=1
+  fi
+  if has_cli_flag "--configs" "$@"; then
+    CLI_HAS_CONFIG_OVERRIDE=1
+  fi
+  if has_cli_flag "--backend" "$@"; then
+    CLI_HAS_BACKEND_OVERRIDE=1
+  fi
 
   if [[ "$RUN_UTILS" == "1" ]]; then
     CMD+=("--utils")
@@ -140,11 +204,17 @@ else
     CMD+=("--benchmark")
   fi
 
-  append_many "--dataset" "${DATASETS[@]}"
-  append_many "--models" "${MODELS[@]}"
-  append_many "--configs" "${CONFIGS[@]}"
+  if [[ "$CLI_HAS_DATASET_OVERRIDE" != "1" ]]; then
+    append_many "--dataset" "${DATASETS[@]-}"
+  fi
+  if [[ "$CLI_HAS_MODEL_OVERRIDE" != "1" ]]; then
+    append_many "--models" "${MODELS[@]-}"
+  fi
+  if [[ "$CLI_HAS_CONFIG_OVERRIDE" != "1" ]]; then
+    append_many "--configs" "${CONFIGS[@]-}"
+  fi
 
-  if [[ -n "$BACKEND" ]]; then
+  if [[ -n "$BACKEND" && "$CLI_HAS_BACKEND_OVERRIDE" != "1" ]]; then
     CMD+=("--backend" "$BACKEND")
   fi
   if [[ "$ENABLE_PREDICTION_POSTPROCESS" == "1" ]]; then

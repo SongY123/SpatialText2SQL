@@ -1,12 +1,16 @@
 """模型推理统一入口 - 工厂模式 + 批量推理"""
 import json
 import os
+from pathlib import Path
+import re
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
+import psycopg2
 import yaml
 from tqdm import tqdm
 
+from src.datasets.db_routing import apply_search_path, resolve_db_settings
 from src.inference.loaders.qwen_model_loader import QwenModelLoader
 from src.inference.loaders.vllm_openai_loader import VllmOpenAILoader
 from src.inference.base import GenerationResult
@@ -17,6 +21,7 @@ from src.inference.sql_utils import (
     normalize_spatialsql_predicted_sql,
 )
 from src.datasets.names import dataset_name_matches
+from src.utils.execution_results import normalize_result_rows
 
 
 def build_model_run_name(model_name: str, backend: str) -> str:
@@ -65,7 +70,15 @@ class ModelLoaderFactory:
 class ModelInference:
     """模型推理器 - 批量推理，带进度条"""
     
-    def __init__(self, model_config_path: str, eval_config_path: str, eval_config_override: Dict[str, Any] | None = None):
+    def __init__(
+        self,
+        model_config_path: str,
+        eval_config_path: str,
+        eval_config_override: Dict[str, Any] | None = None,
+        *,
+        db_config_full: Optional[Dict[str, Any]] = None,
+        dataset_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         初始化模型推理器
         
@@ -83,8 +96,11 @@ class ModelInference:
         if eval_config_override:
             self.eval_config = eval_config_override
         
+        self.project_root = str(Path(eval_config_path).resolve().parents[1])
         self.inference_config = self.model_config.get('inference', {})
         self.results_config = self.eval_config.get('results', {})
+        self.db_config_full = db_config_full or {}
+        self.dataset_config = dataset_config or {}
         self.default_backend = self.model_config.get('default_backend', 'vllm')
         prediction_postprocess = self.eval_config.get('prediction_postprocess', {})
         self.enable_spatialsql_prediction_normalization = bool(
@@ -93,6 +109,29 @@ class ModelInference:
         self.enable_floodsql_prediction_normalization = bool(
             prediction_postprocess.get('enable_floodsql_normalization', False)
         )
+        boost_config = self.eval_config.get('boost', {}) or {}
+        self.boost_enabled = bool(boost_config.get('enabled', False))
+        self.boost_selector_template_path = str(
+            boost_config.get('selector_template_path') or 'prompts/sql_selector_prompt.txt'
+        )
+        self.boost_task_description = str(
+            boost_config.get('task_description')
+            or 'You are a SQL selector. Choose the best SQL candidate for the given question based on the SQL text and its execution result.'
+        )
+        self.boost_candidate_generation_overrides = dict(
+            boost_config.get('candidate_generation_overrides') or {}
+        )
+        self.boost_selection_generation_overrides = dict(
+            boost_config.get('selection_generation_overrides') or {}
+        )
+        self.boost_selector_result_row_limit = max(
+            1,
+            int(boost_config.get('selector_result_row_limit', 5) or 5),
+        )
+        evaluation_config = self.eval_config.get('evaluation', {}) or {}
+        self.boost_connect_timeout = int(evaluation_config.get('connect_timeout', 10) or 10)
+        self.boost_statement_timeout_sec = int(evaluation_config.get('timeout', 60) or 60)
+        self._template_cache: Dict[str, str] = {}
 
     @staticmethod
     def get_run_name(model_name: str, backend: str) -> str:
@@ -233,9 +272,401 @@ class ModelInference:
             'status': status,
         }
 
+    def _aggregate_inference_metrics(
+        self,
+        metrics_list: List[Dict[str, Any]],
+        *,
+        status: str,
+    ) -> Dict[str, Any]:
+        input_sum = 0.0
+        output_sum = 0.0
+        total_sum = 0.0
+        latency_sum = 0.0
+        has_input = False
+        has_output = False
+        has_total = False
+        has_latency = False
+        started_values: List[int] = []
+        finished_values: List[int] = []
+        measurement_sources: List[str] = []
+
+        for metrics in metrics_list:
+            if not metrics:
+                continue
+            input_tokens = metrics.get('input_tokens')
+            output_tokens = metrics.get('output_tokens')
+            total_tokens = metrics.get('total_tokens')
+            latency_ms = metrics.get('latency_ms')
+            started_at = metrics.get('started_at_unix_ms')
+            finished_at = metrics.get('finished_at_unix_ms')
+            measurement_source = metrics.get('measurement_source')
+
+            if input_tokens is not None:
+                input_sum += float(input_tokens)
+                has_input = True
+            if output_tokens is not None:
+                output_sum += float(output_tokens)
+                has_output = True
+            if total_tokens is not None:
+                total_sum += float(total_tokens)
+                has_total = True
+            if latency_ms is not None:
+                latency_sum += float(latency_ms)
+                has_latency = True
+            if started_at is not None:
+                started_values.append(int(started_at))
+            if finished_at is not None:
+                finished_values.append(int(finished_at))
+            if measurement_source:
+                measurement_sources.append(str(measurement_source))
+
+        unique_sources = sorted(set(measurement_sources))
+        measurement_source = unique_sources[0] if len(unique_sources) == 1 else 'mixed'
+        if not unique_sources:
+            measurement_source = 'unavailable'
+
+        return {
+            'input_tokens': input_sum if has_input else None,
+            'output_tokens': output_sum if has_output else None,
+            'total_tokens': total_sum if has_total else None,
+            'latency_ms': latency_sum if has_latency else None,
+            'started_at_unix_ms': min(started_values) if started_values else None,
+            'finished_at_unix_ms': max(finished_values) if finished_values else None,
+            'measurement_source': measurement_source,
+            'status': status,
+            'boost_rounds': len(metrics_list),
+        }
+
     @staticmethod
     def _result_status_from_exception(exc: Exception) -> str:
         return 'skipped' if getattr(exc, 'reason_code', None) is not None else 'error'
+
+    @staticmethod
+    def _extract_token_metrics_from_exception_message(exc: Exception) -> Dict[str, Any] | None:
+        message = str(exc or "")
+        if not message:
+            return None
+
+        input_match = re.search(
+            r"contains at least (\d+) input tokens",
+            message,
+            flags=re.IGNORECASE,
+        )
+        output_match = re.search(
+            r"requested (\d+) output tokens",
+            message,
+            flags=re.IGNORECASE,
+        )
+        total_match = re.search(
+            r"for a total of at least (\d+) tokens",
+            message,
+            flags=re.IGNORECASE,
+        )
+
+        if not input_match and not output_match and not total_match:
+            return None
+
+        input_tokens = int(input_match.group(1)) if input_match else None
+        output_tokens = int(output_match.group(1)) if output_match else None
+        total_tokens = int(total_match.group(1)) if total_match else None
+        if total_tokens is None and (
+            input_tokens is not None or output_tokens is not None
+        ):
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+        return {
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'total_tokens': total_tokens,
+            'measurement_source': 'api_error_message',
+        }
+
+    def _resolve_ablation_config(self, config_type: str) -> Dict[str, Any]:
+        ablation_configs = self.eval_config.get('ablation_configs', {})
+        config = ablation_configs.get(config_type)
+        if config is not None:
+            return config
+        return {
+            'use_rag': config_type in ['rag', 'full'],
+            'use_keyword': config_type in ['keyword', 'full'],
+            'prompt_style': 'default',
+        }
+
+    def _resolve_prompt_style_name(self, config_type: str) -> str:
+        config_spec = self._resolve_ablation_config(config_type)
+        return str(config_spec.get('prompt_style') or 'default')
+
+    def _boost_is_enabled_for_config(self, config_type: str) -> bool:
+        if not self.boost_enabled:
+            return False
+        prompt_style = self._resolve_prompt_style_name(config_type)
+        return prompt_style in {'default', 'finetune_alpaca'}
+
+    def _generate_with_metrics(
+        self,
+        model_loader,
+        prompt: str,
+        *,
+        gen_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> tuple[GenerationResult, Dict[str, Any]]:
+        generation_kwargs = dict(gen_kwargs or {})
+        started_at_unix_ms = time.time_ns() // 1_000_000
+        started_perf_ns = time.perf_counter_ns()
+        try:
+            generation_result = model_loader.generate(prompt, **generation_kwargs)
+        except Exception as exc:
+            finished_at_unix_ms = time.time_ns() // 1_000_000
+            latency_ms = (time.perf_counter_ns() - started_perf_ns) / 1_000_000.0
+            inference_metrics = self._build_inference_metrics(
+                model_loader=model_loader,
+                prompt=prompt,
+                generation_result=getattr(exc, 'generation_result', None),
+                started_at_unix_ms=started_at_unix_ms,
+                finished_at_unix_ms=finished_at_unix_ms,
+                latency_ms=latency_ms,
+                status=self._result_status_from_exception(exc),
+            )
+            error_token_metrics = self._extract_token_metrics_from_exception_message(exc)
+            if error_token_metrics is not None:
+                inference_metrics['input_tokens'] = error_token_metrics.get('input_tokens')
+                inference_metrics['output_tokens'] = error_token_metrics.get('output_tokens')
+                inference_metrics['total_tokens'] = error_token_metrics.get('total_tokens')
+                inference_metrics['measurement_source'] = error_token_metrics.get('measurement_source')
+            setattr(exc, 'inference_metrics', inference_metrics)
+            raise
+
+        finished_at_unix_ms = time.time_ns() // 1_000_000
+        latency_ms = (time.perf_counter_ns() - started_perf_ns) / 1_000_000.0
+        inference_metrics = self._build_inference_metrics(
+            model_loader=model_loader,
+            prompt=prompt,
+            generation_result=generation_result,
+            started_at_unix_ms=started_at_unix_ms,
+            finished_at_unix_ms=finished_at_unix_ms,
+            latency_ms=latency_ms,
+            status='success',
+        )
+        return generation_result, inference_metrics
+
+    def _resolve_db_config_for_item(self, data_item: Dict[str, Any]) -> Dict[str, Any]:
+        dataset_name = data_item.get('dataset')
+        metadata = data_item.get('metadata', {}) or {}
+        if not self.db_config_full:
+            return {}
+        if not self.dataset_config or not dataset_name:
+            return self.db_config_full.get('database', {}) or {}
+        resolved = resolve_db_settings(
+            self.db_config_full,
+            self.dataset_config,
+            dataset_name,
+            metadata,
+            allow_fallback_mapping=True,
+        )
+        return resolved or self.db_config_full.get('database', {}) or {}
+
+    def _execute_sql_for_boost(self, sql: str, data_item: Dict[str, Any]) -> Dict[str, Any]:
+        if not sql or not sql.strip():
+            return {
+                'status': 'invalid_sql',
+                'row_count': 0,
+                'result': [],
+                'error': 'SQL is empty.',
+            }
+
+        db_settings = self._resolve_db_config_for_item(data_item)
+        connection = None
+        cursor = None
+        try:
+            connection = psycopg2.connect(
+                host=db_settings['host'],
+                port=db_settings['port'],
+                database=db_settings['database'],
+                user=db_settings['user'],
+                password=db_settings['password'],
+                connect_timeout=self.boost_connect_timeout,
+                options=f'-c statement_timeout={self.boost_statement_timeout_sec * 1000}',
+            )
+            cursor = connection.cursor()
+            apply_search_path(cursor, db_settings)
+            cursor.execute(sql)
+            rows = cursor.fetchall() if cursor.description is not None else []
+            result_rows = normalize_result_rows(rows)
+            return {
+                'status': 'ok',
+                'row_count': len(result_rows),
+                'result': result_rows,
+                'error': None,
+            }
+        except Exception as exc:
+            return {
+                'status': 'execution_error',
+                'row_count': None,
+                'result': [],
+                'error': str(exc),
+            }
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    def _load_template_text(self, template_path: str) -> str:
+        path = Path(template_path)
+        if not path.is_absolute():
+            path = (Path(self.project_root) / template_path).resolve()
+        cache_key = str(path)
+        if cache_key not in self._template_cache:
+            self._template_cache[cache_key] = path.read_text(encoding='utf-8')
+        return self._template_cache[cache_key]
+
+    @staticmethod
+    def _render_template(template_text: str, placeholders: Dict[str, Any]) -> str:
+        rendered = template_text
+        for key, value in placeholders.items():
+            rendered = rendered.replace(f'{{{{{key}}}}}', str(value or ''))
+        return rendered
+
+    def _serialize_execution_info(self, execution_info: Dict[str, Any]) -> str:
+        payload = {
+            'status': execution_info.get('status'),
+            'row_count': execution_info.get('row_count'),
+        }
+        if execution_info.get('status') == 'ok':
+            result_rows = list(execution_info.get('result') or [])
+            payload['result'] = result_rows[:self.boost_selector_result_row_limit]
+            if len(result_rows) > self.boost_selector_result_row_limit:
+                payload['result_truncated'] = True
+        else:
+            payload['error'] = execution_info.get('error')
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    def _build_boost_selection_prompt(
+        self,
+        question: str,
+        candidates: List[Dict[str, Any]],
+    ) -> str:
+        template_text = self._load_template_text(self.boost_selector_template_path)
+        placeholders: Dict[str, Any] = {
+            'task_description': self.boost_task_description,
+            'question_block': question,
+        }
+        for candidate_number in range(1, 4):
+            candidate = candidates[candidate_number - 1]
+            placeholders[f'candidate_{candidate_number}_sql'] = candidate.get('sql') or ''
+            placeholders[f'candidate_{candidate_number}_result'] = self._serialize_execution_info(
+                candidate.get('execution', {})
+            )
+        return self._render_template(template_text, placeholders)
+
+    @staticmethod
+    def _parse_boost_selector_choice(selector_output: str, candidates: List[Dict[str, Any]]) -> Optional[int]:
+        text = str(selector_output or '').strip()
+        if not text:
+            return None
+
+        for pattern in (
+            r'Selected\s+Candidate\s*:\s*([123])',
+            r'Candidate\s*([123])',
+            r'\b([123])\b',
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1)) - 1
+
+        normalized_text = text.strip().rstrip(';')
+        for idx, candidate in enumerate(candidates):
+            candidate_sql = str(candidate.get('sql') or '').strip().rstrip(';')
+            if candidate_sql and candidate_sql == normalized_text:
+                return idx
+        return None
+
+    @staticmethod
+    def _fallback_boost_candidate_index(candidates: List[Dict[str, Any]]) -> int:
+        for idx, candidate in enumerate(candidates):
+            if candidate.get('sql') and (candidate.get('execution') or {}).get('status') == 'ok':
+                return idx
+        for idx, candidate in enumerate(candidates):
+            if candidate.get('sql'):
+                return idx
+        return 0
+
+    def _run_boost_inference(
+        self,
+        model_loader,
+        prompt: str,
+        data_item: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        round_metrics: List[Dict[str, Any]] = []
+        try:
+            for candidate_number in range(1, 4):
+                generation_result, inference_metrics = self._generate_with_metrics(
+                    model_loader,
+                    prompt,
+                    gen_kwargs=self.boost_candidate_generation_overrides,
+                )
+                predicted_sql = self._normalize_prediction(generation_result.sql, data_item)
+                execution_info = self._execute_sql_for_boost(predicted_sql, data_item)
+                candidates.append(
+                    {
+                        'candidate_number': candidate_number,
+                        'sql': predicted_sql,
+                        'raw_output': generation_result.raw_text or generation_result.sql,
+                        'execution': execution_info,
+                        'inference_metrics': inference_metrics,
+                    }
+                )
+                round_metrics.append(inference_metrics)
+
+            selection_prompt = self._build_boost_selection_prompt(
+                data_item.get('question', ''),
+                candidates,
+            )
+            selector_result, selector_metrics = self._generate_with_metrics(
+                model_loader,
+                selection_prompt,
+                gen_kwargs=self.boost_selection_generation_overrides,
+            )
+            round_metrics.append(selector_metrics)
+            selector_output = selector_result.raw_text or selector_result.sql or ''
+            selected_index = self._parse_boost_selector_choice(selector_output, candidates)
+            if selected_index is None:
+                selected_index = self._fallback_boost_candidate_index(candidates)
+
+            selected_sql = candidates[selected_index].get('sql') or ''
+            aggregate_metrics = self._aggregate_inference_metrics(round_metrics, status='success')
+            boost_details = {
+                'enabled': True,
+                'candidates': candidates,
+                'selector': {
+                    'raw_output': selector_output,
+                    'selected_candidate_index': selected_index,
+                    'selected_candidate_number': selected_index + 1,
+                    'selected_sql': selected_sql,
+                    'inference_metrics': selector_metrics,
+                },
+            }
+            return selected_sql, aggregate_metrics, boost_details
+        except Exception as exc:
+            failed_step_metrics = getattr(exc, 'inference_metrics', None)
+            if failed_step_metrics is not None:
+                round_metrics.append(failed_step_metrics)
+            if round_metrics:
+                setattr(
+                    exc,
+                    'inference_metrics',
+                    self._aggregate_inference_metrics(
+                        round_metrics,
+                        status=self._result_status_from_exception(exc),
+                    ),
+                )
+            raise
     
     def run_inference(self, model_name: str, config_type: str,
                      prompts: List[str], data_items: List[Dict],
@@ -278,26 +709,24 @@ class ModelInference:
         iterator = tqdm(enumerate(prompts), total=len(prompts), 
                        desc=f"{run_name}-{config_type}",
                        disable=not show_progress)
+        use_boost = self._boost_is_enabled_for_config(config_type)
         
         for idx, prompt in iterator:
             prompt_records.append(self._build_prompt_record(data_items[idx], prompt))
-            started_at_unix_ms = time.time_ns() // 1_000_000
-            started_perf_ns = time.perf_counter_ns()
             try:
-                generation_result = model_loader.generate(prompt)
-                finished_at_unix_ms = time.time_ns() // 1_000_000
-                latency_ms = (time.perf_counter_ns() - started_perf_ns) / 1_000_000.0
-
-                predicted_sql = self._normalize_prediction(generation_result.sql, data_items[idx])
-                inference_metrics = self._build_inference_metrics(
-                    model_loader=model_loader,
-                    prompt=prompt,
-                    generation_result=generation_result,
-                    started_at_unix_ms=started_at_unix_ms,
-                    finished_at_unix_ms=finished_at_unix_ms,
-                    latency_ms=latency_ms,
-                    status='success',
-                )
+                boost_details = None
+                if use_boost:
+                    predicted_sql, inference_metrics, boost_details = self._run_boost_inference(
+                        model_loader=model_loader,
+                        prompt=prompt,
+                        data_item=data_items[idx],
+                    )
+                else:
+                    generation_result, inference_metrics = self._generate_with_metrics(
+                        model_loader=model_loader,
+                        prompt=prompt,
+                    )
+                    predicted_sql = self._normalize_prediction(generation_result.sql, data_items[idx])
                 
                 # 记录结果
                 result_item = {
@@ -316,6 +745,8 @@ class ModelInference:
                     'repair_source': data_items[idx].get('repair_source'),
                     'inference_metrics': inference_metrics,
                 }
+                if boost_details is not None:
+                    result_item['boost'] = boost_details
                 results.append(result_item)
                 
                 # 定期保存
@@ -329,18 +760,19 @@ class ModelInference:
                     )
                 
             except Exception as e:
-                finished_at_unix_ms = time.time_ns() // 1_000_000
-                latency_ms = (time.perf_counter_ns() - started_perf_ns) / 1_000_000.0
                 print(f"\n错误: 处理第{idx+1}条数据时出错 - {str(e)}")
-                inference_metrics = self._build_inference_metrics(
-                    model_loader=model_loader,
-                    prompt=prompt,
-                    generation_result=getattr(e, 'generation_result', None),
-                    started_at_unix_ms=started_at_unix_ms,
-                    finished_at_unix_ms=finished_at_unix_ms,
-                    latency_ms=latency_ms,
-                    status=self._result_status_from_exception(e),
-                )
+                inference_metrics = getattr(e, 'inference_metrics', None)
+                if inference_metrics is None:
+                    finished_at_unix_ms = time.time_ns() // 1_000_000
+                    inference_metrics = self._build_inference_metrics(
+                        model_loader=model_loader,
+                        prompt=prompt,
+                        generation_result=getattr(e, 'generation_result', None),
+                        started_at_unix_ms=finished_at_unix_ms,
+                        finished_at_unix_ms=finished_at_unix_ms,
+                        latency_ms=0.0,
+                        status=self._result_status_from_exception(e),
+                    )
                 results.append(
                     self._build_failed_result_item(
                         e,

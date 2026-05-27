@@ -13,7 +13,7 @@ databases:
       min_connections: 1
       max_connections: 10
     timeout:
-      query_timeout: 60
+      query_timeout: 100
       connection_timeout: 10
 
   benchmark_spatialsql_ada:
@@ -97,6 +97,7 @@ datasets:
     data_path: "data/benchmark/normalized/SpatialSQL.json"
     use_preformatted_input: true
     inference_prompt_sections:
+      - text: "Requirement: For length and area calculations, never use ST_Transform. Use geography with spheroid=true: ST_Length(geom::geography, true) and ST_Area(geom::geography, true)."
       - title: "Name"
         source_key: "name"
     source_partitions:

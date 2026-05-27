@@ -251,6 +251,18 @@ class PromptBuilder:
         for section in sections:
             if not isinstance(section, dict):
                 continue
+            static_text = self._format_prompt_section_value(
+                section.get("text") or section.get("body")
+            )
+            if static_text:
+                title = self._normalize_prompt_section_title(
+                    section.get("title") or section.get("label") or ""
+                )
+                if title:
+                    rendered.append(f"[{title}]\n{static_text}")
+                else:
+                    rendered.append(static_text)
+                continue
             source_key = str(section.get("source_key") or "").strip()
             if not source_key:
                 continue

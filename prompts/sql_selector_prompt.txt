@@ -1,0 +1,29 @@
+{{task_description}}
+
+## Question
+{{question_block}}
+
+## Candidate 1 SQL
+{{candidate_1_sql}}
+
+## Candidate 1 Execution Result
+{{candidate_1_result}}
+
+## Candidate 2 SQL
+{{candidate_2_sql}}
+
+## Candidate 2 Execution Result
+{{candidate_2_result}}
+
+## Candidate 3 SQL
+{{candidate_3_sql}}
+
+## Candidate 3 Execution Result
+{{candidate_3_result}}
+
+## Requirements
+1. Choose exactly one candidate from Candidate 1, Candidate 2, and Candidate 3.
+2. Use the question and execution results to decide which candidate is most likely correct.
+3. Prefer a candidate that executes successfully and best matches the question.
+4. Do not write a new SQL query. Do not modify any candidate SQL.
+5. Output only one line in the exact format: Selected Candidate: <1|2|3>

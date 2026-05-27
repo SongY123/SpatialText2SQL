@@ -51,9 +51,12 @@ pipeline_module = _load_module("src.pipeline.main", ROOT / "src" / "pipeline" / 
 
 
 class _DummyLoader:
+    def __init__(self, dataset_name):
+        self.dataset_name = dataset_name
+
     def get_dataset_info(self):
         return {
-            "name": "spatial_qa",
+            "name": self.dataset_name,
             "grouping_fields": [],
             "grouping_values": {},
         }
@@ -62,16 +65,16 @@ class _DummyLoader:
 class _DummyDataLoaderFactory:
     @staticmethod
     def create(loader_class_name, dataset_info_dict):
-        del loader_class_name, dataset_info_dict
-        return _DummyLoader()
+        del loader_class_name
+        return _DummyLoader(dataset_info_dict.get("dataset_name", "unknown"))
 
 
 class _DummyEvaluator:
     evaluate_calls = []
     save_calls = []
 
-    def __init__(self, db_config, eval_config):
-        del db_config, eval_config
+    def __init__(self, db_config, eval_config, **kwargs):
+        del db_config, eval_config, kwargs
 
     def evaluate(self, predictions, dataset_info, model_name, config_type, output_dir, resume, overwrite):
         del resume, overwrite
@@ -146,17 +149,20 @@ class PipelineResultsPathTests(unittest.TestCase):
         (self.config_dir / "dataset_config.yaml").write_text(
             json.dumps(
                 {
-                    "default_dataset": "spatial_qa",
+                    "default_dataset": "spatialqueryqa",
                     "datasets": {
-                        "spatial_qa": {
+                        "spatialqueryqa": {
+                            "dataset_name": "spatialqueryqa",
                             "loader_class": "DummyLoader",
                             "database": "default",
                         },
-                        "spatialsql_pg": {
+                        "spatialsql": {
+                            "dataset_name": "spatialsql",
                             "loader_class": "DummyLoader",
                             "database": "default",
                         },
-                        "floodsql_pg": {
+                        "floodsql": {
+                            "dataset_name": "floodsql",
                             "loader_class": "DummyLoader",
                             "database": "default",
                         },
@@ -205,7 +211,7 @@ class PipelineResultsPathTests(unittest.TestCase):
 
         args = SimpleNamespace(
             config_dir=str(self.config_dir),
-            dataset=["spatial_qa"],
+            dataset=["spatialqueryqa"],
             models=None,
             backend=None,
             configs=None,
@@ -237,7 +243,7 @@ class PipelineResultsPathTests(unittest.TestCase):
                 self.temp_path
                 / "results"
                 / "tasks"
-                / "spatial_qa"
+                / "spatialqueryqa"
                 / "vllm"
                 / "qwen3-8b"
                 / "base"
@@ -249,7 +255,7 @@ class PipelineResultsPathTests(unittest.TestCase):
                 self.temp_path
                 / "results"
                 / "tasks"
-                / "spatial_qa"
+                / "spatialqueryqa"
                 / "vllm"
                 / "qwen3-8b"
                 / "base"
@@ -263,7 +269,7 @@ class PipelineResultsPathTests(unittest.TestCase):
                 self.temp_path
                 / "results"
                 / "tasks"
-                / "spatial_qa"
+                / "spatialqueryqa"
                 / "vllm"
                 / "qwen3-8b"
                 / "base"
@@ -289,7 +295,7 @@ class PipelineResultsPathTests(unittest.TestCase):
         pipeline = pipeline_module.MainPipeline(args)
         self.assertEqual(
             pipeline.dataset_names,
-            ["spatial_qa", "spatialsql_pg", "floodsql_pg"],
+            ["spatialqueryqa", "spatialsql", "floodsql"],
         )
 
     def test_evaluation_only_reads_latest_task_predictions_and_writes_history_and_latest_outputs(self):
@@ -308,7 +314,7 @@ class PipelineResultsPathTests(unittest.TestCase):
             self.temp_path
             / "results"
             / "tasks"
-            / "spatial_qa"
+            / "spatialqueryqa"
             / "vllm"
             / "qwen3-8b"
             / "base"
@@ -317,7 +323,7 @@ class PipelineResultsPathTests(unittest.TestCase):
             self.temp_path
             / "results"
             / "tasks"
-            / "spatial_qa"
+            / "spatialqueryqa"
             / "vllm"
             / "qwen3-8b"
             / "base"
@@ -338,6 +344,89 @@ class PipelineResultsPathTests(unittest.TestCase):
                 self.pipeline._get_task_summary_file("qwen3-8b", "base", latest=True)
             ).exists()
         )
+
+    def test_evaluation_outputs_are_saved_per_dataset(self):
+        args = SimpleNamespace(
+            config_dir=str(self.config_dir),
+            dataset=["spatialqueryqa", "spatialsql", "floodsql"],
+            models=None,
+            backend=None,
+            configs=None,
+            preprocess=False,
+            build_rag=False,
+            inference=False,
+            evaluate=True,
+            benchmark=False,
+            enable_prediction_postprocess=False,
+        )
+        pipeline = pipeline_module.MainPipeline(args)
+
+        for dataset_name in pipeline.dataset_names:
+            prediction_file = Path(
+                pipeline._get_task_prediction_file(
+                    "qwen3-8b",
+                    "base",
+                    latest=True,
+                    dataset_name=dataset_name,
+                )
+            )
+            prediction_file.parent.mkdir(parents=True, exist_ok=True)
+            prediction_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": f"{dataset_name}-1",
+                            "predicted_sql": "SELECT 1;",
+                            "gold_sql": "SELECT 1;",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+        results = []
+        for dataset_name in pipeline.dataset_names:
+            pipeline._set_dataset_context(dataset_name)
+            results.extend(pipeline._run_evaluation_only())
+
+        self.assertEqual(len(results), 3)
+        for dataset_name in pipeline.dataset_names:
+            latest_eval = Path(
+                pipeline._get_task_evaluation_file(
+                    "qwen3-8b",
+                    "base",
+                    latest=True,
+                    dataset_name=dataset_name,
+                )
+            )
+            latest_summary = Path(
+                pipeline._get_task_summary_file(
+                    "qwen3-8b",
+                    "base",
+                    latest=True,
+                    dataset_name=dataset_name,
+                )
+            )
+            latest_errors = Path(
+                pipeline._get_task_errors_file(
+                    "qwen3-8b",
+                    "base",
+                    latest=True,
+                    dataset_name=dataset_name,
+                )
+            )
+
+            self.assertTrue(latest_eval.exists(), dataset_name)
+            self.assertTrue(latest_summary.exists(), dataset_name)
+            self.assertTrue(latest_errors.exists(), dataset_name)
+            self.assertEqual(
+                json.loads(latest_eval.read_text(encoding="utf-8"))["dataset"],
+                dataset_name,
+            )
+            self.assertEqual(
+                json.loads(latest_summary.read_text(encoding="utf-8"))["dataset"],
+                dataset_name,
+            )
 
     def test_evaluation_only_falls_back_to_history_predictions(self):
         prediction_file = Path(
@@ -363,7 +452,7 @@ class PipelineResultsPathTests(unittest.TestCase):
         latest_eval.write_text(
             json.dumps(
                 {
-                    "dataset": "spatial_qa",
+                    "dataset": "spatialqueryqa",
                     "model": "qwen3-8b__vllm",
                     "config": "base",
                     "statistics": {"overall": {"total": 90, "correct": 27, "accuracy": 0.3}},
@@ -390,7 +479,7 @@ class PipelineResultsPathTests(unittest.TestCase):
         latest_eval.write_text(
             json.dumps(
                 {
-                    "dataset": "spatial_qa",
+                    "dataset": "spatialqueryqa",
                     "model": "qwen3-8b__vllm",
                     "config": "base",
                     "statistics": {"overall": {"total": 90, "correct": 27, "accuracy": 0.3}},
@@ -444,9 +533,9 @@ class PipelineResultsPathTests(unittest.TestCase):
 
     def test_build_benchmark_run_metadata_includes_setup_and_validation(self):
         self.pipeline._dataset_index_status = {
-            "spatial_qa": {
+            "spatialqueryqa": {
                 "status": "ready",
-                "index_profile": "spatial_qa_geography_v1",
+                "index_profile": "spatialqueryqa_geography_v1",
             }
         }
         self.pipeline._evaluation_validation = {
@@ -458,8 +547,8 @@ class PipelineResultsPathTests(unittest.TestCase):
 
         self.assertIn("dataset_index_status", metadata)
         self.assertEqual(
-            metadata["dataset_index_status"]["spatial_qa"]["index_profile"],
-            "spatial_qa_geography_v1",
+            metadata["dataset_index_status"]["spatialqueryqa"]["index_profile"],
+            "spatialqueryqa_geography_v1",
         )
         self.assertEqual(metadata["task_source"], "task latest")
         self.assertEqual(metadata["benchmark_mode"], "aggregate_only")
@@ -482,20 +571,29 @@ class PipelineResultsPathTests(unittest.TestCase):
         )
         pipeline = pipeline_module.MainPipeline(args)
 
-        spatial_setup_module = types.ModuleType("src.sql.spatial_qa_benchmark_setup")
-        spatial_setup_module.inspect_spatial_qa_benchmark_setup = lambda db_config: {
-            "dataset": "spatial_qa",
-            "status": "ready",
-            "index_profile": "spatial_qa_geography_v1",
-            "database_name": db_config["database"],
-        }
-        sys.modules["src.sql.spatial_qa_benchmark_setup"] = spatial_setup_module
+        from src.sql import spatialqueryqa_benchmark_setup
 
-        metadata = pipeline._collect_benchmark_setup_metadata()
+        original_inspect = (
+            spatialqueryqa_benchmark_setup.inspect_spatialqueryqa_benchmark_setup
+        )
+        spatialqueryqa_benchmark_setup.inspect_spatialqueryqa_benchmark_setup = (
+            lambda db_config: {
+                "dataset": "spatialqueryqa",
+                "status": "ready",
+                "index_profile": "spatialqueryqa_geography_v1",
+                "database_name": db_config.get("database"),
+            }
+        )
+        try:
+            metadata = pipeline._collect_benchmark_setup_metadata()
+        finally:
+            spatialqueryqa_benchmark_setup.inspect_spatialqueryqa_benchmark_setup = (
+                original_inspect
+            )
 
-        self.assertEqual(metadata["spatial_qa"]["status"], "ready")
-        self.assertEqual(metadata["floodsql_pg"]["status"], "managed_by_migration")
-        self.assertEqual(metadata["spatialsql_pg"]["status"], "not_required")
+        self.assertEqual(metadata["spatialqueryqa"]["status"], "ready")
+        self.assertEqual(metadata["floodsql"]["status"], "managed_by_migration")
+        self.assertEqual(metadata["spatialsql"]["status"], "not_required")
 
 
 if __name__ == "__main__":

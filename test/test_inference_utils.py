@@ -32,12 +32,17 @@ def _load_module(module_name: str, file_path: Path):
 
 
 _ensure_package("src", ROOT / "src")
+_ensure_package("src.datasets", ROOT / "src" / "datasets")
 _ensure_package("src.inference", ROOT / "src" / "inference")
 _ensure_package("src.inference.loaders", ROOT / "src" / "inference" / "loaders")
 _ensure_package("src.sql", ROOT / "src" / "sql")
+_ensure_package("src.utils", ROOT / "src" / "utils")
 
 _load_module("src.inference.base", ROOT / "src" / "inference" / "base.py")
+_load_module("src.datasets.names", ROOT / "src" / "datasets" / "names.py")
+_load_module("src.datasets.db_routing", ROOT / "src" / "datasets" / "db_routing.py")
 _load_module("src.sql.sql_dialect_adapter", ROOT / "src" / "sql" / "sql_dialect_adapter.py")
+_load_module("src.utils.execution_results", ROOT / "src" / "utils" / "execution_results.py")
 sql_utils = _load_module("src.inference.sql_utils", ROOT / "src" / "inference" / "sql_utils.py")
 _load_module(
     "src.inference.vllm_subprocess_runner",
@@ -664,7 +669,6 @@ class VllmRequestBuilderTests(unittest.TestCase):
         self.assertIn("已跳过当前样本", str(ctx.exception))
         self.assertEqual(ctx.exception.details["last_error_type"], "RuntimeError")
 
-
 class ModelInferenceFailureRecordingTests(unittest.TestCase):
     def test_build_failed_result_item_preserves_skip_reason_details(self):
         inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
@@ -794,6 +798,46 @@ class ModelInferenceFailureRecordingTests(unittest.TestCase):
         self.assertEqual(metrics["output_tokens"], 8)
         self.assertEqual(metrics["total_tokens"], 12)
         self.assertEqual(metrics["status"], "success")
+
+    def test_extracts_token_metrics_from_context_length_error_message(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+
+        metrics = inference._extract_token_metrics_from_exception_message(
+            RuntimeError(
+                "Error code: 400 - {'error': {'message': \"This model's maximum context length is 20480 tokens. "
+                "However, you requested 1024 output tokens and your prompt contains at least 19457 input tokens, "
+                "for a total of at least 20481 tokens. Please reduce the length of the input prompt or the number "
+                "of requested output tokens. (parameter=input_tokens, value=19457)\", 'type': 'BadRequestError'}}"
+            )
+        )
+
+        self.assertEqual(
+            metrics,
+            {
+                "input_tokens": 19457,
+                "output_tokens": 1024,
+                "total_tokens": 20481,
+                "measurement_source": "api_error_message",
+            },
+        )
+
+    def test_serialize_execution_info_truncates_boost_selector_results(self):
+        inference = model_inference_module.ModelInference.__new__(model_inference_module.ModelInference)
+        inference.boost_selector_result_row_limit = 5
+
+        payload = json.loads(
+            inference._serialize_execution_info(
+                {
+                    "status": "ok",
+                    "row_count": 7,
+                    "result": [[1], [2], [3], [4], [5], [6], [7]],
+                }
+            )
+        )
+
+        self.assertEqual(payload["row_count"], 7)
+        self.assertEqual(payload["result"], [[1], [2], [3], [4], [5]])
+        self.assertTrue(payload["result_truncated"])
 
     def test_run_inference_persists_metrics_for_success_and_failure(self):
         class DummyMetricsLoader:
@@ -977,6 +1021,238 @@ class ModelInferenceFailureRecordingTests(unittest.TestCase):
         self.assertNotIn("prompt", saved[0])
         self.assertEqual(prompt_saved[0]["id"], 1)
         self.assertEqual(prompt_saved[0]["prompt"], "restored prompt")
+
+    def test_run_inference_boost_selects_existing_candidate_and_aggregates_tokens(self):
+        class DummyBoostLoader:
+            def __init__(self, _config):
+                self.tokenizer = None
+                self.calls = 0
+
+            def load_model(self, *args, **kwargs):
+                return None
+
+            def generate(self, prompt: str, **_gen_kwargs):
+                del prompt
+                self.calls += 1
+                if self.calls == 1:
+                    return model_inference_module.GenerationResult(
+                        sql="SELECT 1;",
+                        raw_text="SELECT 1;",
+                        usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                    )
+                if self.calls == 2:
+                    return model_inference_module.GenerationResult(
+                        sql="SELECT 2;",
+                        raw_text="SELECT 2;",
+                        usage={"prompt_tokens": 11, "completion_tokens": 2, "total_tokens": 13},
+                    )
+                if self.calls == 3:
+                    return model_inference_module.GenerationResult(
+                        sql="SELECT 3;",
+                        raw_text="SELECT 3;",
+                        usage={"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14},
+                    )
+                return model_inference_module.GenerationResult(
+                    sql="Selected Candidate: 2",
+                    raw_text="Selected Candidate: 2",
+                    usage={"prompt_tokens": 13, "completion_tokens": 3, "total_tokens": 16},
+                )
+
+            def count_tokens(self, text):
+                return len(text.split()) if text else 0
+
+            def unload(self):
+                return None
+
+        model_inference_module.ModelLoaderFactory.register_loader(
+            "DummyBoostLoader",
+            DummyBoostLoader,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            predictions_dir = Path(tmpdir) / "predictions"
+            model_config_path = Path(tmpdir) / "model_config.yaml"
+            eval_config_path = Path(tmpdir) / "eval_config.yaml"
+            model_config_path.write_text(
+                json.dumps(
+                    {
+                        "default_backend": "vllm",
+                        "models": {
+                            "dummy-model": {
+                                "generation_config": {},
+                                "backends": {
+                                    "vllm": {
+                                        "loader_class": "DummyBoostLoader",
+                                    }
+                                },
+                            }
+                        },
+                        "inference": {
+                            "show_progress": False,
+                            "save_interval": 100,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            eval_config_path.write_text(
+                json.dumps(
+                    {
+                        "results": {
+                            "predictions_dir": str(predictions_dir),
+                            "evaluations_dir": str(Path(tmpdir) / "evaluations"),
+                        },
+                        "evaluation": {
+                            "timeout": 60,
+                            "connect_timeout": 10,
+                        },
+                        "boost": {
+                            "enabled": True,
+                            "selector_template_path": str(ROOT / "prompts" / "sql_selector_prompt.txt"),
+                        },
+                        "prediction_postprocess": {
+                            "enable_spatialsql_normalization": False,
+                            "enable_floodsql_normalization": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inference = model_inference_module.ModelInference(
+                model_config_path=str(model_config_path),
+                eval_config_path=str(eval_config_path),
+            )
+
+            execution_plan = [
+                {"status": "ok", "row_count": 1, "result": [[1]], "error": None},
+                {"status": "ok", "row_count": 1, "result": [[2]], "error": None},
+                {"status": "execution_error", "row_count": None, "result": [], "error": "boom"},
+            ]
+
+            with patch.object(
+                inference,
+                "_execute_sql_for_boost",
+                side_effect=execution_plan,
+            ):
+                results = inference.run_inference(
+                    model_name="dummy-model",
+                    config_type="base",
+                    prompts=["good prompt"],
+                    data_items=[
+                        {"id": 1, "question": "Q1", "gold_sql": "SELECT 2;", "metadata": {}},
+                    ],
+                    save_dir=str(predictions_dir),
+                    backend="vllm",
+                )
+
+        self.assertEqual(results[0]["predicted_sql"], "SELECT 2;")
+        self.assertEqual(results[0]["inference_metrics"]["input_tokens"], 46.0)
+        self.assertEqual(results[0]["inference_metrics"]["output_tokens"], 9.0)
+        self.assertEqual(results[0]["inference_metrics"]["total_tokens"], 55.0)
+        self.assertEqual(results[0]["inference_metrics"]["status"], "success")
+        self.assertEqual(results[0]["inference_metrics"]["boost_rounds"], 4)
+        self.assertEqual(results[0]["boost"]["selector"]["selected_candidate_number"], 2)
+        self.assertEqual(results[0]["boost"]["selector"]["selected_sql"], "SELECT 2;")
+
+    def test_boost_is_disabled_for_prompt_enhanced(self):
+        class DummySingleCallLoader:
+            def __init__(self, _config):
+                self.tokenizer = None
+                self.calls = 0
+
+            def load_model(self, *args, **kwargs):
+                return None
+
+            def generate(self, prompt: str, **_gen_kwargs):
+                del prompt
+                self.calls += 1
+                return model_inference_module.GenerationResult(
+                    sql="SELECT 1;",
+                    raw_text="SELECT 1;",
+                    usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                )
+
+            def count_tokens(self, text):
+                return len(text.split()) if text else 0
+
+            def unload(self):
+                return None
+
+        model_inference_module.ModelLoaderFactory.register_loader(
+            "DummySingleCallLoader",
+            DummySingleCallLoader,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            predictions_dir = Path(tmpdir) / "predictions"
+            model_config_path = Path(tmpdir) / "model_config.yaml"
+            eval_config_path = Path(tmpdir) / "eval_config.yaml"
+            model_config_path.write_text(
+                json.dumps(
+                    {
+                        "default_backend": "vllm",
+                        "models": {
+                            "dummy-model": {
+                                "generation_config": {},
+                                "backends": {
+                                    "vllm": {
+                                        "loader_class": "DummySingleCallLoader",
+                                    }
+                                },
+                            }
+                        },
+                        "inference": {
+                            "show_progress": False,
+                            "save_interval": 100,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            eval_config_path.write_text(
+                json.dumps(
+                    {
+                        "results": {
+                            "predictions_dir": str(predictions_dir),
+                            "evaluations_dir": str(Path(tmpdir) / "evaluations"),
+                        },
+                        "boost": {
+                            "enabled": True,
+                            "selector_template_path": str(ROOT / "prompts" / "sql_selector_prompt.txt"),
+                        },
+                        "ablation_configs": {
+                            "prompt_enhanced": {
+                                "prompt_style": "prompt_enhanced",
+                            }
+                        },
+                        "prediction_postprocess": {
+                            "enable_spatialsql_normalization": False,
+                            "enable_floodsql_normalization": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inference = model_inference_module.ModelInference(
+                model_config_path=str(model_config_path),
+                eval_config_path=str(eval_config_path),
+            )
+            results = inference.run_inference(
+                model_name="dummy-model",
+                config_type="prompt_enhanced",
+                prompts=["enhanced prompt"],
+                data_items=[
+                    {"id": 1, "question": "Q1", "gold_sql": "SELECT 1;", "metadata": {}},
+                ],
+                save_dir=str(predictions_dir),
+                backend="vllm",
+            )
+
+        self.assertEqual(results[0]["predicted_sql"], "SELECT 1;")
+        self.assertNotIn("boost", results[0])
+        self.assertEqual(results[0]["inference_metrics"]["total_tokens"], 7)
 
 
 if __name__ == "__main__":

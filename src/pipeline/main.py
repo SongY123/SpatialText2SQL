@@ -47,6 +47,10 @@ class MainPipeline:
         self.enable_prediction_postprocess = bool(
             getattr(args, "enable_prediction_postprocess", False)
         )
+        self.enable_boost = bool(
+            getattr(args, "boost", False)
+            or (self.eval_config.get("boost", {}) or {}).get("enabled", False)
+        )
 
         self.dataset_names = self._resolve_dataset_names(args.dataset)
         self.model_names = self._resolve_model_names(args.models)
@@ -145,6 +149,8 @@ class MainPipeline:
         prediction_postprocess["enable_floodsql_normalization"] = (
             self.enable_prediction_postprocess
         )
+        boost_config = self.eval_config.setdefault("boost", {})
+        boost_config["enabled"] = self.enable_boost
 
     def _validate_config_types(self) -> None:
         available = set((self.eval_config.get("ablation_configs") or {}).keys())
@@ -350,6 +356,21 @@ class MainPipeline:
             else self._get_task_history_dir(model_name, config_type, dataset_name=dataset_name)
         )
         return os.path.join(base_dir, self._get_task_summary_filename())
+
+    def _get_task_errors_file(
+        self,
+        model_name: str,
+        config_type: str,
+        *,
+        latest: bool,
+        dataset_name: Optional[str] = None,
+    ) -> str:
+        base_dir = (
+            self._get_task_latest_dir(model_name, config_type, dataset_name=dataset_name)
+            if latest
+            else self._get_task_history_dir(model_name, config_type, dataset_name=dataset_name)
+        )
+        return os.path.join(base_dir, "errors.json")
 
     def _find_prediction_file_for_evaluation(
         self,
@@ -573,6 +594,8 @@ class MainPipeline:
             model_config_path=os.path.join(self.config_dir, "model_config.yaml"),
             eval_config_path=os.path.join(self.config_dir, "eval_config.yaml"),
             eval_config_override=self.eval_config,
+            db_config_full=self.db_config,
+            dataset_config=self.dataset_config,
         )
         dataset_db_config = self._get_dataset_db_config()
         evaluator = Evaluator(
@@ -653,7 +676,11 @@ class MainPipeline:
                         dataset_info=dataset_info,
                         model_name=run_name,
                         config_type=config_type,
-                        output_dir=self._get_task_dir(model_name, config_type),
+                        output_dir=self._get_task_dir(
+                            model_name,
+                            config_type,
+                            dataset_name=self.dataset_name,
+                        ),
                         resume=getattr(self.args, "resume", False),
                         overwrite=getattr(self.args, "overwrite", False),
                     )
@@ -662,6 +689,7 @@ class MainPipeline:
                         evaluator=evaluator,
                         eval_result=eval_result,
                         dataset_info=dataset_info,
+                        dataset_name=self.dataset_name,
                         model_name=model_name,
                         config_type=config_type,
                     )
@@ -928,7 +956,11 @@ class MainPipeline:
                         dataset_info=dataset_info,
                         model_name=run_name,
                         config_type=config_type,
-                        output_dir=self._get_task_dir(model_name, config_type),
+                        output_dir=self._get_task_dir(
+                            model_name,
+                            config_type,
+                            dataset_name=self.dataset_name,
+                        ),
                         resume=getattr(self.args, "resume", False),
                         overwrite=getattr(self.args, "overwrite", False),
                     )
@@ -937,6 +969,7 @@ class MainPipeline:
                         evaluator=evaluator,
                         eval_result=eval_result,
                         dataset_info=dataset_info,
+                        dataset_name=self.dataset_name,
                         model_name=model_name,
                         config_type=config_type,
                     )
@@ -959,24 +992,40 @@ class MainPipeline:
         evaluator,
         eval_result: Dict[str, Any],
         dataset_info: Dict[str, Any],
+        dataset_name: str,
         model_name: str,
         config_type: str,
     ) -> None:
         from src.evaluation.report_generator import ReportGenerator
 
-        history_dir = self._get_task_history_dir(model_name, config_type)
-        latest_dir = self._get_task_latest_dir(model_name, config_type)
+        dataset_info = dict(dataset_info)
+        dataset_info["name"] = dataset_name
+        eval_result["dataset"] = dataset_name
+        eval_result["dataset_info"] = dataset_info
+
+        history_dir = self._get_task_history_dir(
+            model_name,
+            config_type,
+            dataset_name=dataset_name,
+        )
+        latest_dir = self._get_task_latest_dir(
+            model_name,
+            config_type,
+            dataset_name=dataset_name,
+        )
 
         evaluator.save_evaluation(eval_result, history_dir)
         history_eval_file = self._get_task_evaluation_file(
             model_name,
             config_type,
             latest=False,
+            dataset_name=dataset_name,
         )
         latest_eval_file = self._get_task_evaluation_file(
             model_name,
             config_type,
             latest=True,
+            dataset_name=dataset_name,
         )
         self._publish_latest_file(history_eval_file, latest_eval_file)
 
@@ -985,17 +1034,34 @@ class MainPipeline:
             model_name,
             config_type,
             latest=False,
+            dataset_name=dataset_name,
         )
         latest_summary_file = self._get_task_summary_file(
             model_name,
             config_type,
             latest=True,
+            dataset_name=dataset_name,
         )
         report_gen.save_summary([eval_result], history_summary_file)
         self._publish_latest_file(history_summary_file, latest_summary_file)
 
+        history_errors_file = self._get_task_errors_file(
+            model_name,
+            config_type,
+            latest=False,
+            dataset_name=dataset_name,
+        )
+        latest_errors_file = self._get_task_errors_file(
+            model_name,
+            config_type,
+            latest=True,
+            dataset_name=dataset_name,
+        )
+        self._save_task_errors_file(eval_result, history_errors_file)
+        self._publish_latest_file(history_errors_file, latest_errors_file)
+
         self._record_evaluation_artifact(
-            self.dataset_name,
+            dataset_name,
             model_name,
             config_type,
             history_eval_file,
@@ -1004,6 +1070,28 @@ class MainPipeline:
             latest_summary_file,
             eval_result,
         )
+
+    @staticmethod
+    def _save_task_errors_file(eval_result: Dict[str, Any], output_file: str) -> None:
+        details = eval_result.get("details") or []
+        errors = []
+        for detail in details:
+            if not isinstance(detail, dict):
+                continue
+            if int(detail.get("correct", 0) or 0) == 1:
+                continue
+            errors.append(
+                {
+                    "id": detail.get("id"),
+                    "question": detail.get("question"),
+                    "gold_sql": detail.get("gold_sql"),
+                    "predicted_sql": detail.get("predicted_sql"),
+                }
+            )
+
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(errors, f, ensure_ascii=False, indent=2)
 
     @staticmethod
     def _publish_latest_file(source: str, target: str) -> None:
@@ -1400,6 +1488,7 @@ class MainPipeline:
                 "benchmark": bool(self.args.benchmark),
             },
             "prediction_postprocess_enabled": self.enable_prediction_postprocess,
+            "boost_enabled": self.enable_boost,
             "predictions": list(self._session_predictions.values()),
             "evaluations": list(self._session_evaluations.values()),
             "report_paths": list(self._session_report_paths),
@@ -1441,6 +1530,11 @@ def main():
         "--enable-prediction-postprocess",
         action="store_true",
         help="显式开启预测后归一化；默认关闭",
+    )
+    parser.add_argument(
+        "--boost",
+        action="store_true",
+        help="对 text2sql/default 和 finetune_alpaca 启用 3+1 次 boost 推理",
     )
 
     args = parser.parse_args()

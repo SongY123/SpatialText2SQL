@@ -42,7 +42,7 @@ class ResolvedColumn:
 class PostgresSampleDataProvider:
     """Fetch compact prompt sample rows from PostgreSQL/PostGIS."""
 
-    SAMPLE_LIMIT = 5
+    SAMPLE_LIMIT = 3
     MAX_TEXT_LENGTH = 96
 
     def __init__(
