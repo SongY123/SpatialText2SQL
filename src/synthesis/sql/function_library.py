@@ -414,6 +414,8 @@ class PostGISFunctionLibrary:
         rng: np.random.Generator,
         *,
         st_function_only: bool = False,
+        exclude_function_names: Sequence[str] | None = None,
+        desired_count: int | None = None,
     ) -> list[PostGISFunction]:
         if difficulty_level not in DIFFICULTY_LEVELS:
             raise ValueError(f"Unsupported difficulty level: {difficulty_level}")
@@ -421,6 +423,11 @@ class PostGISFunctionLibrary:
         spatial_table_count = sum(1 for table in database.selected_tables if table.spatial_fields)
         if spatial_table_count <= 0:
             return []
+        excluded_names = {
+            to_text(item).lower()
+            for item in (exclude_function_names or [])
+            if to_text(item)
+        }
 
         preferred_categories = {
             "easy": ["spatial_predicate", "spatial_measurement", "geometry_transformation", "geometry_accessor", "bbox_operation"],
@@ -434,6 +441,7 @@ class PostGISFunctionLibrary:
             for item in self.functions
             if difficulty_level in item.compatible_difficulties
             and set(item.categories) & set(preferred_categories)
+            and item.function_name.lower() not in excluded_names
             and self._function_is_schema_compatible(item, spatial_table_count, len(database.selected_tables))
         ]
         if not candidates:
@@ -441,6 +449,7 @@ class PostGISFunctionLibrary:
                 item
                 for item in self.functions
                 if difficulty_level in item.compatible_difficulties
+                and item.function_name.lower() not in excluded_names
                 and self._function_is_schema_compatible(item, spatial_table_count, len(database.selected_tables))
             ]
         if not candidates:
@@ -450,10 +459,14 @@ class PostGISFunctionLibrary:
             if not candidates:
                 return []
 
-        desired_count = self._sample_desired_function_count(
-            difficulty_level=difficulty_level,
-            candidate_count=len(candidates),
-            rng=rng,
+        desired_count = (
+            max(0, int(desired_count))
+            if desired_count is not None
+            else self._sample_desired_function_count(
+                difficulty_level=difficulty_level,
+                candidate_count=len(candidates),
+                rng=rng,
+            )
         )
         desired_count = min(desired_count, len(candidates))
         preferred_candidates = [item for item in candidates if self._prefer_st_function_source(item)]

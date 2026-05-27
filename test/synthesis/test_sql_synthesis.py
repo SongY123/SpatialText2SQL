@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from src.prompting.prompt_builder import PromptBuilder
 from src.synthesis.database.models import CanonicalSpatialTable, SynthesizedSpatialDatabase
 from src.synthesis.sql import (
@@ -30,6 +32,10 @@ from src.synthesis.sql import (
     load_sql_synthesis_config,
     override_sql_synthesis_config,
     parse_sql_generation_response,
+)
+from src.synthesis.sql.error_coverage import (
+    augment_functions_for_error_coverage,
+    select_error_coverage_profile,
 )
 
 
@@ -169,6 +175,61 @@ def _sample_function_markdown():
             "ST_DWithin",
             "ST_Buffer",
             "ST_Contains",
+        ]
+    )
+
+
+def _error_coverage_function_json_payload():
+    payload = list(_sample_function_json_payload())
+    for function_name, signature, arguments, return_type in [
+        ("ST_Area", "ST_Area(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_Length", "ST_Length(geometry g1)", ["geometry g1"], "double precision"),
+        ("ST_Distance", "ST_Distance(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "double precision"),
+        ("ST_Transform", "ST_Transform(geometry g1, integer srid)", ["geometry g1", "integer srid"], "geometry"),
+        ("ST_IsValid", "ST_IsValid(geometry g1)", ["geometry g1"], "boolean"),
+        ("ST_Intersects", "ST_Intersects(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
+        ("ST_Intersection", "ST_Intersection(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "geometry"),
+        ("ST_Within", "ST_Within(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
+        ("ST_Touches", "ST_Touches(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "boolean"),
+        ("ST_Collect", "ST_Collect(geometry g1, geometry g2)", ["geometry g1", "geometry g2"], "geometry"),
+    ]:
+        payload.append(
+            {
+                "function_id": function_name.lower(),
+                "chapter_info": "reference_processing",
+                "source_file": "reference_processing.xml",
+                "function_definitions": [
+                    {
+                        "function_name": function_name,
+                        "return_type": return_type,
+                        "arguments": arguments,
+                        "signature_str": signature,
+                    }
+                ],
+                "description": f"{function_name} test function.",
+                "examples": [{"steps": [{"sql": f"SELECT {function_name}(...);"}]}],
+            }
+        )
+    return payload
+
+
+def _error_coverage_function_markdown():
+    return "\n".join(
+        [
+            "## spatialsql_pg",
+            "ST_Area",
+            "ST_Collect",
+            "ST_Contains",
+            "ST_Distance",
+            "ST_DWithin",
+            "ST_Intersects",
+            "ST_Intersection",
+            "ST_IsValid",
+            "ST_Length",
+            "ST_Touches",
+            "ST_Transform",
+            "ST_Within",
+            "ST_Buffer",
         ]
     )
 
@@ -662,6 +723,36 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertGreaterEqual(len(hard_samples), 2)
         self.assertLessEqual(len(hard_samples), 4)
 
+    def test_error_coverage_profiles_add_deterministic_function_combos(self):
+        library = _load_library(
+            _error_coverage_function_json_payload(),
+            _error_coverage_function_markdown(),
+        )
+        database = _make_database(table_count=2)
+        profile = select_error_coverage_profile(
+            database=database,
+            sample_index=0,
+            difficulty_level="medium",
+        )
+        self.assertEqual(profile["profile_id"], "spatialsql_geography_spheroid_measurement")
+
+        base = library.get_function_signatures("ST_DWithin")[:1]
+        augmented = augment_functions_for_error_coverage(
+            function_library=library,
+            sampled_functions=base,
+            coverage_profile=profile,
+            database=database,
+            difficulty_level="medium",
+            rng=np.random.default_rng(7),
+            st_function_only=True,
+        )
+        names = [item.function_name for item in augmented]
+
+        self.assertIn("ST_DWithin", names)
+        self.assertIn("ST_Area", names)
+        self.assertIn("ST_Length", names)
+        self.assertIn("ST_Distance", names)
+
     def test_function_library_matches_markdown_entries_by_function_id(self):
         payload = [
             {
@@ -778,6 +869,30 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("Include ORDER BY before LIMIT.", prompt)
         self.assertIn("Use LIMIT 4 exactly.", prompt)
 
+    def test_prompt_builder_renders_error_coverage_guidance(self):
+        builder = PromptBuilder({"project_root": Path.cwd()})
+        database = _make_database(table_count=1)
+        prompt = builder.build_sql_synthesis_prompt(
+            database=database,
+            difficulty_level="easy",
+            structural_constraints={
+                "difficulty_level": "easy",
+                "error_coverage": {
+                    "profile_id": "floodsql_valid_geometry_measurement",
+                    "function_names": ["ST_IsValid", "ST_Area"],
+                    "constraints": ["Add ST_IsValid(actual_geom) before geometry measurement."],
+                },
+            },
+            sampled_functions=[{"function_name": "ST_IsValid"}],
+        )
+
+        self.assertNotIn("## Error Coverage Guidance", prompt)
+        self.assertIn("## Generation Rules", prompt)
+        self.assertIn("For this sample, prioritize these profile functions when they fit naturally", prompt)
+        self.assertIn("ST_IsValid(actual_geom)", prompt)
+        self.assertNotIn("floodsql_valid_geometry_measurement", prompt)
+        self.assertNotIn("FloodSQL-like", prompt)
+
     def test_minor_revision_prompt_contains_error_and_involved_table_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})
         database = _make_database(table_count=2)
@@ -875,6 +990,48 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("ST_DWithin", prompt)
         self.assertIn("ST_Intersects", prompt)
         self.assertIn("ST_Contains", prompt)
+
+    def test_synthesizer_records_error_coverage_profile_and_augmented_functions(self):
+        library = _load_library(
+            _error_coverage_function_json_payload(),
+            _error_coverage_function_markdown(),
+        )
+        database = _make_database(table_count=1)
+        generator = MockSQLGenerator(
+            responses=[
+                json.dumps(
+                    {
+                        "sql": "SELECT ST_Area(t.geom::geography, true) AS area_m2 FROM table_1 t",
+                        "used_tables": ["table_1"],
+                        "used_columns": ["geom"],
+                        "used_spatial_functions": ["ST_Area"],
+                        "reasoning_summary": "ok",
+                    }
+                )
+            ]
+        )
+        from src.synthesis.sql.models import SQLExecutionResult
+
+        synthesizer = ConstraintGuidedSQLSynthesizer(
+            config=_make_config(synthesis={"difficulty": "easy", "max_revision_rounds": 0}),
+            function_library=library,
+            sql_generator=generator,
+            prompt_builder=PromptBuilder({"project_root": Path.cwd()}),
+            validator=SQLValidator(library),
+            execution_checker=FakeExecutionChecker([SQLExecutionResult(executed=True, success=True, row_count=1)]),
+        )
+
+        rows = synthesizer.synthesize_for_database(database)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0].structural_constraints["error_coverage"]["profile_id"],
+            "spatialsql_geography_spheroid_measurement",
+        )
+        self.assertIn("ST_Area", rows[0].generation_metadata["required_function_names"])
+        self.assertIn("For this sample, prioritize these profile functions when they fit naturally", generator.prompts[0])
+        self.assertIn("Measure the actual geometry column as geography with spheroid=true; avoid ST_Transform.", generator.prompts[0])
+        self.assertNotIn("spatialsql_geography_spheroid_measurement", generator.prompts[0])
 
     def test_prompt_builder_prefers_live_postgis_metadata(self):
         builder = PromptBuilder({"project_root": Path.cwd()})

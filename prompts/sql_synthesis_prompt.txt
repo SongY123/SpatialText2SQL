@@ -22,16 +22,14 @@ Match the requested difficulty, keep the query natural, and preserve the most di
 {{result_window_guidance_block}}
 
 ## Generation Rules
+{{error_coverage_block}}
 - Match the question semantics exactly. Never change the requested scope, aggregation, grouping, ranking, or answer shape just to force a sampled function.
-- Use only schema-listed tables and columns, and only PostGIS functions from the required function block. Use the smallest compatible subset. Prefer sampled functions only when they fit naturally.
-- If the question is already answerable from one table plus explicit code, prefix, category, or value filters, do not add extra tables, spatial joins, or inferred regional filters.
-- If the question asks for `count`, `sum`, `avg`, `min`, `max`, `total`, `earliest`, `latest`, `largest`, or `smallest`, use the matching scalar aggregate directly. Do not replace it with `ORDER BY ... LIMIT 1`.
-- If the question asks for ranked results, nearest or farthest entities, or top-k output, use `ORDER BY` with the required `LIMIT`. Do not return helper ranking metrics unless they are part of the answer.
+- Use only schema-listed tables, columns, and PostGIS functions from the required function block. Use the smallest valid subset, and do not add extra joins, regions, or helper filters when a direct query already answers the task.
+- Match the SQL form to the question form: use scalar aggregates for aggregate questions, and use `ORDER BY` plus the required `LIMIT` for ranked, nearest, farthest, or top-k questions.
 - Before numeric aggregation or comparison on nullable or text-like value columns, add `IS NOT NULL` and cast when needed.
-- Keep the output compact: one answer column by default; two columns only for a natural label-plus-metric result. Give scalar or metric outputs a meaningful alias. Do not use `SELECT *`.
-- Do not return geometry columns or geometry-construction expressions unless the geometry itself is the intended answer.
-- Do not invent anonymous points, buffers, envelopes, transforms, centroids, collection extraction, or arbitrary coordinate thresholds unless the question explicitly requires them and they are semantically natural.
+- Keep the output compact: one answer column by default, or a natural label-plus-metric pair. Use meaningful aliases, never use `SELECT *`, and never return geometry unless geometry is the intended answer.
 - Respect geometry and geography signatures and CRS units. Do not treat EPSG:4326 distances as meters without a valid geography cast or an explicit projected CRS.
+- Do not invent anonymous points, buffers, envelopes, transforms, centroids, collection extraction, or arbitrary thresholds unless the question explicitly requires them.
 - For spatial predicates, use the exact intended relation with the correct argument order. For multi-table queries, every JOIN must have a complete executable `ON` condition.
 - Prefer flat, direct SQL. Add subqueries or CTEs only when they are structurally necessary.
 

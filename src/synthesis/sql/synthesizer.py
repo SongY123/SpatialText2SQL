@@ -15,6 +15,7 @@ from src.synthesis.database.models import SynthesizedSpatialDatabase
 from src.synthesis.database.utils import stable_jsonify, to_text
 
 from .config import SQLSynthesisConfig
+from .error_coverage import augment_functions_for_error_coverage, select_error_coverage_profile
 from .execution import SQLExecutionChecker
 from .function_library import PostGISFunctionLibrary, build_required_function_constraints
 from .generator import SQLGenerator
@@ -299,7 +300,45 @@ class ConstraintGuidedSQLSynthesizer:
                     difficulty_level,
                     len(prompt_database.selected_tables),
                 )
+            error_coverage_profile = select_error_coverage_profile(
+                database=prompt_database,
+                sample_index=sample_index,
+                difficulty_level=difficulty_level,
+            )
+            sampled_functions = augment_functions_for_error_coverage(
+                function_library=self.function_library,
+                sampled_functions=sampled_functions,
+                coverage_profile=error_coverage_profile,
+                database=prompt_database,
+                difficulty_level=difficulty_level,
+                rng=self.rng,
+                st_function_only=self.config.functions.st_function_only,
+            )
+            if error_coverage_profile:
+                profile_function_names = {
+                    to_text(name).lower()
+                    for name in stable_jsonify(error_coverage_profile.get("function_names")) or []
+                    if to_text(name)
+                }
+                selected_profile_names = {
+                    to_text(getattr(item, "function_name", "")).lower()
+                    for item in sampled_functions
+                    if to_text(getattr(item, "function_name", ""))
+                }
+                if not (profile_function_names & selected_profile_names):
+                    error_coverage_profile = None
             structural_constraints = self._build_structural_constraints(difficulty_level, prompt_database)
+            if error_coverage_profile:
+                structural_constraints["error_coverage"] = error_coverage_profile
+                LOGGER.info(
+                    "Selected SQL error coverage profile | sample=%s/%s | city=%s | schema_id=%s | profile=%s | functions=%s",
+                    sample_index + 1,
+                    target_count,
+                    prompt_database.city,
+                    prompt_database.database_id,
+                    error_coverage_profile.get("profile_id"),
+                    self._format_function_names(sampled_functions),
+                )
             row, discarded_row = self._synthesize_single_query(
                 database=prompt_database,
                 sample_index=sample_index,

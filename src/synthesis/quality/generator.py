@@ -41,6 +41,7 @@ def build_quality_control_llm(
     max_tokens: int | None = None,
     timeout: int | None = None,
     max_retries: int | None = None,
+    trust_env: bool | None = None,
 ) -> QualityControlLLMClient:
     if config is not None:
         provider = getattr(config, "provider", provider)
@@ -51,6 +52,7 @@ def build_quality_control_llm(
         max_tokens = getattr(config, "max_tokens", max_tokens)
         timeout = getattr(config, "timeout", timeout)
         max_retries = getattr(config, "max_retries", max_retries)
+        trust_env = getattr(config, "trust_env", trust_env)
     return build_llm_client(
         provider=str(provider or ""),
         model=str(model or ""),
@@ -60,6 +62,7 @@ def build_quality_control_llm(
         max_tokens=int(max_tokens if max_tokens is not None else 0),
         timeout=int(timeout if timeout is not None else 0),
         max_retries=int(max_retries if max_retries is not None else 0),
+        trust_env=bool(True if trust_env is None else trust_env),
         openai_client_cls=OpenAICompatibleQualityControlLLM,
         ollama_client_cls=OllamaQualityControlLLM,
         mock_client_cls=MockQualityControlLLM,

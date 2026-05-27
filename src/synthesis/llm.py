@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol, TypeVar
 
+import httpx
 from openai import OpenAI
 
 
@@ -20,6 +21,7 @@ class SynthesisLLMConfig:
     max_tokens: int = 1200
     timeout: int = 120
     max_retries: int = 2
+    trust_env: bool = True
 
 
 @dataclass
@@ -46,6 +48,7 @@ class OpenAICompatibleLLMClient:
         max_tokens: int,
         timeout: int,
         max_retries: int,
+        trust_env: bool = True,
         run_label: str = "LLM request",
         missing_dependency_label: str = "this synthesis workflow",
     ) -> None:
@@ -56,6 +59,7 @@ class OpenAICompatibleLLMClient:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.max_retries = max_retries
+        self.trust_env = trust_env
         self.run_label = run_label
         self.missing_dependency_label = missing_dependency_label
         self.client = self._create_client()
@@ -69,11 +73,15 @@ class OpenAICompatibleLLMClient:
         return api_key
 
     def _create_client(self):
+        http_client = None
+        if not self.trust_env:
+            http_client = httpx.Client(trust_env=False, timeout=self.timeout)
         return OpenAI(
             api_key=self._resolve_api_key(),
             base_url=self.base_url,
             timeout=self.timeout,
             max_retries=0,
+            http_client=http_client,
         )
 
     @staticmethod
@@ -197,6 +205,7 @@ def build_llm_client(
     max_tokens: int,
     timeout: int,
     max_retries: int,
+    trust_env: bool = True,
     openai_client_cls: type[OpenAICompatibleLLMClient] = OpenAICompatibleLLMClient,
     ollama_client_cls: type[OllamaLLMClient] = OllamaLLMClient,
     mock_client_cls: type[MockLLMClient] = MockLLMClient,
@@ -212,6 +221,7 @@ def build_llm_client(
         "max_tokens": max_tokens,
         "timeout": timeout,
         "max_retries": max_retries,
+        "trust_env": trust_env,
         "run_label": run_label,
         "missing_dependency_label": missing_dependency_label,
     }
@@ -227,6 +237,19 @@ def build_llm_client(
 
 
 TLLMConfig = TypeVar("TLLMConfig", bound=SynthesisLLMConfig)
+
+
+def _as_bool_like(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Expected a boolean-like value, got {value!r}")
 
 
 def build_llm_config_from_section(
@@ -249,4 +272,5 @@ def build_llm_config_from_section(
         max_tokens=as_positive_int(payload.get("max_tokens"), default_config.max_tokens),
         timeout=as_positive_int(payload.get("timeout"), default_config.timeout),
         max_retries=as_non_negative_int(payload.get("max_retries"), default_config.max_retries),
+        trust_env=_as_bool_like(payload.get("trust_env"), default_config.trust_env),
     )

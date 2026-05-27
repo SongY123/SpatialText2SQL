@@ -1088,6 +1088,11 @@ class PromptBuilder:
                     difficulty_level,
                     structural_constraints,
                 ),
+                "error_coverage_block": self._format_sql_error_coverage_guidance(
+                    structural_constraints.get("error_coverage")
+                    if isinstance(structural_constraints, dict)
+                    else None
+                ),
                 "required_function_block": self._stable_json_text(functions_payload),
                 "result_window_guidance_block": self._format_sql_result_window_guidance(
                     expected_limit=expected_limit,
@@ -1714,6 +1719,37 @@ class PromptBuilder:
                     "- Use nested structure only when it is semantically necessary.",
                 ]
             )
+        return "\n".join(lines)
+
+    def _format_sql_error_coverage_guidance(self, error_coverage: Any) -> str:
+        if not isinstance(error_coverage, dict) or not error_coverage:
+            return ""
+        lines: List[str] = []
+
+        function_names = [
+            str(name).strip()
+            for name in (error_coverage.get("function_names") or [])
+            if str(name).strip()
+        ]
+        if function_names:
+            lines.append(
+                "- For this sample, prioritize these profile functions when they fit naturally: "
+                + ", ".join(f"`{name}`" for name in function_names)
+                + "."
+            )
+
+        query_shape = str(error_coverage.get("query_shape") or "").strip()
+        if query_shape:
+            lines.append(f"- For this sample, keep the query shape aligned with: {query_shape}")
+
+        constraints = [
+            str(item).strip()
+            for item in (error_coverage.get("constraints") or [])
+            if str(item).strip()
+        ]
+        for constraint in constraints:
+            lines.append(f"- For this sample, enforce: {constraint}")
+
         return "\n".join(lines)
 
     @staticmethod
