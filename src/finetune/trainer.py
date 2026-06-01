@@ -20,6 +20,7 @@ from .prompting import FinetunePromptRenderer
 from .utils import stable_jsonify
 
 LOGGER = logging.getLogger(__name__)
+CHAT_COMPLETION_SENTINEL = "<|spatialtext2sql_completion_boundary|>"
 
 
 class TRLFullFinetuner:
@@ -189,24 +190,19 @@ class TRLFullFinetuner:
             prompt_text = prompt
             return prompt_text + completion, len(prompt_text)
 
-        prompt_text = self._apply_chat_template(
+        templated_text = self._apply_chat_template(
             tokenizer=tokenizer,
             prompt=prompt,
-            completion=None,
+            completion=CHAT_COMPLETION_SENTINEL,
         )
-        full_text = self._apply_chat_template(
-            tokenizer=tokenizer,
-            prompt=prompt,
-            completion=completion,
-        )
-        if not full_text.startswith(prompt_text):
-            LOGGER.warning(
-                "Chat template prompt is not a prefix of the full conversation; "
-                "falling back to raw Alpaca text for this row."
+        completion_start = templated_text.find(CHAT_COMPLETION_SENTINEL)
+        if completion_start < 0:
+            raise ValueError(
+                "Failed to locate the chat-template completion boundary sentinel. "
+                "Check tokenizer.apply_chat_template behavior."
             )
-            prompt_text = prompt
-            full_text = prompt + completion
-        return full_text, len(prompt_text)
+        full_text = templated_text.replace(CHAT_COMPLETION_SENTINEL, completion, 1)
+        return full_text, completion_start
 
     def _apply_chat_template(
         self,
@@ -244,6 +240,7 @@ class TRLFullFinetuner:
                     tokenizer=tokenizer,
                     full_text=full_text,
                     completion_start=completion_start,
+                    add_special_tokens=not self.config.model.use_chat_template,
                 )
             )
         return tokenized_rows
@@ -262,6 +259,7 @@ class TRLFullFinetuner:
                 tokenizer=tokenizer,
                 full_text=full_text,
                 completion_start=completion_start,
+                add_special_tokens=not self.config.model.use_chat_template,
             )
             token_count = len(payload["input_ids"])
             if token_count > max_length:
@@ -290,6 +288,7 @@ class TRLFullFinetuner:
         tokenizer,
         full_text: str,
         completion_start: int,
+        add_special_tokens: bool = True,
     ) -> dict[str, Any]:
         if not getattr(tokenizer, "is_fast", False):
             raise ValueError(
@@ -298,7 +297,7 @@ class TRLFullFinetuner:
             )
         tokenized = tokenizer(
             full_text,
-            add_special_tokens=True,
+            add_special_tokens=add_special_tokens,
             return_offsets_mapping=True,
             return_special_tokens_mask=True,
         )

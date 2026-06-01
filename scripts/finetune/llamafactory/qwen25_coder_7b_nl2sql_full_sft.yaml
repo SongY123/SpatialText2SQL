@@ -13,7 +13,7 @@ deepspeed: examples/deepspeed/ds_z2_config.json
 dataset: nl2sql_alpaca
 template: qwen
 cutoff_len: 10240
-max_samples:
+max_samples: 3
 overwrite_cache: true
 preprocessing_num_workers: 8
 dataloader_num_workers: 0
