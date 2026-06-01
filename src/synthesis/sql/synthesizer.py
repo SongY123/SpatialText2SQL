@@ -325,12 +325,15 @@ class ConstraintGuidedSQLSynthesizer:
                     for name in stable_jsonify(error_coverage_profile.get("function_names")) or []
                     if to_text(name)
                 }
+                profile_allows_no_spatial = bool(error_coverage_profile.get("allow_no_spatial_functions"))
                 selected_profile_names = {
                     to_text(getattr(item, "function_name", "")).lower()
                     for item in sampled_functions
                     if to_text(getattr(item, "function_name", ""))
                 }
-                if not (profile_function_names & selected_profile_names):
+                if profile_function_names and not (profile_function_names & selected_profile_names):
+                    error_coverage_profile = None
+                elif not profile_function_names and not profile_allows_no_spatial:
                     error_coverage_profile = None
             structural_constraints = self._build_structural_constraints(difficulty_level, prompt_database)
             if error_coverage_profile:

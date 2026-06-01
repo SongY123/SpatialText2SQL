@@ -760,8 +760,8 @@ class SQLSynthesisTests(unittest.TestCase):
         self.assertIn("# Table: table_1", prompt)
         self.assertIn("Examples: [a, b, c]", prompt)
         self.assertIn("Examples: [Point (SRID=4326), Polygon (SRID=4326), LineString (SRID=4326)]", prompt)
-        self.assertIn("scalar aggregates should project exactly one expression", prompt)
-        self.assertIn("Keep the projected column count small", prompt)
+        self.assertIn("scalar aggregate = one expression", prompt)
+        self.assertIn("Keep projections compact", prompt)
 
     def test_sql_validator_rejects_select_star_and_large_limit(self):
         database = _make_database(table_count=1)
@@ -1309,7 +1309,7 @@ class SQLSynthesisTests(unittest.TestCase):
 
         self.assertNotIn("## Error Coverage Guidance", prompt)
         self.assertIn("## Generation Rules", prompt)
-        self.assertIn("For this sample, prioritize these profile functions when they fit naturally", prompt)
+        self.assertIn("Target functions when natural", prompt)
         self.assertIn("ST_IsValid(actual_geom)", prompt)
         self.assertNotIn("floodsql_valid_geometry_measurement", prompt)
         self.assertNotIn("FloodSQL-like", prompt)
@@ -1451,8 +1451,8 @@ class SQLSynthesisTests(unittest.TestCase):
             "spatialsql_geography_spheroid_measurement",
         )
         self.assertIn("ST_Area", rows[0].generation_metadata["required_function_names"])
-        self.assertIn("For this sample, prioritize these profile functions when they fit naturally", generator.prompts[0])
-        self.assertIn("Measure the actual geometry column as geography with spheroid=true; avoid ST_Transform.", generator.prompts[0])
+        self.assertIn("Target functions when natural", generator.prompts[0])
+        self.assertIn("Measure area, length, or distance with a geography cast and positional true spheroid flag.", generator.prompts[0])
         self.assertNotIn("spatialsql_geography_spheroid_measurement", generator.prompts[0])
 
     def test_prompt_builder_prefers_live_postgis_metadata(self):
@@ -1764,6 +1764,69 @@ class SQLSynthesisTests(unittest.TestCase):
         )
         self.assertFalse(result.is_valid)
         self.assertTrue(any("/1000 or /1000000-style scaling" in item for item in result.errors))
+
+    def test_validator_allows_attribute_only_profile_without_st_function(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT COUNT(*) AS total_rows FROM table_1 WHERE name IS NOT NULL",
+            database=database,
+            sampled_functions=["ST_Area"],
+            difficulty_level="easy",
+            error_coverage_profile={
+                "profile_id": "attribute_only_aggregate_output",
+                "allow_no_spatial_functions": True,
+                "forbid_spatial_functions": True,
+            },
+        )
+        self.assertTrue(result.is_valid, result.errors)
+
+    def test_validator_rejects_spatial_function_for_attribute_only_profile(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT COUNT(*) FROM table_1 WHERE ST_IsValid(geom)",
+            database=database,
+            sampled_functions=["ST_IsValid"],
+            difficulty_level="easy",
+            error_coverage_profile={
+                "profile_id": "attribute_only_aggregate_output",
+                "allow_no_spatial_functions": True,
+                "forbid_spatial_functions": True,
+            },
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must not use ST_* functions" in item for item in result.errors))
+
+    def test_validator_requires_geography_scaled_measurement(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Area(ST_Transform(t.geom, 6933)) / 1000000.0 FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Area", "ST_Transform"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "geography_scaled_measurement_output"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("must measure a geography cast" in item for item in result.errors))
+
+    def test_validator_requires_direct_geometry_area_validity(self):
+        library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())
+        validator = SQLValidator(library)
+        database = _make_database(table_count=1)
+        result = validator.validate(
+            sql="SELECT ST_Area(t.geom::geography, true) FROM table_1 t",
+            database=database,
+            sampled_functions=["ST_Area"],
+            difficulty_level="easy",
+            error_coverage_profile={"profile_id": "direct_geometry_area_validity"},
+        )
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any("direct geometry area samples" in item for item in result.errors))
 
     def test_validator_requires_extent_accessor_for_tail_profile(self):
         library = _load_library(_profile_validation_function_json_payload(), _profile_validation_function_markdown())

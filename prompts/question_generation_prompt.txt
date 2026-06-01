@@ -1,8 +1,5 @@
-You are generating one natural-language question from an PostgreSQL/PostGIS SQL query.
-
-## Task Goal
-Rewrite the SQL into exactly one English question that is semantically equivalent to the SQL.
-Preserve the SQL meaning exactly while using natural benchmark-like wording.
+Generate exactly one English question from this PostgreSQL/PostGIS SQL query.
+The question must preserve the SQL meaning exactly and use natural benchmark-like wording.
 
 ## SQL Query
 {{sql_query}}
@@ -24,62 +21,33 @@ Preserve the SQL meaning exactly while using natural benchmark-like wording.
 ## Style Constraint
 {{style_constraint_block}}
 
-## Spatial Relation Constraint
-Use the following PostGIS function descriptions as authoritative guidance for the spatial semantics used by the SQL.
+## Spatial Function Semantics
+Use these function descriptions as the authority for spatial meaning.
 {{spatial_relation_block}}
 
-## Semantic Preservation Rules
-- Preserve the exact SQL semantics. Do not broaden or narrow the meaning.
-- Preserve table/entity roles, containment direction, ranking direction, grouping logic, aggregate semantics, filters, and limit semantics.
-- Preserve every explicit distance threshold, count threshold, date filter, comparison operator, and top-k value.
-- Preserve the output shape implied by the SQL.
-- If the SQL projects one scalar aggregate, ask for one value, not a list of details.
-- If the SQL projects one non-aggregate field, ask for that field only; do not imply extra attributes or full records.
-- If the SQL projects two or three fields, mention the output attributes naturally, especially for grouped outputs such as "for each X, how many Y".
-- If the SQL uses DISTINCT, preserve the deduplication intent with wording such as distinct, unique, or equivalents when natural.
-- If the SQL includes ORDER BY or LIMIT, make the ranking/top-k intent explicit in the question. Do not hide a top-k query behind a generic “list all” request.
-- If the SQL is limited to one row because of ranking, nearest, or top-k logic, prefer singular/top-1 phrasing over plural listing language.
-- If the SQL returns geometry, shape, boundary, centroid, or coordinates, mention that output explicitly. Otherwise do not ask for geometric output.
-- Rephrase spatial functions into natural language. Do not expose raw SQL or PostGIS function names.
-- Translate coordinate or extent accessors into natural geographic wording when possible:
-  - `ST_XMin` / `ST_XMax`: west/east extent, longitude threshold, westernmost/easternmost
-  - `ST_YMin` / `ST_YMax`: south/north extent, latitude threshold, southernmost/northernmost
-- Prefer short spatial wording such as within, inside, intersecting, crossing, touching, nearest to, or closest to.
-- Only describe relations supported by the SQL. Do not invent entities, columns, filters, joins, or assumptions.
-- Keep geometry/geography wording consistent with the actual SQL meaning.
-- Use benchmark-like surface forms. Common valid forms include:
-  - a short direct question: "What ...", "Which ...", "How many ...", "List ...", "Find ...", "Return ...", or "Show ..."
-  - a direct question plus a short parenthetical disambiguation such as `(identified by GEOID starting with 12)`
-  - a direct question plus one short clarification sentence when the SQL depends on a definition, alias, segmented named feature, or output restriction
-- Add a short clarification only when it is semantically necessary, for example to express:
-  - identifier or prefix filters such as `identified by`, `STATEFP = ...`, or `GEOID starting with ...`
-  - definitions such as `refers to ...`
-  - segmented named features such as `is composed of multiple sections with the same name`
-  - output restrictions such as `Only provide the area` or `Return their GEOIDs`
-- Do not mention SQL, PostGIS, databases, schemas, field names, aliases, CTE names, or implementation details.
-- Generate exactly one question, not a question set.
-- Do not show analysis, drafts, bullet points, self-checks, or alternative phrasings.
-- Keep the question concise and natural. Prefer one sentence, but a short second sentence is allowed when it preserves meaning more faithfully. Avoid long stacked explanations.
-- Use first-person or mild polite wording only if the requested style calls for it.
+## Question Rules
+- Preserve entity roles, filters, thresholds, dates, comparisons, aggregation, grouping, `DISTINCT`, ranking direction, `LIMIT`, and `OFFSET`.
+- Preserve output shape: scalar aggregate asks for one value; one projected field asks for that field only; two or three fields should be named naturally.
+- Make top-k, nearest/farthest, largest/smallest, and nth-result semantics explicit. Use singular wording for top-1.
+- Rephrase spatial functions into natural language such as within, inside, intersecting, crossing, touching, nearest, or closest; do not mention SQL/PostGIS/function names.
+- Mention geometry, boundary, centroid, extent, longitude/latitude, or coordinates only when the SQL returns them.
+- For `ST_XMin/ST_XMax/ST_YMin/ST_YMax/ST_X/ST_Y`, use west/east/south/north extent or longitude/latitude wording.
+- Add a short parenthetical or second sentence only for required identifiers, prefix filters, definitions, segmented named features, or output restrictions.
+- Do not invent entities, columns, filters, joins, assumptions, or extra requested attributes.
+- Do not show analysis, drafts, alternatives, bullet points, or implementation details.
 
 ## Output Format
-Return a JSON object with exactly these fields:
-- question
-- style
-- reasoning_summary
-- spatial_phrases
+Return one valid JSON object only:
+{
+  "question": "one English question or sentence-like request",
+  "style": "{{style_name}}",
+  "reasoning_summary": "very short semantic preservation note",
+  "spatial_phrases": ["short spatial phrase"]
+}
 
 Requirements:
-- question: one English question sentence or sentence-like utterance
-- style: must equal "{{style_name}}"
-- reasoning_summary: one short sentence summarizing how semantics were preserved
-- spatial_phrases: list of natural-language spatial phrases used in the question
-- Keep `reasoning_summary` very short, ideally under 18 words.
-- Keep `spatial_phrases` short and minimal.
-- Return only one JSON object. The first character must be `{` and the last character must be `}`.
-- Do not return Markdown code fences, explanations, notes, comments, prefixes, suffixes, or any extra text.
-- Use valid JSON with double-quoted keys and strings. Do not use trailing commas.
-- The `question` field must be non-empty.
-
-Valid response example:
-{"question":"Which parks are within 100 units of the neighborhood boundary?","style":"{{style_name}}","reasoning_summary":"Preserved the distance threshold and entity roles.","spatial_phrases":["within 100 units of"]}
+- The first character must be `{` and the last character must be `}`.
+- Use double-quoted JSON strings and no trailing commas.
+- `style` must equal "{{style_name}}".
+- `question` must be non-empty.
+- Keep `reasoning_summary` under 18 words when possible.

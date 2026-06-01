@@ -1,5 +1,5 @@
-Revise one English question so it matches the PostgreSQL/PostGIS SQL exactly.
-Keep the same task intent and requested style. Make the smallest possible wording fix.
+Revise the English question so it matches the PostgreSQL/PostGIS SQL exactly.
+Keep the original style and make the smallest wording fix.
 
 ## SQL Query
 {{sql_query}}
@@ -24,48 +24,33 @@ Keep the same task intent and requested style. Make the smallest possible wordin
 ## Style Constraint
 {{style_constraint_block}}
 
-## Spatial Relation Constraint
-Use the following PostGIS function descriptions as authoritative guidance for the spatial semantics used by the SQL.
+## Spatial Function Semantics
+Use these function descriptions as the authority for spatial meaning.
 {{spatial_relation_block}}
 
 ## Revision Feedback
 {{revision_feedback_block}}
 
-## Revision Requirements
-- Preserve the exact SQL semantics. Do not broaden or narrow the meaning.
-- Preserve table/entity roles, containment direction, ranking direction, grouping logic, aggregate semantics, filters, and limit semantics.
-- Preserve every explicit distance threshold, count threshold, date filter, comparison operator, and top-k value.
-- Preserve the output shape implied by the SQL.
-- If the SQL projects one scalar aggregate, ask for one value, not a list of details.
-- If the SQL projects one non-aggregate field, ask for that field only.
-- If the SQL projects two or three fields, mention the output attributes naturally.
-- If the SQL returns geometry, shape, boundary, centroid, or coordinates, mention that output explicitly. Otherwise do not ask for geometric output.
-- If the SQL uses DISTINCT, preserve the deduplication intent naturally.
-- If the SQL includes ORDER BY or LIMIT, make the ranking or top-k intent explicit.
-- If the SQL is limited to one row because of ranking, nearest, or top-k logic, prefer singular/top-1 phrasing over plural listing language.
-- Rephrase spatial functions into natural language. Do not expose raw SQL or PostGIS function names.
-- Translate coordinate or extent accessors into natural geographic wording when possible, such as west/east or south/north extent, longitude/latitude thresholds, or westernmost/easternmost.
-- Keep benchmark-like surface forms:
-  - short direct question openings such as "What", "Which", "How many", "List", "Find", "Return", or "Show"
-  - short parenthetical disambiguation when needed
-  - one short clarification sentence only when the SQL meaning depends on a definition, identifier rule, segmented named feature, or output restriction
-- Do not mention SQL, PostGIS, databases, schemas, field names, aliases, CTE names, or implementation details.
-- Keep the revision compact. Prefer one sentence, but a short second sentence is allowed when it preserves meaning more faithfully.
-- Return exactly one revised question only.
+## Revision Rules
+- Preserve entity roles, filters, thresholds, dates, comparisons, aggregation, grouping, `DISTINCT`, ranking direction, `LIMIT`, and `OFFSET`.
+- Preserve output shape: scalar value, single field, multi-field label/metric, geometry, coordinate, or extent.
+- Rephrase spatial functions naturally; do not mention SQL, PostGIS, schemas, field names, aliases, or implementation details.
+- Make ranking/top-k/nth-result intent explicit when present.
+- Add only necessary identifier, prefix, definition, or output-restriction clarification.
+- Return exactly one compact revised question.
 
 ## Output Format
-Return a JSON object with exactly these fields:
-- question
-- style
-- reasoning_summary
-- spatial_phrases
+Return one valid JSON object only:
+{
+  "question": "one revised English question",
+  "style": "{{style_name}}",
+  "reasoning_summary": "very short fix summary",
+  "spatial_phrases": ["short spatial phrase"]
+}
 
 Requirements:
-- question: one English question sentence or sentence-like utterance
-- style: must equal "{{style_name}}"
-- reasoning_summary: one short sentence summarizing what was fixed
-- spatial_phrases: list of natural-language spatial phrases used in the question
-- Keep `reasoning_summary` very short, ideally under 18 words.
-- Return only one JSON object. The first character must be `{` and the last character must be `}`.
-- Do not return Markdown code fences, explanations, notes, comments, prefixes, suffixes, or any extra text.
-- Use valid JSON with double-quoted keys and strings. Do not use trailing commas.
+- The first character must be `{` and the last character must be `}`.
+- Use double-quoted JSON strings and no trailing commas.
+- `style` must equal "{{style_name}}".
+- `question` must be non-empty.
+- Keep `reasoning_summary` under 18 words when possible.

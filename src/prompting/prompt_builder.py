@@ -1791,14 +1791,16 @@ class PromptBuilder:
         ]
         if function_names:
             lines.append(
-                "- For this sample, prioritize these profile functions when they fit naturally: "
+                "- Target functions when natural: "
                 + ", ".join(f"`{name}`" for name in function_names)
                 + "."
             )
+        if bool(error_coverage.get("allow_no_spatial_functions")):
+            lines.append("- Profile allows attribute-only SQL; do not force ST_* functions when attributes answer the task.")
 
         query_shape = str(error_coverage.get("query_shape") or "").strip()
         if query_shape:
-            lines.append(f"- For this sample, keep the query shape aligned with: {query_shape}")
+            lines.append(f"- Target shape: {query_shape}")
 
         constraints = [
             str(item).strip()
@@ -1806,7 +1808,7 @@ class PromptBuilder:
             if str(item).strip()
         ]
         for constraint in constraints:
-            lines.append(f"- For this sample, enforce: {constraint}")
+            lines.append(f"- {constraint}")
 
         return "\n".join(lines)
 

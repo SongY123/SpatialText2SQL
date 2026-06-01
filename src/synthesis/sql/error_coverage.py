@@ -2,7 +2,7 @@
 
 The profiles cover two sources:
 - recurring failure modes summarized in ``errors.md``
-- dominant SQL shapes observed in ``data/benchmark/normalized``
+- dominant SQL shapes observed in current benchmark ``latest`` results
 
 Core benchmark patterns remain the primary target. Low-frequency benchmark tail
 functions are sampled through a smaller secondary profile pool so coverage can
@@ -68,10 +68,25 @@ CORE_ERROR_COVERAGE_PROFILES: list[dict[str, Any]] = [
         "function_names": ["ST_Area", "ST_Length", "ST_Distance"],
         "signature_preference": "geography_spheroid",
         "target_errors": ["measurement_strategy_conflict", "missing_spheroid_flag"],
-        "query_shape": "Measure the actual geometry column as geography with spheroid=true; avoid ST_Transform.",
+        "query_shape": "Measure area, length, or distance with a geography cast and positional true spheroid flag.",
         "constraints": [
-            "Use ST_Length/ST_Area/ST_Distance on actual_geom::geography with true when the function accepts it.",
-            "Do not mix ST_Transform with geography casts in this profile.",
+            "Use ST_Area/ST_Length/ST_Distance(...::geography, true) for the measurement expression.",
+            "Keep ST_Intersects/ST_Contains/ST_Within/ST_Touches/ST_Intersection on geometry inputs; do not pass them geography or true.",
+            "Do not mix ST_Transform with this geography measurement profile.",
+        ],
+    },
+    {
+        "profile_id": "geography_scaled_measurement_output",
+        "min_difficulty": "easy",
+        "min_spatial_tables": 1,
+        "function_names": ["ST_Area", "ST_Length", "ST_Distance"],
+        "signature_preference": "geography",
+        "target_errors": ["measurement_strategy_conflict", "unit_conversion_mismatch"],
+        "query_shape": "Measure geometry as geography and scale the numeric result to kilometers or square kilometers.",
+        "constraints": [
+            "Use ST_Area/ST_Length/ST_Distance on a schema-listed geometry cast to geography.",
+            "Apply /1000.0 for length/distance or /1000000.0 for area when the output unit is kilometers.",
+            "Do not add ST_Transform in this profile.",
         ],
     },
     {
@@ -107,10 +122,56 @@ CORE_ERROR_COVERAGE_PROFILES: list[dict[str, Any]] = [
         "function_names": ["ST_IsValid", "ST_Area", "ST_Intersects"],
         "signature_preference": "geometry",
         "target_errors": ["invalid_geometry_execution_error", "geometry_column_hallucination"],
-        "query_shape": "Filter invalid geometries before geometry area or spatial joins.",
+        "query_shape": "Filter valid geometry rows before direct geometry area or spatial joins.",
         "constraints": [
-            "Add ST_IsValid(actual_geom) before geometry measurement or spatial join.",
-            "Use only schema-listed geometry columns; do not invent geom/shape aliases.",
+            "Apply ST_IsValid only to schema-listed geometry columns that exist on the referenced table.",
+            "Use direct ST_Area(geometry) for geometry area; do not cast to geography or introduce ST_Transform.",
+            "Do not invent geom/shape/geometry aliases on non-spatial tables.",
+        ],
+    },
+    {
+        "profile_id": "direct_geometry_area_validity",
+        "min_difficulty": "easy",
+        "min_spatial_tables": 1,
+        "function_names": ["ST_IsValid", "ST_Area"],
+        "signature_preference": "geometry",
+        "target_errors": ["extra_geometry_hallucination", "measurement_strategy_conflict"],
+        "query_shape": "Aggregate or compare direct geometry area after filtering valid geometry rows.",
+        "constraints": [
+            "Use ST_Area(actual_geometry_column) directly with ST_IsValid(actual_geometry_column).",
+            "Do not use ::geography or ST_Transform in this profile.",
+            "Project one scalar aggregate or one label-plus-area pair.",
+        ],
+    },
+    {
+        "profile_id": "attribute_only_aggregate_output",
+        "min_difficulty": "easy",
+        "min_spatial_tables": 0,
+        "function_names": [],
+        "allow_no_spatial_functions": True,
+        "forbid_spatial_functions": True,
+        "target_errors": ["over_spatialized_attribute_query", "output_shape_mismatch"],
+        "query_shape": "Answer with attribute filters or scalar aggregates only; no spatial function is needed.",
+        "constraints": [
+            "Use no ST_* function when ordinary attributes answer the question.",
+            "Do not invent geometry columns or spatial joins for attribute-only filters, counts, sums, ratios, or min/max queries.",
+            "Keep scalar aggregate output to one expression.",
+        ],
+    },
+    {
+        "profile_id": "attribute_join_grouped_distinct_output",
+        "min_difficulty": "medium",
+        "min_spatial_tables": 0,
+        "min_tables": 2,
+        "function_names": [],
+        "allow_no_spatial_functions": True,
+        "forbid_spatial_functions": True,
+        "target_errors": ["over_spatialized_attribute_query", "distinct_grouping_shape_mismatch"],
+        "query_shape": "Use ordinary attribute joins with DISTINCT, COUNT(DISTINCT), GROUP BY, or top-k when the answer is tabular.",
+        "constraints": [
+            "Join through schema-listed identifier columns; do not replace attribute joins with spatial joins.",
+            "Use DISTINCT or COUNT(DISTINCT ...) when duplicate-producing joins are likely.",
+            "Use GROUP BY and ORDER BY/LIMIT only when they match the requested output shape.",
         ],
     },
     {
@@ -202,6 +263,20 @@ CORE_ERROR_COVERAGE_PROFILES: list[dict[str, Any]] = [
         "constraints": [
             "Use ORDER BY with LIMIT 1 and a positive OFFSET for nth-result queries.",
             "Do not add OFFSET to scalar aggregate queries.",
+        ],
+    },
+    {
+        "profile_id": "ranked_limit_output_shape",
+        "min_difficulty": "easy",
+        "min_spatial_tables": 0,
+        "function_names": ["ST_Distance", "ST_Area"],
+        "signature_preference": "geometry",
+        "target_errors": ["rank_window_mismatch", "output_shape_mismatch"],
+        "query_shape": "Return a top-k or top-1 result with ORDER BY and LIMIT while preserving the intended projected columns.",
+        "constraints": [
+            "Use ORDER BY with LIMIT for largest, smallest, nearest, farthest, or top-k tasks.",
+            "Do not add LIMIT to scalar aggregate queries.",
+            "Project only the requested label, metric, or label-plus-metric columns.",
         ],
     },
     {

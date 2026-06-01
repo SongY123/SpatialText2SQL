@@ -292,9 +292,12 @@ def _extract_projection_features(sql: str) -> dict[str, object]:
         has_select_star = False
         returns_geometry = False
         for item in expressions:
-            if isinstance(item, exp.Star) or item.find(exp.Star):
-                has_select_star = True
             item_sql = item.sql(dialect="postgres").lower()
+            if isinstance(item, exp.Star) or (
+                item.find(exp.Star)
+                and re.search(r"\bcount\s*\(\s*\*\s*\)", item_sql, re.I) is None
+            ):
+                has_select_star = True
             if re.search(r"\b(count|sum|avg|min|max)\s*\(", item_sql, re.I):
                 aggregate_projection_count += 1
             if any(token in item_sql for token in ("geom", "geometry", "geography", "shape", "the_geom", "location")):
@@ -325,7 +328,7 @@ def _extract_projection_features(sql: str) -> dict[str, object]:
         returns_geometry = False
         for item in expressions:
             lowered = item.lower()
-            if "*" in item:
+            if "*" in item and re.search(r"\bcount\s*\(\s*\*\s*\)", lowered, re.I) is None:
                 has_select_star = True
             if re.search(r"\b(count|sum|avg|min|max)\s*\(", lowered, re.I):
                 aggregate_projection_count += 1
@@ -352,13 +355,20 @@ def _validate_error_coverage_profile(
 
     errors: list[str] = []
     cleaned = _strip_string_literals(sql)
+    detected_function_names = _detect_functions(cleaned)
+    if bool(profile.get("forbid_spatial_functions")) and detected_function_names:
+        errors.append(
+            "Coverage rule: this attribute-only sample must not use ST_* functions: "
+            + ", ".join(sorted(set(detected_function_names)))
+            + "."
+        )
     required_exact_function_names = {
         to_text(item)
         for item in profile.get("required_exact_function_names", []) or []
         if to_text(item)
     }
     if required_exact_function_names:
-        detected_functions = {func.lower() for func in _detect_functions(cleaned)}
+        detected_functions = {func.lower() for func in detected_function_names}
         missing_exact = sorted(
             function_name
             for function_name in required_exact_function_names
@@ -401,6 +411,29 @@ def _validate_error_coverage_profile(
             )
         return errors
 
+    if profile_id == "geography_scaled_measurement_output":
+        has_geography_measurement = False
+        has_scaling = re.search(
+            r"/\s*(1000(?:\.0+)?|1000000(?:\.0+)?)\b|/\s*1e6\b|\*\s*0\.001\b|\*\s*0\.000001\b",
+            cleaned,
+            re.I,
+        ) is not None
+        for function_name, args in _iter_spatial_function_calls(cleaned):
+            if function_name.lower() not in {"st_area", "st_length", "st_distance"}:
+                continue
+            if "::geography" in args.lower():
+                has_geography_measurement = True
+                break
+        if not has_geography_measurement or not has_scaling:
+            errors.append(
+                "Coverage rule: geography-scaled samples must measure a geography cast and apply /1000 or /1000000-style scaling."
+            )
+        if re.search(r"\bST_Transform\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: geography-scaled samples must not use ST_Transform."
+            )
+        return errors
+
     if profile_id == "spatialqueryqa_projected_units_measurement":
         if "::geography" in cleaned.lower():
             errors.append(
@@ -432,6 +465,47 @@ def _validate_error_coverage_profile(
         if not has_measurement or not has_scaling:
             errors.append(
                 "Coverage rule: unit-scaled measurement samples must convert measurement output with /1000 or /1000000-style scaling."
+            )
+        return errors
+
+    if profile_id == "direct_geometry_area_validity":
+        lowered = cleaned.lower()
+        if "st_area" not in lowered or "st_isvalid" not in lowered:
+            errors.append(
+                "Coverage rule: direct geometry area samples must use ST_Area together with ST_IsValid."
+            )
+        if "::geography" in lowered or re.search(r"\bST_Transform\s*\(", cleaned, re.I):
+            errors.append(
+                "Coverage rule: direct geometry area samples must not use geography casts or ST_Transform."
+            )
+        return errors
+
+    if profile_id == "attribute_only_aggregate_output":
+        upper = cleaned.upper()
+        has_aggregate = re.search(r"\b(COUNT|SUM|AVG|MIN|MAX)\s*\(", cleaned, re.I) is not None
+        if "JOIN" in upper:
+            errors.append(
+                "Coverage rule: attribute-only scalar samples should not add joins."
+            )
+        if not has_aggregate:
+            errors.append(
+                "Coverage rule: attribute-only scalar samples should use a scalar aggregate."
+            )
+        return errors
+
+    if profile_id == "attribute_join_grouped_distinct_output":
+        upper = cleaned.upper()
+        if "JOIN" not in upper:
+            errors.append(
+                "Coverage rule: attribute-join samples must use at least one ordinary JOIN."
+            )
+        if not (
+            "DISTINCT" in upper
+            or "GROUP BY" in upper
+            or re.search(r"\b(COUNT|SUM|AVG|MIN|MAX)\s*\(", cleaned, re.I)
+        ):
+            errors.append(
+                "Coverage rule: attribute-join samples must use DISTINCT, GROUP BY, or an aggregate."
             )
         return errors
 
@@ -530,6 +604,18 @@ def _validate_error_coverage_profile(
             )
         return errors
 
+    if profile_id == "ranked_limit_output_shape":
+        upper = cleaned.upper()
+        if "ORDER BY" not in upper or "LIMIT" not in upper:
+            errors.append(
+                "Coverage rule: ranked samples must use ORDER BY and LIMIT together."
+            )
+        if re.search(r"\b(COUNT|SUM|AVG|MIN|MAX)\s*\(", cleaned, re.I) and "GROUP BY" not in upper:
+            errors.append(
+                "Coverage rule: ranked samples must not add LIMIT to scalar aggregate queries."
+            )
+        return errors
+
     if profile_id == "nested_cte_subquery_shape":
         upper = cleaned.upper()
         has_cte = upper.lstrip().startswith("WITH ")
@@ -543,7 +629,11 @@ def _validate_error_coverage_profile(
     return errors
 
 
-def _difficulty_matches(target: str, features: Mapping[str, object]) -> tuple[bool, str]:
+def _difficulty_matches(
+    target: str,
+    features: Mapping[str, object],
+    error_coverage_profile: Mapping[str, object] | None = None,
+) -> tuple[bool, str]:
     table_count = int(features.get("table_count", 0))
     join_count = int(features.get("join_count", 0))
     spatial_join_count = int(features.get("spatial_join_count", 0))
@@ -554,6 +644,25 @@ def _difficulty_matches(target: str, features: Mapping[str, object]) -> tuple[bo
     subquery_count = int(features.get("subquery_count", 0))
     has_set_operation = bool(features.get("has_set_operation"))
     select_count = int(features.get("select_count", 0))
+    if isinstance(error_coverage_profile, Mapping) and bool(error_coverage_profile.get("allow_no_spatial_functions")):
+        if has_set_operation:
+            return False, "Attribute-only coverage samples should avoid UNION/INTERSECT/EXCEPT."
+        if target == "easy":
+            if table_count != 1 or join_count > 0 or has_cte or has_subquery:
+                return False, "Easy attribute-only samples must stay single-table and flat."
+            return True, ""
+        if target == "medium":
+            if table_count < 1 or table_count > 2 or join_count > 1 or has_cte or has_subquery:
+                return False, "Medium attribute-only samples should use one or two tables without nested structure."
+            return True, ""
+        if target == "hard":
+            if table_count < 1 or table_count > 3 or join_count > 2 or has_cte or has_subquery:
+                return False, "Hard attribute-only samples should use up to three tables and stay flat."
+            return True, ""
+        if target == "extra-hard":
+            if table_count < 1 or table_count > 4 or select_count > 5:
+                return False, "Extra-hard attribute-only samples should stay bounded to one to four tables."
+            return True, ""
     if target == "easy":
         if table_count != 1:
             return False, "Easy queries must use exactly one table."
@@ -646,12 +755,20 @@ class SQLValidator:
             errors.append(f"Unknown columns referenced: {', '.join(sorted(set(unknown_columns)))}")
 
         detected_functions = _detect_functions(sql_text)
-        if not detected_functions:
+        allow_no_spatial_functions = (
+            isinstance(error_coverage_profile, Mapping)
+            and bool(error_coverage_profile.get("allow_no_spatial_functions"))
+        )
+        if not detected_functions and not allow_no_spatial_functions:
             errors.append("SQL does not use any PostGIS ST_* function.")
         sampled_lower = {name.lower() for name in sampled_functions}
         if difficulty_level in {"medium", "hard", "extra-hard"}:
             sampled_lower.update(name.lower() for name in fixed_spatial_join_function_names())
-        if sampled_lower and not any(func.lower() in sampled_lower for func in detected_functions):
+        if (
+            sampled_lower
+            and not allow_no_spatial_functions
+            and not any(func.lower() in sampled_lower for func in detected_functions)
+        ):
             errors.append("SQL does not use any of the sampled required spatial functions.")
         if sampled_lower:
             unexpected_functions = sorted(
@@ -695,7 +812,11 @@ class SQLValidator:
         difficulty_features = _detect_difficulty_features(sql_text, detected_tables, aliases)
         projection_features = _extract_projection_features(sql_text)
         difficulty_features.update(projection_features)
-        difficulty_ok, difficulty_message = _difficulty_matches(difficulty_level, difficulty_features)
+        difficulty_ok, difficulty_message = _difficulty_matches(
+            difficulty_level,
+            difficulty_features,
+            error_coverage_profile=error_coverage_profile,
+        )
         if not difficulty_ok:
             errors.append(difficulty_message)
 
