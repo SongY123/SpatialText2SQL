@@ -33,6 +33,7 @@ def _load_module(module_name: str, file_path: Path):
 
 _ensure_package("src", ROOT / "src")
 _ensure_package("src.evaluation", ROOT / "src" / "evaluation")
+_ensure_package("src.datasets", ROOT / "src" / "datasets")
 
 
 class _OperationalError(Exception):
@@ -56,7 +57,30 @@ psycopg2_stub.OperationalError = _OperationalError
 psycopg2_stub.InterfaceError = _InterfaceError
 psycopg2_stub.DatabaseError = _DatabaseError
 psycopg2_stub.errors = types.SimpleNamespace(QueryCanceled=_QueryCanceled)
+psycopg2_stub.sql = types.SimpleNamespace()
 sys.modules["psycopg2"] = psycopg2_stub
+
+db_routing_stub = types.ModuleType("src.datasets.db_routing")
+
+
+def _apply_search_path_stub(cursor, db_settings):
+    return None
+
+
+def _resolve_db_settings_stub(
+    db_config_full,
+    dataset_config,
+    dataset_name,
+    metadata=None,
+    *,
+    allow_fallback_mapping=False,
+):
+    return db_config_full.get("database", {}) or {}
+
+
+db_routing_stub.apply_search_path = _apply_search_path_stub
+db_routing_stub.resolve_db_settings = _resolve_db_settings_stub
+sys.modules["src.datasets.db_routing"] = db_routing_stub
 
 evaluator_module = _load_module(
     "src.evaluation.evaluator",
@@ -269,6 +293,54 @@ class EvaluatorRecoveryTests(unittest.TestCase):
         self.assertEqual(result["matched_gold_index"], 1)
         self.assertIn("gold_execution_errors", result)
         self.assertEqual(result["gold_execution_errors"][0]["stage"], "标准SQL")
+        self.assertEqual(result["judgement_status"], "correct")
+
+    def test_execution_accuracy_treats_wkt_type_spacing_as_equal(self):
+        evaluator = self._build_evaluator()
+        with patch.object(
+            evaluator,
+            "_execute_sql",
+            side_effect=[
+                self._ok_exec(
+                    "SELECT geom AS geom FROM poi WHERE name = 'Valero';",
+                    [("POINT(-75.2640255 40.7564615)",)],
+                    "预测SQL",
+                ),
+                self._ok_exec(
+                    "SELECT ST_AsText(geom) FROM poi WHERE name = 'Valero';",
+                    [("POINT (-75.2640255 40.7564615)",)],
+                    "标准SQL",
+                ),
+            ],
+        ):
+            result = evaluator._execution_accuracy(
+                predicted_sql="SELECT geom AS geom FROM poi WHERE name = 'Valero';",
+                gold_sql="SELECT ST_AsText(geom) FROM poi WHERE name = 'Valero';",
+                sample_label="id=wkt-spacing",
+            )
+
+        self.assertEqual(result["correct"], 1)
+        self.assertEqual(result["judgement_status"], "correct")
+
+    def test_execution_accuracy_treats_small_expected_result_float_diff_as_equal(self):
+        evaluator = self._build_evaluator()
+        with patch.object(
+            evaluator,
+            "_execute_sql",
+            return_value=self._ok_exec(
+                "SELECT SUM(ST_Area(geometry)) AS total_area FROM floodplain;",
+                [(2.413128302477176,)],
+                "预测SQL",
+            ),
+        ):
+            result = evaluator._execution_accuracy(
+                predicted_sql="SELECT SUM(ST_Area(geometry)) AS total_area FROM floodplain;",
+                gold_sql="SELECT SUM(ST_Area(geometry)) AS total_ae_area FROM floodplain;",
+                expected_results=[[2.413128302477182]],
+                sample_label="id=float-tolerance",
+            )
+
+        self.assertEqual(result["correct"], 1)
         self.assertEqual(result["judgement_status"], "correct")
 
     def test_statistics_track_judged_accuracy_and_indeterminate_breakdown(self):

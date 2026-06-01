@@ -1,4 +1,4 @@
-"""CLI for TRL-based full fine-tuning of spatial Text-to-SQL models from Alpaca JSONL."""
+"""CLI for TRL-based fine-tuning of spatial Text-to-SQL models from Alpaca JSONL."""
 
 from __future__ import annotations
 
@@ -24,20 +24,28 @@ from .io import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Load Alpaca JSONL and run TRL full fine-tuning."
+        description="Load Alpaca JSONL and run TRL full/LoRA/QLoRA fine-tuning."
     )
     parser.add_argument("--config", default=str(DEFAULT_TRL_FINETUNE_CONFIG_PATH))
     parser.add_argument("--input")
     parser.add_argument("--model-name-or-path")
     parser.add_argument("--tokenizer-name-or-path")
+    parser.add_argument("--processor-name-or-path")
+    parser.add_argument("--model-class")
+    parser.add_argument("--use-processor", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use-chat-template", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--output-dir")
     parser.add_argument("--eval-ratio", type=float)
+    parser.add_argument("--finetuning-type", choices=["full", "lora", "qlora", "peft"])
     parser.add_argument("--log-level")
     parser.add_argument("--log-path")
     parser.add_argument("--nvidia-gpu-indices")
     parser.add_argument("--distributed-backend", choices=["none", "accelerate"])
     parser.add_argument("--dynamo-backend")
     parser.add_argument("--num-processes", type=int)
+    parser.add_argument("--num-machines", type=int)
+    parser.add_argument("--machine-rank", type=int)
+    parser.add_argument("--main-process-ip")
     parser.add_argument("--main-process-port", type=int)
     parser.add_argument("--deepspeed-config-path")
     parser.add_argument("--launched-by-accelerate", action="store_true", help=argparse.SUPPRESS)
@@ -84,7 +92,7 @@ def _should_launch_with_accelerate(config, args) -> bool:
         return False
     if str(config.runtime.distributed_backend).strip().lower() != "accelerate":
         return False
-    return _effective_num_processes(config) > 1
+    return _effective_num_processes(config) > 1 or int(config.runtime.num_machines) > 1
 
 
 def _build_accelerate_command(config, args) -> list[str]:
@@ -121,12 +129,33 @@ def _build_accelerate_command(config, args) -> list[str]:
         "accelerate",
         "--num-processes",
         str(_effective_num_processes(config)),
+        "--num-machines",
+        str(config.runtime.num_machines),
+        "--machine-rank",
+        str(config.runtime.machine_rank),
         "--main-process-port",
         str(config.runtime.main_process_port),
         "--launched-by-accelerate",
     ]
+    if config.runtime.main_process_ip:
+        launch_insert_at = command.index("--main_process_port")
+        command[launch_insert_at:launch_insert_at] = [
+            "--main_process_ip",
+            config.runtime.main_process_ip,
+        ]
+        command.extend(["--main-process-ip", config.runtime.main_process_ip])
     if config.model.tokenizer_name_or_path:
         command.extend(["--tokenizer-name-or-path", config.model.tokenizer_name_or_path])
+    if config.model.processor_name_or_path:
+        command.extend(["--processor-name-or-path", config.model.processor_name_or_path])
+    if config.model.model_class:
+        command.extend(["--model-class", config.model.model_class])
+    if config.model.use_processor:
+        command.append("--use-processor")
+    if config.model.use_chat_template:
+        command.append("--use-chat-template")
+    if config.training.finetuning_type:
+        command.extend(["--finetuning-type", config.training.finetuning_type])
     if config.logging.log_level:
         command.extend(["--log-level", config.logging.log_level])
     if config.logging.log_path:
@@ -183,10 +212,15 @@ def main(argv: list[str] | None = None) -> int:
         model={key: value for key, value in {
             "model_name_or_path": args.model_name_or_path,
             "tokenizer_name_or_path": args.tokenizer_name_or_path,
+            "processor_name_or_path": args.processor_name_or_path,
+            "model_class": args.model_class,
+            "use_processor": args.use_processor,
+            "use_chat_template": args.use_chat_template,
         }.items() if value is not None},
         training={key: value for key, value in {
             "output_dir": args.output_dir,
             "deepspeed_config_path": args.deepspeed_config_path,
+            "finetuning_type": args.finetuning_type,
         }.items() if value is not None},
         logging={key: value for key, value in {
             "log_level": args.log_level,
@@ -197,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
             "distributed_backend": args.distributed_backend,
             "dynamo_backend": args.dynamo_backend,
             "num_processes": args.num_processes,
+            "num_machines": args.num_machines,
+            "machine_rank": args.machine_rank,
+            "main_process_ip": args.main_process_ip,
             "main_process_port": args.main_process_port,
         }.items() if value is not None},
     )

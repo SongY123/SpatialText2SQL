@@ -31,6 +31,27 @@ class PostGISPromptMetadataProvider:
     MAX_REPRESENTATIVE_ROWS = 3
     MAX_SAMPLE_ROWS = 12
     MAX_TEXT_LENGTH = 120
+    KEY_SAMPLE_COLUMNS = (
+        "geoid",
+        "fips",
+        "statefp",
+        "countyfips",
+        "countyfp",
+        "stcnty",
+        "zip",
+        "hospital_id",
+        "school_id",
+        "unique_id",
+    )
+    DIGIT_KEY_SAMPLE_COLUMNS = {
+        "countyfips",
+        "countyfp",
+        "fips",
+        "geoid",
+        "statefp",
+        "stcnty",
+        "zip",
+    }
 
     def __init__(self, db_config: SQLSynthesisDBConfig) -> None:
         self.db_config = db_config
@@ -527,7 +548,15 @@ class PostGISPromptMetadataProvider:
                     )
                 )
             elif udt_name == "bytea":
-                continue
+                select_items.append(
+                    pg_sql.SQL(
+                        "CASE WHEN {column} IS NULL THEN NULL ELSE "
+                        "CONCAT('bytea:0x', LEFT(ENCODE({column}, 'hex'), 32)) END AS {alias}"
+                    ).format(
+                        column=identifier,
+                        alias=alias,
+                    )
+                )
             else:
                 select_items.append(
                     pg_sql.SQL("{column} AS {alias}").format(
@@ -537,10 +566,59 @@ class PostGISPromptMetadataProvider:
                 )
         if not select_items:
             select_items = [pg_sql.SQL("1 AS sample_placeholder")]
-        return pg_sql.SQL("SELECT {fields} FROM {schema}.{table} LIMIT %s").format(
+        base_query = pg_sql.SQL("SELECT {fields} FROM {schema}.{table}").format(
             fields=pg_sql.SQL(", ").join(select_items),
             schema=pg_sql.Identifier(schema_name),
             table=pg_sql.Identifier(table_name),
+        )
+        order_column = self._preferred_order_column(columns)
+        if order_column is None:
+            return pg_sql.SQL("{} LIMIT %s").format(base_query)
+        return pg_sql.SQL("{} ORDER BY {} LIMIT %s").format(
+            base_query,
+            self._sample_order_expression(order_column),
+        )
+
+    @classmethod
+    def _preferred_order_column(
+        cls,
+        columns: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any] | None:
+        candidates = [
+            column
+            for column in columns
+            if to_text(column.get("udt_name")).lower() not in {"geometry", "geography", "bytea"}
+            and to_text(column.get("column_name"))
+        ]
+        if not candidates:
+            return None
+
+        for key_name in cls.KEY_SAMPLE_COLUMNS:
+            for column in candidates:
+                if to_text(column.get("column_name")).lower() == key_name:
+                    return column
+        return candidates[0]
+
+    @classmethod
+    def _sample_order_expression(cls, column: Mapping[str, Any]):
+        column_name = to_text(column.get("column_name"))
+        identifier = pg_sql.Identifier(column_name)
+        conditions = [
+            pg_sql.SQL("{column} IS NULL"),
+            pg_sql.SQL("btrim({column}::text) = ''"),
+            pg_sql.SQL("lower(btrim({column}::text)) IN ('none', 'null', 'nan', '<none>', '<null>')"),
+            pg_sql.SQL("{column}::text ~* '(none|null|nan)'"),
+        ]
+        if column_name.lower() in cls.DIGIT_KEY_SAMPLE_COLUMNS:
+            conditions.append(pg_sql.SQL("{column}::text !~ '^[0-9]{{2,}}$'"))
+
+        rendered_conditions = [
+            condition.format(column=identifier)
+            for condition in conditions
+        ]
+        return pg_sql.SQL("CASE WHEN {} THEN 1 ELSE 0 END, {} NULLS LAST").format(
+            pg_sql.SQL(" OR ").join(rendered_conditions),
+            identifier,
         )
 
     @staticmethod
@@ -558,8 +636,10 @@ class PostGISPromptMetadataProvider:
     def _normalize_sample_value(cls, value: Any) -> Any:
         if value is None:
             return None
-        if isinstance(value, bytes):
-            return "<binary>"
+        if isinstance(value, memoryview):
+            return cls._format_binary_value(value.tobytes())
+        if isinstance(value, (bytes, bytearray)):
+            return cls._format_binary_value(bytes(value))
         if isinstance(value, Decimal):
             return int(value) if value == value.to_integral_value() else float(value)
         if isinstance(value, float):
@@ -578,3 +658,9 @@ class PostGISPromptMetadataProvider:
         if len(text) > cls.MAX_TEXT_LENGTH:
             text = text[: cls.MAX_TEXT_LENGTH - 3].rstrip() + "..."
         return text
+
+    @staticmethod
+    def _format_binary_value(value: bytes) -> str:
+        if not value:
+            return "bytea:empty"
+        return f"bytea:0x{value.hex()[:32]}"

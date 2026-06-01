@@ -207,6 +207,22 @@ CREATE TABLE floodplain (
         self.assertIn("- hospitals(", compacted)
         self.assertIn("- zcta(", compacted)
 
+    def test_runtime_text_location_is_not_forced_to_geometry(self):
+        self.assertEqual(
+            schema_compactor_module.SchemaCompactor._normalize_runtime_type(
+                "location",
+                "text",
+            ),
+            "text",
+        )
+        self.assertEqual(
+            schema_compactor_module.SchemaCompactor._normalize_runtime_type(
+                "location",
+                "USER-DEFINED",
+            ),
+            "geometry",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

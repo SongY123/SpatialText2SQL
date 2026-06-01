@@ -35,9 +35,39 @@ class FinetuneDataConfig:
 class FinetuneModelConfig:
     model_name_or_path: str = "Qwen/Qwen2.5-Coder-7B-Instruct"
     tokenizer_name_or_path: str = ""
+    processor_name_or_path: str = ""
     trust_remote_code: bool = False
     torch_dtype: str = "bfloat16"
     attn_implementation: str = ""
+    model_class: str = "causal_lm"
+    use_processor: bool = False
+    use_chat_template: bool = False
+    system_prompt: str = ""
+    device_map: str = ""
+
+
+@dataclass(frozen=True)
+class FinetunePEFTConfig:
+    enabled: bool = False
+    method: str = "lora"
+    r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    target_modules: str | list[str] = "all-linear"
+    modules_to_save: list[str] = field(default_factory=list)
+    bias: str = "none"
+    task_type: str = "CAUSAL_LM"
+    ensure_weight_tying: bool = False
+
+
+@dataclass(frozen=True)
+class FinetuneQuantizationConfig:
+    enabled: bool = False
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_quant_storage: str = ""
+    bnb_4bit_use_double_quant: bool = True
 
 
 @dataclass(frozen=True)
@@ -69,6 +99,7 @@ class FinetuneTrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = ""
     deepspeed_config_path: str = ""
+    finetuning_type: str = "full"
 
 
 @dataclass(frozen=True)
@@ -85,6 +116,7 @@ class FinetuneRuntimeConfig:
     num_processes: int = 0
     num_machines: int = 1
     machine_rank: int = 0
+    main_process_ip: str = ""
     main_process_port: int = 29500
 
 
@@ -92,6 +124,8 @@ class FinetuneRuntimeConfig:
 class SpatialText2SQLFinetuneConfig:
     data: FinetuneDataConfig = field(default_factory=FinetuneDataConfig)
     model: FinetuneModelConfig = field(default_factory=FinetuneModelConfig)
+    peft: FinetunePEFTConfig = field(default_factory=FinetunePEFTConfig)
+    quantization: FinetuneQuantizationConfig = field(default_factory=FinetuneQuantizationConfig)
     training: FinetuneTrainingConfig = field(default_factory=FinetuneTrainingConfig)
     logging: FinetuneLoggingConfig = field(default_factory=FinetuneLoggingConfig)
     runtime: FinetuneRuntimeConfig = field(default_factory=FinetuneRuntimeConfig)
@@ -165,6 +199,29 @@ def _as_non_negative_int_list(value: Any, default: list[int]) -> list[int]:
     return parsed
 
 
+def _as_string_list(value: Any, default: list[str] | None = None) -> list[str]:
+    if value in (None, ""):
+        return list(default or [])
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [to_text(item) for item in value if to_text(item)]
+    return [to_text(value)]
+
+
+def _as_target_modules(value: Any, default: str | list[str]) -> str | list[str]:
+    if value in (None, ""):
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if "," in text:
+            return [item.strip() for item in text.split(",") if item.strip()]
+        return text
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [to_text(item) for item in value if to_text(item)]
+    return to_text(value)
+
+
 def _as_runtime_backend(value: Any, default: str) -> str:
     backend = _as_text(value, default).strip().lower()
     if backend not in {"none", "accelerate"}:
@@ -196,12 +253,16 @@ def _build_trl_finetune_config_from_payload(
 
     data_section = payload.get("data") or {}
     model_section = payload.get("model") or {}
+    peft_section = payload.get("peft") or {}
+    quantization_section = payload.get("quantization") or {}
     training_section = payload.get("training") or {}
     logging_section = payload.get("logging") or {}
     runtime_section = payload.get("runtime") or {}
     for section_name, section in (
         ("data", data_section),
         ("model", model_section),
+        ("peft", peft_section),
+        ("quantization", quantization_section),
         ("training", training_section),
         ("logging", logging_section),
         ("runtime", runtime_section),
@@ -211,6 +272,8 @@ def _build_trl_finetune_config_from_payload(
 
     default_data = FinetuneDataConfig()
     default_model = FinetuneModelConfig()
+    default_peft = FinetunePEFTConfig()
+    default_quantization = FinetuneQuantizationConfig()
     default_training = FinetuneTrainingConfig()
     default_logging = FinetuneLoggingConfig()
     default_runtime = FinetuneRuntimeConfig()
@@ -230,9 +293,50 @@ def _build_trl_finetune_config_from_payload(
         model=FinetuneModelConfig(
             model_name_or_path=_as_text(model_section.get("model_name_or_path"), default_model.model_name_or_path),
             tokenizer_name_or_path=_as_text(model_section.get("tokenizer_name_or_path"), default_model.tokenizer_name_or_path),
+            processor_name_or_path=_as_text(model_section.get("processor_name_or_path"), default_model.processor_name_or_path),
             trust_remote_code=_as_bool(model_section.get("trust_remote_code"), default_model.trust_remote_code),
             torch_dtype=_as_text(model_section.get("torch_dtype"), default_model.torch_dtype),
             attn_implementation=_as_text(model_section.get("attn_implementation"), default_model.attn_implementation),
+            model_class=_as_text(model_section.get("model_class"), default_model.model_class),
+            use_processor=_as_bool(model_section.get("use_processor"), default_model.use_processor),
+            use_chat_template=_as_bool(model_section.get("use_chat_template"), default_model.use_chat_template),
+            system_prompt=_as_text(model_section.get("system_prompt"), default_model.system_prompt),
+            device_map=_as_text(model_section.get("device_map"), default_model.device_map),
+        ),
+        peft=FinetunePEFTConfig(
+            enabled=_as_bool(peft_section.get("enabled"), default_peft.enabled),
+            method=_as_text(peft_section.get("method"), default_peft.method),
+            r=_as_positive_int(peft_section.get("r"), default_peft.r),
+            lora_alpha=_as_positive_int(peft_section.get("lora_alpha"), default_peft.lora_alpha),
+            lora_dropout=_as_float(peft_section.get("lora_dropout"), default_peft.lora_dropout),
+            target_modules=_as_target_modules(peft_section.get("target_modules"), default_peft.target_modules),
+            modules_to_save=_as_string_list(peft_section.get("modules_to_save"), default_peft.modules_to_save),
+            bias=_as_text(peft_section.get("bias"), default_peft.bias),
+            task_type=_as_text(peft_section.get("task_type"), default_peft.task_type),
+            ensure_weight_tying=_as_bool(
+                peft_section.get("ensure_weight_tying"),
+                default_peft.ensure_weight_tying,
+            ),
+        ),
+        quantization=FinetuneQuantizationConfig(
+            enabled=_as_bool(quantization_section.get("enabled"), default_quantization.enabled),
+            load_in_4bit=_as_bool(quantization_section.get("load_in_4bit"), default_quantization.load_in_4bit),
+            bnb_4bit_quant_type=_as_text(
+                quantization_section.get("bnb_4bit_quant_type"),
+                default_quantization.bnb_4bit_quant_type,
+            ),
+            bnb_4bit_compute_dtype=_as_text(
+                quantization_section.get("bnb_4bit_compute_dtype"),
+                default_quantization.bnb_4bit_compute_dtype,
+            ),
+            bnb_4bit_quant_storage=_as_text(
+                quantization_section.get("bnb_4bit_quant_storage"),
+                default_quantization.bnb_4bit_quant_storage,
+            ),
+            bnb_4bit_use_double_quant=_as_bool(
+                quantization_section.get("bnb_4bit_use_double_quant"),
+                default_quantization.bnb_4bit_use_double_quant,
+            ),
         ),
         training=FinetuneTrainingConfig(
             output_dir=_resolve_path(training_section.get("output_dir"), path, default_training.output_dir),
@@ -295,6 +399,7 @@ def _build_trl_finetune_config_from_payload(
             )
             if to_text(training_section.get("deepspeed_config_path"))
             else default_training.deepspeed_config_path,
+            finetuning_type=_as_text(training_section.get("finetuning_type"), default_training.finetuning_type),
         ),
         logging=FinetuneLoggingConfig(
             log_level=_as_text(logging_section.get("log_level"), default_logging.log_level),
@@ -327,6 +432,7 @@ def _build_trl_finetune_config_from_payload(
                 runtime_section.get("machine_rank"),
                 default_runtime.machine_rank,
             ),
+            main_process_ip=_as_text(runtime_section.get("main_process_ip"), default_runtime.main_process_ip),
             main_process_port=_as_positive_int(
                 runtime_section.get("main_process_port"),
                 default_runtime.main_process_port,
@@ -340,6 +446,8 @@ def override_trl_finetune_config(
     *,
     data: Mapping[str, Any] | None = None,
     model: Mapping[str, Any] | None = None,
+    peft: Mapping[str, Any] | None = None,
+    quantization: Mapping[str, Any] | None = None,
     training: Mapping[str, Any] | None = None,
     logging: Mapping[str, Any] | None = None,
     runtime: Mapping[str, Any] | None = None,
@@ -347,6 +455,8 @@ def override_trl_finetune_config(
     merged = {
         "data": {**base.data.__dict__, **dict(data or {})},
         "model": {**base.model.__dict__, **dict(model or {})},
+        "peft": {**base.peft.__dict__, **dict(peft or {})},
+        "quantization": {**base.quantization.__dict__, **dict(quantization or {})},
         "training": {**base.training.__dict__, **dict(training or {})},
         "logging": {**base.logging.__dict__, **dict(logging or {})},
         "runtime": {**base.runtime.__dict__, **dict(runtime or {})},

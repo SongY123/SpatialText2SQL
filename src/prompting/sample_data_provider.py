@@ -44,6 +44,27 @@ class PostgresSampleDataProvider:
 
     SAMPLE_LIMIT = 3
     MAX_TEXT_LENGTH = 96
+    KEY_SAMPLE_COLUMNS = (
+        "geoid",
+        "fips",
+        "statefp",
+        "countyfips",
+        "countyfp",
+        "stcnty",
+        "zip",
+        "hospital_id",
+        "school_id",
+        "unique_id",
+    )
+    DIGIT_KEY_SAMPLE_COLUMNS = {
+        "countyfips",
+        "countyfp",
+        "fips",
+        "geoid",
+        "statefp",
+        "stcnty",
+        "zip",
+    }
 
     def __init__(
         self,
@@ -280,6 +301,7 @@ class PostgresSampleDataProvider:
         ]
         rows = self._query_table_rows(
             connection=connection,
+            db_key=db_key,
             schema_name=table_meta["actual_schema"],
             table_name=table_meta["actual_table"],
             fetch_columns=fetch_columns,
@@ -295,9 +317,6 @@ class PostgresSampleDataProvider:
             for column in resolved_columns:
                 if self._is_geometry_column(column):
                     rendered[column.prompt_name] = "<geometry>"
-                    continue
-                if self._is_binary_column(column):
-                    rendered[column.prompt_name] = "<binary>"
                     continue
                 raw_value = values[value_index] if value_index < len(values) else None
                 value_index += 1
@@ -371,6 +390,7 @@ class PostgresSampleDataProvider:
     def _query_table_rows(
         self,
         connection,
+        db_key: str,
         schema_name: str,
         table_name: str,
         fetch_columns: Sequence[ResolvedColumn],
@@ -385,18 +405,10 @@ class PostgresSampleDataProvider:
             query = f"SELECT 1 FROM {table_sql}"
 
         ordered_query = query
-        order_column = next(
-            (
-                column
-                for column in fetch_columns
-                if not self._is_binary_column(column)
-            ),
-            None,
-        )
+        order_column = self._preferred_order_column(fetch_columns)
         if order_column is not None:
             ordered_query = (
-                f"{query} ORDER BY {self._quote_identifier(order_column.actual_name)} "
-                f"NULLS LAST LIMIT %s"
+                f"{query} ORDER BY {self._sample_order_expression(order_column, db_key=db_key)} LIMIT %s"
             )
             try:
                 return self._execute_fetchall(
@@ -411,6 +423,49 @@ class PostgresSampleDataProvider:
             connection,
             f"{query} LIMIT %s",
             (self.SAMPLE_LIMIT,),
+        )
+
+    @classmethod
+    def _preferred_order_column(
+        cls,
+        fetch_columns: Sequence[ResolvedColumn],
+    ) -> Optional[ResolvedColumn]:
+        candidates = [
+            column for column in fetch_columns if not cls._is_binary_column(column)
+        ]
+        if not candidates:
+            return None
+
+        for key_name in cls.KEY_SAMPLE_COLUMNS:
+            for column in candidates:
+                if column.actual_name.lower() == key_name or column.prompt_name.lower() == key_name:
+                    return column
+        return candidates[0]
+
+    @classmethod
+    def _sample_order_expression(cls, column: ResolvedColumn, *, db_key: str = "") -> str:
+        identifier = cls._quote_identifier(column.actual_name)
+        text_expr = f"{identifier}::text"
+        invalid_conditions = [
+            f"{identifier} IS NULL",
+            f"btrim({text_expr}) = ''",
+            f"lower(btrim({text_expr})) IN ('none', 'null', 'nan', '<none>', '<null>')",
+            f"{text_expr} ~* '(none|null|nan)'",
+        ]
+        if column.actual_name.lower() in cls.DIGIT_KEY_SAMPLE_COLUMNS or column.prompt_name.lower() in cls.DIGIT_KEY_SAMPLE_COLUMNS:
+            invalid_conditions.append(f"{text_expr} !~ '^[0-9]{{2,}}$'")
+
+        column_key = column.actual_name.lower()
+        prompt_key = column.prompt_name.lower()
+        if db_key == "benchmark_floodsql":
+            if column_key in {"geoid", "fips", "countyfips", "stcnty"} or prompt_key in {"geoid", "fips", "countyfips", "stcnty"}:
+                invalid_conditions.append(f"{text_expr} !~ '^(12|22|48)'")
+            elif column_key in {"statefp", "st"} or prompt_key in {"statefp", "st"}:
+                invalid_conditions.append(f"{text_expr} !~ '^(12|22|48)$'")
+
+        return (
+            f"CASE WHEN {' OR '.join(invalid_conditions)} THEN 1 ELSE 0 END, "
+            f"{identifier} NULLS LAST"
         )
 
     @staticmethod
@@ -442,8 +497,10 @@ class PostgresSampleDataProvider:
     def _normalize_value(value: Any) -> Any:
         if value is None:
             return None
-        if isinstance(value, bytes):
-            return "<binary>"
+        if isinstance(value, memoryview):
+            return PostgresSampleDataProvider._format_binary_value(value.tobytes())
+        if isinstance(value, (bytes, bytearray)):
+            return PostgresSampleDataProvider._format_binary_value(bytes(value))
         if isinstance(value, Decimal):
             return int(value) if value == value.to_integral_value() else float(value)
         if isinstance(value, float):
@@ -458,11 +515,14 @@ class PostgresSampleDataProvider:
         return text
 
     @staticmethod
+    def _format_binary_value(value: bytes) -> str:
+        if not value:
+            return "bytea:empty"
+        return f"bytea:0x{value.hex()[:32]}"
+
+    @staticmethod
     def _uses_placeholder_only(column: ResolvedColumn) -> bool:
-        return (
-            PostgresSampleDataProvider._is_geometry_column(column)
-            or PostgresSampleDataProvider._is_binary_column(column)
-        )
+        return PostgresSampleDataProvider._is_geometry_column(column)
 
     @staticmethod
     def _is_geometry_column(column: ResolvedColumn) -> bool:

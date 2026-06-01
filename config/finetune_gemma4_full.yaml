@@ -1,0 +1,73 @@
+data:
+  input_path: data/processed/finetune/nl2sql_alpaca.jsonl
+  task_description: Translate the spatial question into one executable PostgreSQL/PostGIS SQL query using the provided schema and representative values.
+  eval_ratio: 0.02
+  question_id_start: 0
+  max_representative_rows: 3
+  shuffle_seed: 42
+
+model:
+  model_name_or_path: /data/llm/google/gemma-4-31B-it
+  tokenizer_name_or_path: ""
+  processor_name_or_path: ""
+  trust_remote_code: true
+  torch_dtype: bfloat16
+  attn_implementation: ""
+  model_class: image_text_to_text
+  use_processor: true
+  use_chat_template: true
+  system_prompt: ""
+  device_map: ""
+
+peft:
+  enabled: false
+  method: lora
+  target_modules: all-linear
+  modules_to_save: []
+
+quantization:
+  enabled: false
+
+training:
+  output_dir: /data/llm/finetuned/google/gemma-4-31B-it-full
+  overwrite_output_dir: false
+  finetuning_type: full
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-6
+  num_train_epochs: 3.0
+  max_steps: -1
+  weight_decay: 0.1
+  warmup_steps: 0
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 100
+  save_total_limit: 4
+  max_length: 10240
+  packing: false
+  completion_only_loss: true
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 42
+  resume_from_checkpoint: ""
+  deepspeed_config_path: scripts/finetune/llamafactory/ds_z3_config.json
+
+logging:
+  log_level: INFO
+  log_path: ""
+
+runtime:
+  nvidia_gpu_indices: [0, 1, 2, 3, 4, 5, 6, 7]
+  distributed_backend: accelerate
+  dynamo_backend: no
+  num_processes: 0
+  num_machines: 1
+  machine_rank: 0
+  main_process_ip: ""
+  main_process_port: 29500

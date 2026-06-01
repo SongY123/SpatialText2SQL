@@ -1,0 +1,54 @@
+### model
+model_name_or_path: /data/llm/google/gemma-4-31B-it
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: all
+additional_target: lm_head,embed_tokens
+
+### dataset
+# 需要先在 LLaMA-Factory/data/dataset_info.json 中注册 nl2sql_alpaca
+dataset: nl2sql_alpaca
+template: gemma
+cutoff_len: 8192
+max_samples:
+overwrite_cache: true
+preprocessing_num_workers: 8
+dataloader_num_workers: 0
+
+### output
+output_dir: /data/llm/finetuned/google/gemma-4-31B-it-lora
+logging_steps: 10
+save_steps: 200
+save_total_limit: 4
+plot_loss: true
+overwrite_output_dir: false
+save_only_model: false
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+weight_decay: 0.01
+max_grad_norm: 1.0
+bf16: true
+fp16: false
+gradient_checkpointing: true
+ddp_timeout: 180000000
+resume_from_checkpoint: null
+
+### eval
+val_size: 0.02
+per_device_eval_batch_size: 1
+eval_strategy: steps
+eval_steps: 100

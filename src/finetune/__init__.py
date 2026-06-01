@@ -1,4 +1,4 @@
-"""TRL full-parameter fine-tuning utilities for spatial Text-to-SQL."""
+"""TRL fine-tuning utilities for spatial Text-to-SQL."""
 
 from .config import (
     DEFAULT_TRL_FINETUNE_CONFIG_PATH,
@@ -18,7 +18,14 @@ from .io import (
     write_raw_finetune_samples,
 )
 from .models import AlpacaFinetuneSample, PreparedFinetuneSample, RawFinetuneSample
-from .trainer import TRLFullFinetuner
+
+
+def __getattr__(name: str):
+    if name == "TRLFullFinetuner":
+        from .trainer import TRLFullFinetuner
+
+        return TRLFullFinetuner
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "DEFAULT_TRL_FINETUNE_CONFIG_PATH",

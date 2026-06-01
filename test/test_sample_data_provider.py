@@ -58,16 +58,19 @@ class FakeCursor:
         self.connection.calls.append((compact_query, tuple(params)))
 
         if "FROM information_schema.columns" in compact_query:
-            requested_table = params[0]
+            requested_table = params[1] if len(params) > 1 else params[0]
             self.rows = self.connection.resolve_schema_rows(requested_table)
             return
 
         for table_name, should_raise in self.connection.raise_on_sample.items():
-            if f'FROM "{table_name}"' in compact_query and should_raise:
+            if (
+                f'FROM "{table_name}"' in compact_query
+                or f'."{table_name}"' in compact_query
+            ) and should_raise:
                 raise RuntimeError(f"boom for {table_name}")
 
         for table_name, rows in self.connection.sample_rows.items():
-            if f'FROM "{table_name}"' in compact_query:
+            if f'FROM "{table_name}"' in compact_query or f'."{table_name}"' in compact_query:
                 self.rows = rows
                 return
 
@@ -96,12 +99,22 @@ class FakeConnection:
         self.rollback_count += 1
 
     def resolve_schema_rows(self, requested_table: str):
+        def with_schema(rows):
+            normalized = []
+            for row in rows:
+                if len(row) == 5:
+                    table_name, column_name, data_type, udt_name, ordinal = row
+                    normalized.append(("public", table_name, column_name, data_type, udt_name, ordinal))
+                else:
+                    normalized.append(row)
+            return normalized
+
         if requested_table in self.schema_rows:
-            return self.schema_rows[requested_table]
+            return with_schema(self.schema_rows[requested_table])
         requested_lower = requested_table.lower()
         for table_name, rows in self.schema_rows.items():
             if table_name.lower() == requested_lower:
-                return rows
+                return with_schema(rows)
         return []
 
 
@@ -148,8 +161,8 @@ class PostgresSampleDataProviderTests(unittest.TestCase):
             },
             sample_rows={
                 "demo_table": [
-                    ("Alpha", long_text),
-                    ("Beta", None),
+                    ("Alpha", b"\x01\x02", long_text),
+                    ("Beta", b"\x03\x04", None),
                 ]
             },
         )
@@ -163,14 +176,14 @@ class PostgresSampleDataProviderTests(unittest.TestCase):
 
         self.assertIn("- demo_table", rendered)
         self.assertIn('"geom": "<geometry>"', rendered)
-        self.assertIn('"payload": "<binary>"', rendered)
+        self.assertIn('"payload": "bytea:0x0102"', rendered)
         self.assertIn('"note": null', rendered)
         self.assertIn("...", rendered)
         self.assertNotIn(long_text, rendered)
         self.assertIn(
             (
-                'SELECT "name", "note" FROM "demo_table" ORDER BY "name" NULLS LAST LIMIT %s',
-                (5,),
+                'SELECT "name", "payload", "note" FROM "public"."demo_table" ORDER BY CASE WHEN "name" IS NULL OR btrim("name"::text) = \'\' OR lower(btrim("name"::text)) IN (\'none\', \'null\', \'nan\', \'<none>\', \'<null>\') OR "name"::text ~* \'(none|null|nan)\' THEN 1 ELSE 0 END, "name" NULLS LAST LIMIT %s',
+                (3,),
             ),
             connection.calls,
         )
@@ -223,7 +236,7 @@ class PostgresSampleDataProviderTests(unittest.TestCase):
 
         self.assertIn("West Lake", rendered)
         self.assertTrue(
-            any('FROM "scenicspots"' in query for query, _params in connection.calls)
+            any('."scenicspots"' in query for query, _params in connection.calls)
         )
 
     def test_skips_failed_tables_without_breaking_prompt_building(self):

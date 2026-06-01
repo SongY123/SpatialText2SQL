@@ -1,4 +1,4 @@
-"""TRL full-parameter fine-tuning runner."""
+"""TRL fine-tuning runner for full-parameter, LoRA, and QLoRA training."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
-import datasets
 import numpy as np
 import torch
 import transformers
-import trl
 
 from .config import SpatialText2SQLFinetuneConfig
 from .models import AlpacaFinetuneSample
@@ -29,14 +27,14 @@ class TRLFullFinetuner:
         self.config = config
 
     def train(self, rows: Sequence[AlpacaFinetuneSample]) -> dict[str, Any] | None:
+        import datasets
+        import trl
+
         if not rows:
             raise ValueError("No Alpaca fine-tune rows were provided.")
 
-        tokenizer_name = self.config.model.tokenizer_name_or_path or self.config.model.model_name_or_path
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            trust_remote_code=self.config.model.trust_remote_code,
-        )
+        processing_class = self._load_processing_class()
+        tokenizer = self._tokenizer_from_processing_class(processing_class)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
@@ -68,18 +66,12 @@ class TRLFullFinetuner:
             else None
         )
 
-        model_kwargs = {
-            "trust_remote_code": self.config.model.trust_remote_code,
-        }
-        torch_dtype = self._resolve_torch_dtype()
-        if torch_dtype is not None:
-            model_kwargs["dtype"] = torch_dtype
-        if self.config.model.attn_implementation:
-            model_kwargs["attn_implementation"] = self.config.model.attn_implementation
-        model = transformers.AutoModelForCausalLM.from_pretrained(
-            self.config.model.model_name_or_path,
-            **model_kwargs,
-        )
+        model = self._load_model()
+        peft_config = self._build_peft_config()
+        if self.config.quantization.enabled and peft_config is not None:
+            model = self._prepare_model_for_kbit_training(model)
+        if peft_config is not None:
+            model = self._apply_peft_model(model, peft_config)
         if self.config.training.gradient_checkpointing:
             if hasattr(model, "gradient_checkpointing_enable"):
                 model.gradient_checkpointing_enable()
@@ -113,7 +105,7 @@ class TRLFullFinetuner:
             sft_config=sft_config,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
+            processing_class=processing_class,
         )
         train_result = trainer.train(
             resume_from_checkpoint=self.config.training.resume_from_checkpoint or None
@@ -124,7 +116,7 @@ class TRLFullFinetuner:
         metrics["dropped_overlength_rows"] = len(dropped_rows)
         self._persist_training_artifacts(
             trainer=trainer,
-            tokenizer=tokenizer,
+            processing_class=processing_class,
             output_dir=output_dir,
             metrics=metrics,
         )
@@ -138,7 +130,7 @@ class TRLFullFinetuner:
         sft_config,
         train_dataset,
         eval_dataset,
-        tokenizer,
+        processing_class,
     ):
         signature = inspect.signature(trainer_cls.__init__)
         kwargs: dict[str, Any] = {
@@ -148,9 +140,9 @@ class TRLFullFinetuner:
             "eval_dataset": eval_dataset,
         }
         if "processing_class" in signature.parameters:
-            kwargs["processing_class"] = tokenizer
+            kwargs["processing_class"] = processing_class
         elif "tokenizer" in signature.parameters:
-            kwargs["tokenizer"] = tokenizer
+            kwargs["tokenizer"] = TRLFullFinetuner._tokenizer_from_processing_class(processing_class)
         return trainer_cls(**kwargs)
 
     def _split_rows(
@@ -173,13 +165,71 @@ class TRLFullFinetuner:
                 train_rows.append(row)
         return train_rows, eval_rows
 
-    @staticmethod
-    def _prompt_from_row(row: AlpacaFinetuneSample) -> str:
+    def _prompt_from_row(self, row: AlpacaFinetuneSample, tokenizer=None) -> str:
+        if tokenizer is not None and self.config.model.use_chat_template:
+            return self._apply_chat_template(
+                tokenizer=tokenizer,
+                prompt=FinetunePromptRenderer.compose_prompt(row.instruction, row.input_text),
+                completion=None,
+            )
         return FinetunePromptRenderer.compose_prompt(row.instruction, row.input_text)
 
     @staticmethod
     def _completion_from_row(row: AlpacaFinetuneSample) -> str:
         return row.output_text
+
+    def _full_text_and_completion_start(
+        self,
+        row: AlpacaFinetuneSample,
+        tokenizer,
+    ) -> tuple[str, int]:
+        prompt = FinetunePromptRenderer.compose_prompt(row.instruction, row.input_text)
+        completion = self._completion_from_row(row)
+        if not self.config.model.use_chat_template:
+            prompt_text = prompt
+            return prompt_text + completion, len(prompt_text)
+
+        prompt_text = self._apply_chat_template(
+            tokenizer=tokenizer,
+            prompt=prompt,
+            completion=None,
+        )
+        full_text = self._apply_chat_template(
+            tokenizer=tokenizer,
+            prompt=prompt,
+            completion=completion,
+        )
+        if not full_text.startswith(prompt_text):
+            LOGGER.warning(
+                "Chat template prompt is not a prefix of the full conversation; "
+                "falling back to raw Alpaca text for this row."
+            )
+            prompt_text = prompt
+            full_text = prompt + completion
+        return full_text, len(prompt_text)
+
+    def _apply_chat_template(
+        self,
+        *,
+        tokenizer,
+        prompt: str,
+        completion: str | None,
+    ) -> str:
+        if not hasattr(tokenizer, "apply_chat_template"):
+            raise ValueError("Configured use_chat_template=true, but tokenizer has no apply_chat_template().")
+
+        messages: list[dict[str, str]] = []
+        system_prompt = str(self.config.model.system_prompt or "").strip()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        if completion is not None:
+            messages.append({"role": "assistant", "content": completion})
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=completion is None,
+        )
 
     def _build_tokenized_dataset_rows(
         self,
@@ -188,14 +238,12 @@ class TRLFullFinetuner:
     ) -> list[dict[str, Any]]:
         tokenized_rows: list[dict[str, Any]] = []
         for row in rows:
-            prompt = self._prompt_from_row(row)
-            completion = self._completion_from_row(row)
-            full_text = prompt + completion
+            full_text, completion_start = self._full_text_and_completion_start(row, tokenizer)
             tokenized_rows.append(
                 self._tokenize_with_completion_mask(
                     tokenizer=tokenizer,
                     full_text=full_text,
-                    completion_start=len(prompt),
+                    completion_start=completion_start,
                 )
             )
         return tokenized_rows
@@ -209,12 +257,11 @@ class TRLFullFinetuner:
         dropped_rows: list[dict[str, Any]] = []
         max_length = max(int(self.config.training.max_length), 1)
         for index, row in enumerate(rows):
-            prompt = self._prompt_from_row(row)
-            completion = self._completion_from_row(row)
+            full_text, completion_start = self._full_text_and_completion_start(row, tokenizer)
             payload = self._tokenize_with_completion_mask(
                 tokenizer=tokenizer,
-                full_text=prompt + completion,
-                completion_start=len(prompt),
+                full_text=full_text,
+                completion_start=completion_start,
             )
             token_count = len(payload["input_ids"])
             if token_count > max_length:
@@ -278,10 +325,15 @@ class TRLFullFinetuner:
         self,
         *,
         trainer,
-        tokenizer,
+        processing_class=None,
+        tokenizer=None,
         output_dir: Path,
         metrics: dict[str, Any],
     ) -> None:
+        if processing_class is None:
+            processing_class = tokenizer
+        if processing_class is None:
+            raise ValueError("A tokenizer or processor is required to persist training artifacts.")
         self._wait_for_everyone(trainer)
         # DeepSpeed ZeRO-3 and other sharded backends may require collectives during
         # save_model(), so every rank must enter the call even though only the save
@@ -289,7 +341,7 @@ class TRLFullFinetuner:
         trainer.save_model(str(output_dir))
         self._wait_for_everyone(trainer)
         if self._is_main_process(trainer):
-            tokenizer.save_pretrained(str(output_dir))
+            processing_class.save_pretrained(str(output_dir))
             trainer.save_state()
             self._write_metrics_file(output_dir, metrics)
         self._wait_for_everyone(trainer)
@@ -378,8 +430,133 @@ class TRLFullFinetuner:
         maybe_set("logging_strategy", "steps")
         return sft_config_cls(**kwargs)
 
-    def _resolve_torch_dtype(self):
-        dtype_name = self.config.model.torch_dtype.strip().lower()
+    def _load_processing_class(self):
+        if self.config.model.use_processor:
+            processor_name = (
+                self.config.model.processor_name_or_path
+                or self.config.model.tokenizer_name_or_path
+                or self.config.model.model_name_or_path
+            )
+            if not hasattr(transformers, "AutoProcessor"):
+                raise RuntimeError("Processor-based fine-tuning requires transformers.AutoProcessor.")
+            return transformers.AutoProcessor.from_pretrained(
+                processor_name,
+                trust_remote_code=self.config.model.trust_remote_code,
+            )
+
+        tokenizer_name = self.config.model.tokenizer_name_or_path or self.config.model.model_name_or_path
+        return transformers.AutoTokenizer.from_pretrained(
+            tokenizer_name,
+            trust_remote_code=self.config.model.trust_remote_code,
+        )
+
+    @staticmethod
+    def _tokenizer_from_processing_class(processing_class):
+        tokenizer = getattr(processing_class, "tokenizer", None)
+        return tokenizer if tokenizer is not None else processing_class
+
+    def _load_model(self):
+        model_kwargs = {
+            "trust_remote_code": self.config.model.trust_remote_code,
+        }
+        torch_dtype = self._resolve_torch_dtype(self.config.model.torch_dtype)
+        if torch_dtype is not None:
+            model_kwargs["dtype"] = torch_dtype
+        if self.config.model.attn_implementation:
+            model_kwargs["attn_implementation"] = self.config.model.attn_implementation
+        quantization_config = self._build_quantization_config()
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
+        if self.config.model.device_map:
+            model_kwargs["device_map"] = self.config.model.device_map
+        elif quantization_config is not None:
+            local_rank = os.environ.get("LOCAL_RANK")
+            if local_rank not in (None, ""):
+                model_kwargs["device_map"] = {"": int(local_rank)}
+
+        model_cls = self._resolve_model_class()
+        return model_cls.from_pretrained(
+            self.config.model.model_name_or_path,
+            **model_kwargs,
+        )
+
+    def _resolve_model_class(self):
+        model_class = str(self.config.model.model_class or "").strip().lower()
+        if model_class in {"", "auto", "causal_lm", "causallm"}:
+            return transformers.AutoModelForCausalLM
+        if model_class in {"image_text_to_text", "image-text-to-text", "imagetexttotext", "gemma4"}:
+            if not hasattr(transformers, "AutoModelForImageTextToText"):
+                raise RuntimeError(
+                    "Gemma 4 fine-tuning requires a transformers version with AutoModelForImageTextToText."
+                )
+            return transformers.AutoModelForImageTextToText
+        raise ValueError(f"Unsupported model_class: {self.config.model.model_class}")
+
+    def _build_quantization_config(self):
+        if not self.config.quantization.enabled:
+            return None
+        if not hasattr(transformers, "BitsAndBytesConfig"):
+            raise RuntimeError("Quantized QLoRA training requires transformers.BitsAndBytesConfig.")
+        compute_dtype = self._resolve_torch_dtype(self.config.quantization.bnb_4bit_compute_dtype)
+        kwargs = {
+            "load_in_4bit": bool(self.config.quantization.load_in_4bit),
+            "bnb_4bit_quant_type": self.config.quantization.bnb_4bit_quant_type,
+            "bnb_4bit_use_double_quant": bool(self.config.quantization.bnb_4bit_use_double_quant),
+        }
+        if compute_dtype is not None:
+            kwargs["bnb_4bit_compute_dtype"] = compute_dtype
+        quant_storage_dtype = self._resolve_torch_dtype(self.config.quantization.bnb_4bit_quant_storage)
+        if quant_storage_dtype is not None:
+            kwargs["bnb_4bit_quant_storage"] = quant_storage_dtype
+        return transformers.BitsAndBytesConfig(**kwargs)
+
+    def _build_peft_config(self):
+        finetuning_type = str(self.config.training.finetuning_type or "").strip().lower()
+        peft_enabled = bool(self.config.peft.enabled) or finetuning_type in {"lora", "qlora", "peft"}
+        if not peft_enabled:
+            return None
+
+        try:
+            from peft import LoraConfig
+        except ImportError as exc:
+            raise ModuleNotFoundError("LoRA/QLoRA fine-tuning requires the 'peft' package.") from exc
+
+        method = str(self.config.peft.method or "lora").strip().lower()
+        if method not in {"lora", "qlora"}:
+            raise ValueError(f"Unsupported PEFT method: {self.config.peft.method}")
+        kwargs: dict[str, Any] = {
+            "r": int(self.config.peft.r),
+            "lora_alpha": int(self.config.peft.lora_alpha),
+            "lora_dropout": float(self.config.peft.lora_dropout),
+            "target_modules": self.config.peft.target_modules,
+            "modules_to_save": list(self.config.peft.modules_to_save),
+            "bias": self.config.peft.bias,
+            "task_type": self.config.peft.task_type,
+        }
+        signature = inspect.signature(LoraConfig.__init__)
+        if "ensure_weight_tying" in signature.parameters:
+            kwargs["ensure_weight_tying"] = bool(self.config.peft.ensure_weight_tying)
+        return LoraConfig(**kwargs)
+
+    @staticmethod
+    def _apply_peft_model(model, peft_config):
+        try:
+            from peft import get_peft_model
+        except ImportError as exc:
+            raise ModuleNotFoundError("LoRA/QLoRA fine-tuning requires the 'peft' package.") from exc
+        return get_peft_model(model, peft_config)
+
+    @staticmethod
+    def _prepare_model_for_kbit_training(model):
+        try:
+            from peft import prepare_model_for_kbit_training
+        except ImportError as exc:
+            raise ModuleNotFoundError("QLoRA fine-tuning requires the 'peft' package.") from exc
+        return prepare_model_for_kbit_training(model)
+
+    @staticmethod
+    def _resolve_torch_dtype(dtype_value: str):
+        dtype_name = str(dtype_value or "").strip().lower()
         if not dtype_name or dtype_name == "auto":
             return None
 
@@ -392,7 +569,7 @@ class TRLFullFinetuner:
             "fp32": torch.float32,
         }
         if dtype_name not in mapping:
-            raise ValueError(f"Unsupported torch_dtype: {self.config.model.torch_dtype}")
+            raise ValueError(f"Unsupported torch dtype: {dtype_value}")
         return mapping[dtype_name]
 
     def _resolve_warmup_steps(self, train_row_count: int) -> int:

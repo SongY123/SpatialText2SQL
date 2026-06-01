@@ -26,3 +26,5 @@ tqdm
 trl
 transformers
 deepspeed
+peft
+bitsandbytes

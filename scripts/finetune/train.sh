@@ -26,6 +26,8 @@ Examples:
   $(basename "$0") --input data/processed/finetune/nl2sql_alpaca.jsonl
   $(basename "$0") --nvidia-gpu-indices 0,1,2,3,4,5,6,7
   $(basename "$0") --model-name-or-path Qwen/Qwen2.5-7B-Instruct --output-dir outputs/finetune/qwen25_7b_full
+  FINETUNE_CONFIG=config/finetune_gemma4_full.yaml $(basename "$0")
+  scripts/finetune/train_gemma4_qlora.sh
 EOF
   exit 0
 fi

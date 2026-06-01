@@ -858,7 +858,16 @@ class SchemaCompactor:
     @staticmethod
     def _normalize_runtime_type(column_name: str, raw_type: str) -> str:
         lowered = raw_type.lower()
-        if column_name.lower() in GEOMETRY_COLUMN_NAMES:
+        normalized_column = column_name.lower()
+        if normalized_column in GEOMETRY_COLUMN_NAMES and not (
+            normalized_column == "location"
+            and (
+                lowered.startswith("character varying")
+                or lowered.startswith("text")
+                or lowered.startswith("varchar")
+                or lowered.startswith("char")
+            )
+        ):
             return "geometry"
         for prefix, normalized in RUNTIME_TYPE_PREFIXES:
             if lowered.startswith(prefix):

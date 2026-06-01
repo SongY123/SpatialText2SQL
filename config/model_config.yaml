@@ -158,6 +158,27 @@ models:
         api_key: ""
         timeout: 600
 
+  gemma-4-E4B-it:
+    display_name: "gemma-4-E4B-it"
+    size_label: "4B"
+    paper_group: "open_source"
+    paper_order: 80
+    model_type: "causal_lm"
+    tokenizer_name_or_path: "google/gemma-4-E4B-it"
+    generation_config:
+      max_new_tokens: 2048
+      temperature: 0.0
+      top_p: 1.0
+      do_sample: false
+      repetition_penalty: 1.0
+    backends:
+      vllm:
+        loader_class: "VllmOpenAILoader"
+        api_base: "http://10.132.80.118:8998/v1"
+        model: "gemma-4-E4B-it"
+        api_key: ""
+        timeout: 600
+
   gemma4-26b-a4b-it:
     display_name: "Gemma4-26B-A4B-it"
     size_label: "26B"
