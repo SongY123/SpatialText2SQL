@@ -3,6 +3,9 @@ set -euo pipefail
 
 export NO_PROXY=100.64.0.0/10,100.126.198.114,localhost,127.0.0.1
 export no_proxy=100.64.0.0/10,100.126.198.114,localhost,127.0.0.1
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

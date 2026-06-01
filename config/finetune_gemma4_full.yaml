@@ -1,7 +1,7 @@
 data:
   input_path: data/processed/finetune/nl2sql_alpaca.jsonl
   task_description: Translate the spatial question into one executable PostgreSQL/PostGIS SQL query using the provided schema and representative values.
-  eval_ratio: 0.02
+  eval_ratio: 0
   question_id_start: 0
   max_representative_rows: 3
   shuffle_seed: 42
@@ -43,7 +43,7 @@ training:
   warmup_ratio: 0.1
   lr_scheduler_type: cosine
   logging_steps: 10
-  save_steps: 200
+  save_steps: 800
   eval_steps: 100
   save_total_limit: 4
   max_length: 10240
@@ -56,7 +56,7 @@ training:
   report_to: none
   seed: 42
   resume_from_checkpoint: ""
-  deepspeed_config_path: scripts/finetune/llamafactory/ds_z3_config.json
+  deepspeed_config_path: scripts/finetune/llamafactory/ds_z2_config.json
 
 logging:
   log_level: INFO
