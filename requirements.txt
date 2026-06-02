@@ -28,3 +28,4 @@ transformers
 deepspeed
 peft
 bitsandbytes
+safetensors

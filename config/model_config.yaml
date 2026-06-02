@@ -166,7 +166,7 @@ models:
     model_type: "causal_lm"
     tokenizer_name_or_path: "google/gemma-4-E4B-it"
     generation_config:
-      max_new_tokens: 2048
+      max_new_tokens: 1024
       temperature: 0.0
       top_p: 1.0
       do_sample: false
@@ -174,7 +174,7 @@ models:
     backends:
       vllm:
         loader_class: "VllmOpenAILoader"
-        api_base: "http://10.132.80.118:8998/v1"
+        api_base: "http://10.132.80.118:8999/v1"
         model: "gemma-4-E4B-it"
         api_key: ""
         timeout: 600

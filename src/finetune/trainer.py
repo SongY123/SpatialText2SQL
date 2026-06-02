@@ -343,6 +343,7 @@ class TRLFullFinetuner:
             processing_class.save_pretrained(str(output_dir))
             trainer.save_state()
             self._write_metrics_file(output_dir, metrics)
+            self._materialize_gemma4_vllm_checkpoint_if_needed(trainer, output_dir)
         self._wait_for_everyone(trainer)
 
     @staticmethod
@@ -352,6 +353,52 @@ class TRLFullFinetuner:
             json.dumps(stable_jsonify(metrics), ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+    def _materialize_gemma4_vllm_checkpoint_if_needed(self, trainer, output_dir: Path) -> None:
+        try:
+            from .gemma4_checkpoint import materialize_gemma4_k_norm_weights
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            LOGGER.warning("Gemma4 vLLM checkpoint materialization is unavailable: %s", exc)
+            return
+
+        def state_dict_provider():
+            return self._safe_model_state_dict(trainer)
+
+        try:
+            result = materialize_gemma4_k_norm_weights(
+                checkpoint_dir=output_dir,
+                base_model_dir=self.config.model.model_name_or_path,
+                model_state_dict=state_dict_provider,
+                safe_serialization=True,
+            )
+        except Exception as exc:
+            LOGGER.warning("Failed to materialize Gemma4 vLLM checkpoint aliases: %s", exc)
+            return
+
+        if result.get("status") == "repaired":
+            LOGGER.info(
+                "Materialized Gemma4 vLLM checkpoint aliases | patched_key_count=%s | output_dir=%s",
+                result.get("patched_key_count"),
+                output_dir,
+            )
+
+    @staticmethod
+    def _safe_model_state_dict(trainer) -> dict[str, torch.Tensor] | None:
+        model = getattr(trainer, "model", None)
+        if model is None:
+            return None
+        accelerator = getattr(trainer, "accelerator", None)
+        if accelerator is not None and hasattr(accelerator, "unwrap_model"):
+            try:
+                model = accelerator.unwrap_model(model)
+            except Exception:
+                pass
+        try:
+            state_dict = model.state_dict()
+        except Exception as exc:
+            LOGGER.warning("Could not read trainer model state_dict for Gemma4 alias materialization: %s", exc)
+            return None
+        return dict(state_dict)
 
     @staticmethod
     def _wait_for_everyone(trainer) -> None:
