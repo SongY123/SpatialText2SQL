@@ -13,7 +13,7 @@ databases:
       min_connections: 1
       max_connections: 10
     timeout:
-      query_timeout: 100
+      query_timeout: 60
       connection_timeout: 10
 
   benchmark_spatialsql_ada:
@@ -155,6 +155,7 @@ datasets:
     type: "canonical_json"
     loader_class: "CanonicalJSONLoader"
     raw_data_path: "data/benchmark/FloodSQL-Bench"
+    updated_benchmark_path: "benchmark/bechmark_updated.jsonl"
     data_path: "data/benchmark/normalized/FloodSQL-Bench.json"
     use_preformatted_input: true
     database: "benchmark_floodsql"

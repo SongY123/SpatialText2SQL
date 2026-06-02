@@ -87,6 +87,7 @@ class PostgresSampleDataProvider:
         self._failed_db_keys: set[str] = set()
         self._table_meta_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
         self._sample_cache: Dict[Tuple[str, str, Tuple[Tuple[str, str], ...]], List[str]] = {}
+        self._table_sample_rows_cache: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
 
     def build_sample_data(
         self,
@@ -253,7 +254,7 @@ class PostgresSampleDataProvider:
             return self._sample_cache[cache_key]
 
         try:
-            row_texts = self._fetch_table_samples(connection, db_key, table_name, columns)
+            row_texts = self._render_table_samples(connection, db_key, table_name, columns)
         except Exception as exc:
             self._rollback_quietly(connection)
             warnings.warn(
@@ -266,7 +267,7 @@ class PostgresSampleDataProvider:
         self._sample_cache[cache_key] = row_texts
         return row_texts
 
-    def _fetch_table_samples(
+    def _render_table_samples(
         self,
         connection,
         db_key: str,
@@ -296,8 +297,69 @@ class PostgresSampleDataProvider:
         if not resolved_columns:
             return []
 
+        rows = self._get_cached_table_sample_rows(
+            connection=connection,
+            db_key=db_key,
+            table_meta=table_meta,
+        )
+        if not rows:
+            return []
+
+        rendered_rows: List[str] = []
+        for row in rows:
+            rendered: Dict[str, Any] = {}
+            for column in resolved_columns:
+                if self._is_geometry_column(column):
+                    rendered[column.prompt_name] = "<geometry>"
+                    continue
+                column_key = column.actual_name.lower()
+                if column_key not in row:
+                    continue
+                rendered[column.prompt_name] = row.get(column_key)
+            if rendered:
+                rendered_rows.append(json.dumps(rendered, ensure_ascii=False))
+        return rendered_rows
+
+    def _get_cached_table_sample_rows(
+        self,
+        connection,
+        db_key: str,
+        table_meta: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        cache_key = (
+            db_key,
+            str(table_meta.get("actual_schema") or ""),
+            str(table_meta.get("actual_table") or ""),
+        )
+        if cache_key in self._table_sample_rows_cache:
+            return self._table_sample_rows_cache[cache_key]
+
+        rows = self._fetch_full_table_sample_rows(
+            connection=connection,
+            db_key=db_key,
+            table_meta=table_meta,
+        )
+        self._table_sample_rows_cache[cache_key] = rows
+        return rows
+
+    def _fetch_full_table_sample_rows(
+        self,
+        connection,
+        db_key: str,
+        table_meta: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        all_columns = [
+            ResolvedColumn(
+                prompt_name=str(meta["actual_name"]).lower(),
+                prompt_type=str(meta["data_type"] or "").lower(),
+                actual_name=str(meta["actual_name"]),
+                data_type=str(meta["data_type"] or "").lower(),
+                udt_name=str(meta["udt_name"] or "").lower(),
+            )
+            for meta in (table_meta.get("columns") or {}).values()
+        ]
         fetch_columns = [
-            column for column in resolved_columns if not self._uses_placeholder_only(column)
+            column for column in all_columns if not self._uses_placeholder_only(column)
         ]
         rows = self._query_table_rows(
             connection=connection,
@@ -309,20 +371,20 @@ class PostgresSampleDataProvider:
         if not rows:
             return []
 
-        rendered_rows: List[str] = []
+        normalized_rows: List[Dict[str, Any]] = []
         for row in rows:
             values = tuple(row) if isinstance(row, (list, tuple)) else (row,)
             value_index = 0
-            rendered: Dict[str, Any] = {}
-            for column in resolved_columns:
+            normalized_row: Dict[str, Any] = {}
+            for column in all_columns:
                 if self._is_geometry_column(column):
-                    rendered[column.prompt_name] = "<geometry>"
+                    normalized_row[column.actual_name.lower()] = "<geometry>"
                     continue
                 raw_value = values[value_index] if value_index < len(values) else None
                 value_index += 1
-                rendered[column.prompt_name] = self._normalize_value(raw_value)
-            rendered_rows.append(json.dumps(rendered, ensure_ascii=False))
-        return rendered_rows
+                normalized_row[column.actual_name.lower()] = self._normalize_value(raw_value)
+            normalized_rows.append(normalized_row)
+        return normalized_rows
 
     def _resolve_table_meta(
         self,

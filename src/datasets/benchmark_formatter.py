@@ -37,6 +37,20 @@ def _write_json(output_path: Path, rows: List[Dict[str, Any]]) -> None:
         json.dump(rows, handle, ensure_ascii=False, indent=2)
 
 
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if not isinstance(payload, dict):
+                raise ValueError(f"Expected JSON object on line {line_number} of {path}")
+            rows.append(payload)
+    return rows
+
+
 class _JsonArrayAppendWriter:
     def __init__(self, output_path: Path):
         self.output_path = output_path
@@ -100,7 +114,6 @@ def build_spatialqueryqa_rows(
     columns = dataset_cfg.get("columns", {})
     question_col = columns.get("question", "Question")
     sql_col = columns.get("sql", "Reviewed Query")
-    reviewer_effort_col = columns.get("reviewer_effort", "Reviewer Effort")
     partitions = dataset_cfg.get("source_partitions", {})
     execution_timeout_sec = _resolve_result_materialization_timeout_seconds(dataset_cfg, eval_config)
     tasks: List[Dict[str, Any]] = []
@@ -132,9 +145,6 @@ def build_spatialqueryqa_rows(
                 record = dict(zip(headers, values))
                 question = str(record.get(question_col) or "").strip()
                 sql = str(record.get(sql_col) or "").strip()
-                reviewer_effort = str(record.get(reviewer_effort_col) or "").strip()
-                if reviewer_effort == "❌":
-                    continue
                 if not question or not sql:
                     continue
                 tasks.append(
@@ -159,39 +169,47 @@ def build_spatialqueryqa_rows(
         tasks,
         timeout_seconds=execution_timeout_sec,
         dataset_label="spatialqueryqa",
-        timeout_policy="skip",
+        timeout_policy="keep_if_explain_ok",
     )
 
     rows: List[Dict[str, Any]] = []
     partition_sequences: Dict[str, int] = {}
-    skipped_timeouts = 0
+    kept_timeouts = 0
     for task in materialized:
         status = task["execution_status"]
         if status == "timeout":
-            skipped_timeouts += 1
-            continue
-        if status != "ok":
+            if task.get("explain_status") != "ok":
+                raise RuntimeError(
+                    f"SpatialQueryQA SQL execution timed out and EXPLAIN failed at "
+                    f"{task['error_context']}: {task.get('explain_payload')}"
+                )
+            kept_timeouts += 1
+        elif status != "ok":
             raise RuntimeError(
                 f"SpatialQueryQA SQL execution failed at {task['error_context']}: {task['execution_payload']}"
             )
 
         partition_key = task["partition_key"]
         partition_sequences[partition_key] = partition_sequences.get(partition_key, 0) + 1
-        rows.append(
-            {
-                "id": f"spatialqueryqa_{partition_key}_{partition_sequences[partition_key]:05d}",
-                "question": task["question"],
-                "sql": task["sql"],
-                "level": task["level"],
-                "results": task["execution_payload"],
-            }
-        )
+        row = {
+            "id": f"spatialqueryqa_{partition_key}_{partition_sequences[partition_key]:05d}",
+            "question": task["question"],
+            "sql": task["sql"],
+            "level": task["level"],
+        }
+        if status == "ok":
+            row["results"] = task["execution_payload"]
+        else:
+            row["result_materialization_status"] = "timeout"
+            row["result_materialization_error"] = task["execution_payload"]
+            row["explain_result"] = task.get("explain_payload")
+        rows.append(row)
         if on_row is not None:
             on_row(rows[-1])
 
     _log_dataset(
         f"[spatialqueryqa] materialized {len(rows)} samples"
-        + (f", skipped {skipped_timeouts} timeout sample(s)" if skipped_timeouts else "")
+        + (f", kept {kept_timeouts} timeout sample(s) after EXPLAIN" if kept_timeouts else "")
     )
     return rows
 
@@ -309,51 +327,50 @@ def build_floodsql_rows(
     tasks: List[Dict[str, Any]] = []
     execution_timeout_sec = _resolve_result_materialization_timeout_seconds(dataset_cfg, eval_config)
 
-    _log_dataset("[floodsql] scanning raw benchmark files...")
+    updated_path = _resolve_floodsql_updated_benchmark_path(dataset_cfg, input_root)
+    _log_dataset(f"[floodsql] scanning updated benchmark file: {updated_path}")
 
-    for partition in partitions.values():
-        family = str(partition.get("family") or "").strip()
-        level = str(partition.get("level") or "").strip()
-        family_dir = input_root / str(partition.get("raw_path") or "")
-        if not family or not family_dir.exists():
+    db_settings = resolve_db_settings(
+        embedded_db_config,
+        dataset_config,
+        "floodsql",
+        {},
+        allow_fallback_mapping=True,
+    )
+    if not db_settings:
+        raise ValueError("Missing database settings for FloodSQL")
+    connect_timeout = _resolve_connect_timeout_seconds(dataset_cfg, db_settings)
+    metadata_by_id = _build_floodsql_metadata_by_id(input_root, partitions)
+    updated_records = _load_jsonl(updated_path)
+
+    for record in updated_records:
+        source_id = str(record.get("id") or "").strip()
+        question = str(record.get("question") or "").strip()
+        source_sql = str(record.get("sql") or "").strip()
+        if not source_id or not question or not source_sql:
             continue
-        db_settings = resolve_db_settings(
-            embedded_db_config,
-            dataset_config,
-            "floodsql",
-            dict(partition),
-            allow_fallback_mapping=True,
+        metadata_row = metadata_by_id.get(source_id, {})
+        converted_sql, _issues = convert_duckdb_to_postgis(source_sql)
+        row = {
+            "id": source_id,
+            "question": question,
+            "level": record.get("level") or metadata_row.get("level") or source_id.split("_", 1)[0],
+            "category": record.get("category") or metadata_row.get("category"),
+            "output_type": record.get("output_type") or metadata_row.get("output_type"),
+            "expected_columns": record.get("expected_columns") or metadata_row.get("expected_columns") or [],
+            "source_sql": source_sql,
+            "sql": converted_sql,
+        }
+        tasks.append(
+            {
+                "row": row,
+                "sql": converted_sql,
+                "db_settings": db_settings,
+                "connect_timeout": connect_timeout,
+                "sample_label": source_id,
+                "error_context": f"{updated_path}:{source_id}",
+            }
         )
-        if not db_settings:
-            raise ValueError(f"Missing database settings for FloodSQL partition: {family}")
-        connect_timeout = _resolve_connect_timeout_seconds(dataset_cfg, db_settings)
-        for json_path in sorted(family_dir.glob("*.json")):
-            question_rows = json.loads(json_path.read_text(encoding="utf-8"))
-            if not isinstance(question_rows, list):
-                continue
-            for record in question_rows:
-                if not isinstance(record, dict):
-                    continue
-                question = str(record.get("question") or "").strip()
-                source_sql = str(record.get("sql") or "").strip()
-                if not question or not source_sql:
-                    continue
-                converted_sql, _issues = convert_duckdb_to_postgis(source_sql)
-                row = dict(record)
-                row["source_sql"] = row.pop("sql")
-                row["sql"] = converted_sql
-                if level:
-                    row.setdefault("level", level)
-                tasks.append(
-                    {
-                        "row": row,
-                        "sql": converted_sql,
-                        "db_settings": db_settings,
-                        "connect_timeout": connect_timeout,
-                        "sample_label": str(record.get("id") or json_path.name),
-                        "error_context": f"{json_path}:{record.get('id')}",
-                    }
-                )
 
     _log_dataset(
         f"[floodsql] collected {len(tasks)} executable samples, materializing results sequentially..."
@@ -380,10 +397,76 @@ def build_floodsql_rows(
     return rows
 
 
-def build_all(config_path: Path, eval_config_path: Path, *, workers: int = 1) -> Dict[str, int]:
+def _resolve_floodsql_updated_benchmark_path(dataset_cfg: Dict[str, Any], input_root: Path) -> Path:
+    configured = str(dataset_cfg.get("updated_benchmark_path") or "").strip()
+    candidates: List[Path] = []
+    if configured:
+        configured_path = Path(configured)
+        candidates.append(configured_path if configured_path.is_absolute() else input_root / configured_path)
+    candidates.extend(
+        [
+            input_root / "benchmark" / "bechmark_updated.jsonl",
+            input_root / "benchmark" / "benchmark_updated.jsonl",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "Could not find FloodSQL updated benchmark JSONL. Checked: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def _build_floodsql_metadata_by_id(input_root: Path, partitions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    metadata_by_id: Dict[str, Dict[str, Any]] = {}
+    partition_values = [
+        partition for partition in partitions.values() if isinstance(partition, dict)
+    ]
+    partition_values.sort(
+        key=lambda partition: (
+            "updated" in str(partition.get("raw_path") or ""),
+            str(partition.get("raw_path") or ""),
+        )
+    )
+
+    for partition in partition_values:
+        raw_path = str(partition.get("raw_path") or "").strip()
+        if not raw_path:
+            continue
+        family_dir = input_root / raw_path
+        for json_path in sorted(family_dir.glob("*.json")):
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                continue
+            for record in payload:
+                if not isinstance(record, dict):
+                    continue
+                source_id = str(record.get("id") or "").strip()
+                if not source_id:
+                    continue
+                metadata_by_id[source_id] = {
+                    "level": record.get("level") or partition.get("level"),
+                    "category": record.get("category"),
+                    "output_type": record.get("output_type"),
+                    "expected_columns": record.get("expected_columns") or [],
+                }
+    return metadata_by_id
+
+
+def build_all(
+    config_path: Path,
+    eval_config_path: Path,
+    *,
+    workers: int = 1,
+    floodsql_updated_benchmark_path: Optional[str] = None,
+) -> Dict[str, int]:
     config = _load_dataset_config(config_path)
     eval_config = _load_eval_config(eval_config_path)
     datasets = config.get("datasets", {})
+    if floodsql_updated_benchmark_path:
+        floodsql_cfg = datasets.setdefault("floodsql", {})
+        floodsql_cfg["updated_benchmark_path"] = floodsql_updated_benchmark_path
     embedded_db_config = extract_embedded_db_config(config)
 
     spatialqueryqa_cfg = datasets["spatialqueryqa"]
@@ -453,8 +536,21 @@ def main() -> None:
         default=1,
         help="Reserved for compatibility; formatter now always runs in single-thread mode",
     )
+    parser.add_argument(
+        "--floodsql-updated-benchmark",
+        default=None,
+        help=(
+            "FloodSQL updated benchmark JSONL path. Relative paths are resolved under "
+            "the FloodSQL-Bench root."
+        ),
+    )
     args = parser.parse_args()
-    counts = build_all(Path(args.config), Path(args.eval_config), workers=1)
+    counts = build_all(
+        Path(args.config),
+        Path(args.eval_config),
+        workers=1,
+        floodsql_updated_benchmark_path=args.floodsql_updated_benchmark,
+    )
     print(json.dumps(counts, ensure_ascii=False, indent=2))
 
 
@@ -530,6 +626,15 @@ def _materialize_results_serially(
             enriched = dict(task)
             enriched["execution_status"] = status
             enriched["execution_payload"] = payload
+            if status == "timeout" and timeout_policy == "keep_if_explain_ok":
+                _rollback_quietly(connection)
+                explain_status, explain_payload = _execute_explain_for_sql(
+                    connection,
+                    task["sql"],
+                    sample_label=task["sample_label"],
+                )
+                enriched["explain_status"] = explain_status
+                enriched["explain_payload"] = explain_payload
             results.append(enriched)
             if index == 1 or index % interval == 0 or index == len(tasks):
                 _log_dataset(
@@ -542,7 +647,7 @@ def _materialize_results_serially(
             except Exception:
                 pass
 
-    if timeout_policy not in {"skip", "error"}:
+    if timeout_policy not in {"skip", "error", "keep_if_explain_ok"}:
         raise ValueError(f"Unsupported timeout policy: {timeout_policy}")
     return results
 
@@ -590,6 +695,41 @@ def _execute_query_for_results(connection, sql: str, *, sample_label: str) -> tu
         return "error", error_message
     finally:
         cursor.close()
+
+
+def _execute_explain_for_sql(connection, sql: str, *, sample_label: str) -> tuple[str, Any]:
+    cursor = connection.cursor()
+    try:
+        cursor.execute(_build_explain_sql(sql))
+        rows = cursor.fetchall() if cursor.description is not None else []
+        return "ok", normalize_result_rows(rows)
+    except Exception as exc:
+        error_message = str(exc)
+        lowered = error_message.lower()
+        if (
+            "statement timeout" in lowered
+            or "canceling statement due to statement timeout" in lowered
+            or "interruptedexception" in lowered
+            or "interrupted!" in lowered
+        ):
+            return "timeout", error_message
+        return "error", error_message
+    finally:
+        cursor.close()
+
+
+def _build_explain_sql(sql: str) -> str:
+    cleaned = str(sql or "").strip().rstrip(";")
+    return f"EXPLAIN {cleaned}"
+
+
+def _rollback_quietly(connection) -> None:
+    rollback = getattr(connection, "rollback", None)
+    if callable(rollback):
+        try:
+            rollback()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
