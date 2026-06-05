@@ -50,8 +50,6 @@ datasets:
     data_path: "data/benchmark/normalized/SpatialQueryQA.json"
     use_preformatted_input: true
     database: "benchmark_spatialqueryqa"
-    inference_prompt_sections:
-      - text: "SpatialQueryQA: keep output columns, GROUP/ORDER/LIMIT, and predicate direction exact; use geography or ST_Transform only when the question/schema units require it."
     result_materialization:
       timeout_buffer_seconds: 10
     columns:
@@ -98,10 +96,6 @@ datasets:
     raw_data_path: "data/benchmark/SpatialSQL"
     data_path: "data/benchmark/normalized/SpatialSQL.json"
     use_preformatted_input: true
-    inference_prompt_sections:
-      - text: "SpatialSQL: for length/area/distance use the actual geom column as ::geography with spheroid=true; never use ST_Transform; keep predicate direction/output exact."
-      - title: "Name"
-        source_key: "name"
     source_partitions:
       domain_ada:
         partition_key: "domain_ada"
@@ -159,8 +153,6 @@ datasets:
     data_path: "data/benchmark/normalized/FloodSQL-Bench.json"
     use_preformatted_input: true
     database: "benchmark_floodsql"
-    inference_prompt_sections:
-      - text: "FloodSQL: use only listed columns; add ST_IsValid(actual geometry) before geometry area/join; preserve GEOID/key joins, aggregation, and output shape."
     source_partitions:
       level_l0:
         partition_key: "level_l0"
