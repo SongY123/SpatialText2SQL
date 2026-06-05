@@ -221,3 +221,4 @@ scripts/spatialsql/migration_report*.txt
 experiments/
 sample/
 X*-SQL/
+errors/
