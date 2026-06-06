@@ -88,6 +88,10 @@ GEOMETRY_PROCESSING_FUNCS = {
 RANGE_LITERAL_FUNCS = {"ST_MAKEENVELOPE"}
 
 
+def sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
+    return dict(sorted(counter.items(), key=lambda item: (-item[1], item[0])))
+
+
 @dataclass(frozen=True)
 class FunctionCall:
     name: str
@@ -361,6 +365,10 @@ def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
     totals: Counter[str] = Counter()
     category_counts: dict[str, Counter[str]] = defaultdict(Counter)
     overall_counts: Counter[str] = Counter()
+    spatial_functions: set[str] = set()
+    spatial_functions_by_difficulty: dict[str, set[str]] = defaultdict(set)
+    spatial_function_sql_counts: Counter[str] = Counter()
+    spatial_function_call_counts: Counter[str] = Counter()
     unlabeled: list[dict[str, Any]] = []
     unlabeled_count = 0
     row_count = 0
@@ -374,6 +382,15 @@ def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
         _schema = row.get("schema") or ""
 
         labels = classify_sql(sql)
+        st_calls = extract_st_function_calls(strip_sql_comments(sql))
+        sql_spatial_functions = {call.name for call in st_calls}
+        spatial_functions.update(sql_spatial_functions)
+        spatial_functions_by_difficulty[difficulty].update(sql_spatial_functions)
+        for function_name in sql_spatial_functions:
+            spatial_function_sql_counts[function_name] += 1
+        for call in st_calls:
+            spatial_function_call_counts[call.name] += 1
+
         totals[difficulty] += 1
         for label in labels:
             category_counts[difficulty][label] += 1
@@ -400,6 +417,18 @@ def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
             for difficulty in ordered_difficulties(totals.keys())
         },
         "overall_counts": {label: overall_counts.get(label, 0) for label in QUERY_TYPES},
+        "distinct_spatial_function_count": len(spatial_functions),
+        "distinct_spatial_functions": sorted(spatial_functions),
+        "distinct_spatial_function_counts_by_difficulty": {
+            difficulty: len(spatial_functions_by_difficulty[difficulty])
+            for difficulty in ordered_difficulties(totals.keys())
+        },
+        "spatial_functions_by_difficulty": {
+            difficulty: sorted(spatial_functions_by_difficulty[difficulty])
+            for difficulty in ordered_difficulties(totals.keys())
+        },
+        "spatial_function_sql_counts": sorted_counter_dict(spatial_function_sql_counts),
+        "spatial_function_call_counts": sorted_counter_dict(spatial_function_call_counts),
         "unlabeled_count": unlabeled_count,
         "unlabeled_examples": unlabeled,
     }
@@ -446,6 +475,38 @@ def markdown_report(result: dict[str, Any]) -> str:
         count = result["overall_counts"][label]
         lines.append(f"| {label} | {count} | {pct(count, result['row_count'])} |")
 
+    lines.extend(
+        [
+            "",
+            "## Distinct Spatial Functions",
+            "",
+            f"- Distinct `ST_` functions: {result['distinct_spatial_function_count']}",
+            "",
+            "| Difficulty | Distinct Function Count | Functions |",
+            "|---|---:|---|",
+        ]
+    )
+    function_counts_by_difficulty = result["distinct_spatial_function_counts_by_difficulty"]
+    functions_by_difficulty = result["spatial_functions_by_difficulty"]
+    for difficulty in result["difficulties"]:
+        functions = ", ".join(f"`{name}`" for name in functions_by_difficulty[difficulty])
+        lines.append(f"| {difficulty} | {function_counts_by_difficulty[difficulty]} | {functions or '-'} |")
+
+    lines.extend(
+        [
+            "",
+            "| Spatial Function | SQL Rows Using Function | Function Call Count |",
+            "|---|---:|---:|",
+        ]
+    )
+    sql_counts = result["spatial_function_sql_counts"]
+    call_counts = result["spatial_function_call_counts"]
+    if not sql_counts:
+        lines.append("| - | 0 | 0 |")
+    else:
+        for function_name, sql_count in sql_counts.items():
+            lines.append(f"| `{function_name}` | {sql_count} | {call_counts.get(function_name, 0)} |")
+
     examples = result["unlabeled_examples"]
     lines.extend(["", "## Unlabeled Examples", ""])
     if not examples:
@@ -472,6 +533,9 @@ def print_summary(result: dict[str, Any]) -> None:
         for label in QUERY_TYPES:
             count = category_counts[difficulty][label]
             print(f"  {label}: {count} ({pct(count, total)})")
+        function_count = result["distinct_spatial_function_counts_by_difficulty"][difficulty]
+        print(f"  Distinct ST_ functions: {function_count}")
+    print(f"\nDistinct ST_ functions overall: {result['distinct_spatial_function_count']}")
     unlabeled_count = len(result["unlabeled_examples"])
     total_unlabeled = result["unlabeled_count"]
     if total_unlabeled:
