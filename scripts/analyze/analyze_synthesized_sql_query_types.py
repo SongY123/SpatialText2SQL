@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze query-type coverage in synthesized SQL JSONL files.
+"""Analyze query-type coverage in SQL JSONL files.
 
 Each SQL can be assigned to multiple query types. Percentages are computed as:
 category_count / number_of_sql_rows_in_the_same_difficulty.
@@ -18,8 +18,8 @@ from typing import Any, Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_INPUT = PROJECT_ROOT / "data" / "processed" / "synthesized_sql_queries.jsonl"
-DEFAULT_OUTPUT_MD = PROJECT_ROOT / "data" / "processed" / "synthesized_sql_query_type_stats.md"
+DEFAULT_INPUT = PROJECT_ROOT / "data" / "processed" / "finetune" / "nl2sql_alpaca.jsonl"
+DEFAULT_OUTPUT_MD = PROJECT_ROOT / "data" / "processed" / "finetune" / "nl2sql_alpaca_query_type_stats.md"
 
 DIFFICULTY_ORDER = ["easy", "medium", "hard", "extra-hard"]
 
@@ -102,12 +102,17 @@ class FunctionCall:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analyze query-type counts and ratios by difficulty for synthesized SQL JSONL.",
+        description="Analyze query-type counts and ratios by difficulty for SQL JSONL rows.",
     )
     parser.add_argument(
         "--input",
         default=str(DEFAULT_INPUT),
-        help="Input synthesized_sql_queries.jsonl path.",
+        help="Input JSONL path. Defaults to data/processed/finetune/nl2sql_alpaca.jsonl.",
+    )
+    parser.add_argument(
+        "--sql-field",
+        default="output",
+        help="JSON field containing SQL text. Defaults to output for Alpaca JSONL.",
     )
     parser.add_argument(
         "--output-md",
@@ -361,7 +366,7 @@ def ordered_difficulties(values: Iterable[str]) -> list[str]:
     return ordered
 
 
-def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
+def analyze(path: Path, *, sql_field: str, unlabeled_examples: int) -> dict[str, Any]:
     totals: Counter[str] = Counter()
     category_counts: dict[str, Counter[str]] = defaultdict(Counter)
     overall_counts: Counter[str] = Counter()
@@ -376,9 +381,9 @@ def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
     for line_number, row in read_jsonl(path):
         row_count += 1
         difficulty = difficulty_key(row)
-        sql = str(row.get("sql") or "").strip()
+        sql = str(row.get(sql_field) or "").strip()
         if not sql:
-            raise ValueError(f"Missing sql at {path}:{line_number}")
+            raise ValueError(f"Missing SQL field {sql_field!r} at {path}:{line_number}")
         _schema = row.get("schema") or ""
 
         labels = classify_sql(sql)
@@ -409,6 +414,7 @@ def analyze(path: Path, *, unlabeled_examples: int) -> dict[str, Any]:
 
     return {
         "input": str(path),
+        "sql_field": sql_field,
         "row_count": row_count,
         "difficulties": ordered_difficulties(totals.keys()),
         "totals": dict(totals),
@@ -445,6 +451,7 @@ def markdown_report(result: dict[str, Any]) -> str:
         "# Synthesized SQL Query Type Coverage",
         "",
         f"- Input: `{result['input']}`",
+        f"- SQL field: `{result['sql_field']}`",
         f"- Total SQL rows: {result['row_count']}",
         f"- Unlabeled SQL rows: {result['unlabeled_count']} ({pct(result['unlabeled_count'], result['row_count'])})",
         "- Percentages use difficulty-level row counts as denominators; query types are multi-label.",
@@ -526,6 +533,7 @@ def print_summary(result: dict[str, Any]) -> None:
     totals = result["totals"]
     category_counts = result["category_counts"]
     print(f"Input: {result['input']}")
+    print(f"SQL field: {result['sql_field']}")
     print(f"Total SQL rows: {result['row_count']}")
     for difficulty in result["difficulties"]:
         total = totals[difficulty]
@@ -552,7 +560,11 @@ def main() -> None:
     if not input_path.is_absolute():
         input_path = PROJECT_ROOT / input_path
 
-    result = analyze(input_path, unlabeled_examples=max(0, args.unlabeled_examples))
+    result = analyze(
+        input_path,
+        sql_field=str(args.sql_field),
+        unlabeled_examples=max(0, args.unlabeled_examples),
+    )
     print_summary(result)
 
     if args.output_md:
